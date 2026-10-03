@@ -299,7 +299,7 @@ def _select_gpu_readings(
             reading.kind.partition(":")[0].casefold() in ("gpunvidia", "gpuamd")
             for reading in group
         )
-        return (-int(has_total), -int(has_load), -int(is_discrete_family), -int(has_temperature), key)
+        return (-int(is_discrete_family), -int(has_load), -int(has_total), -int(has_temperature), key)
 
     return tuple(min(groups.items(), key=rank)[1])
 

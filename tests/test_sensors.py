@@ -300,6 +300,33 @@ def test_discrete_gpu_is_preferred_over_integrated_without_vram_total(monkeypatc
     assert result.gpu_vram_total_gib.value == 16.0
 
 
+def test_discrete_gpu_precedes_integrated_even_if_only_integrated_reports_total(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu-intel/0/load/0", "Intel Integrated Graphics", "GPU Core", "GpuIntel:Load", 65.0, "%", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-intel/0/smalldata/2", "Intel Integrated Graphics", "GPU Memory Total", "GpuIntel:SmallData", 8192.0, "MiB", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-nvidia/0/load/0", "NVIDIA RTX", "GPU Core", "GpuNvidia:Load", 35.0, "%", hardware_identifier="/gpu-nvidia/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_model == "NVIDIA RTX"
+    assert result.gpu_percent.value == 35.0
+    assert result.gpu_vram_used_gib.value is None
+    assert result.gpu_vram_total_gib.value is None
+
+
+@pytest.mark.parametrize("used", [-1.0, float("nan"), 2048.0])
+def test_gpu_memory_invalid_used_is_unavailable(monkeypatch, used: float) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu/0/load/0", "NVIDIA RTX", "GPU Core", "GpuNvidia:Load", 35.0, "%", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/1", "NVIDIA RTX", "GPU Memory Used", "GpuNvidia:SmallData", used, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/2", "NVIDIA RTX", "GPU Memory Total", "GpuNvidia:SmallData", 1024.0, "MiB", hardware_identifier="/gpu/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_vram_used_gib.value is None
+    assert result.gpu_vram_total_gib.value is None
+
+
 def test_integrated_gpu_shared_memory_is_not_called_dedicated_vram(monkeypatch) -> None:
     patch_psutil(monkeypatch)
     readings = (
