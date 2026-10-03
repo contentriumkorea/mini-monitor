@@ -972,9 +972,7 @@ def run_desktop(
             last_update_snapshot = update_snapshot
             setup.update_update_status(update_snapshot)
         if update_snapshot.notification_pending and update_snapshot.version:
-            if setup.visible:
-                updater.mark_notification_delivered(update_snapshot.version)
-            elif now >= notice_retry_at.get(update_snapshot.version, 0.0):
+            if now >= notice_retry_at.get(update_snapshot.version, 0.0):
                 try:
                     delivered = tray.notify_update(update_snapshot.version)
                 except Exception as error:

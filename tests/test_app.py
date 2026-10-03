@@ -945,8 +945,10 @@ def test_one_autostart_action_enables_and_disables_with_exact_readback(
 @pytest.mark.parametrize("manual_refresh", [False, True])
 @pytest.mark.parametrize("disconnect_after_stop", [False, True])
 @pytest.mark.parametrize("running_legacy", [False, True])
+@pytest.mark.parametrize("setup_visible_for_notice", [False, True])
 def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart_service(
     monkeypatch, tmp_path, helper_success, manual_refresh, disconnect_after_stop, running_legacy,
+    setup_visible_for_notice,
 ) -> None:
     events = []
     actions = []
@@ -1090,13 +1092,19 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
                 callbacks["on_stop"]()
                 self._poll_once()
             self.setup.hide()
+            if setup_visible_for_notice:
+                self.setup.show()
             updaters[0].state = "available"
             self._poll_once()
+            assert not updaters[0].delivered
             self._poll_once()
             assert events.count(("update_notice", "0.2.0")) == 1
+            assert not updaters[0].delivered
             clock[0] += 31.0
             self._poll_once()
-            self.setup.show()
+            assert updaters[0].delivered
+            if not setup_visible_for_notice:
+                self.setup.show()
             callbacks["on_update_apply"]()
             self._poll_once()
             if not helper_success:
