@@ -84,17 +84,17 @@ def test_spec_builds_two_executables_in_one_noupx_onedir() -> None:
     assert text.count("EXE(") == 2
     assert text.count("COLLECT(") == 1
     assert re.search(
-        r'name="AI-Mini-Monitor".*?upx=False,.*?console=False,',
+        r'name="Mini-Monitor".*?upx=False,.*?console=False,',
         text,
         re.DOTALL,
     )
     assert re.search(
-        r'name="AI-Mini-Monitor-CLI".*?upx=False,.*?console=True,',
+        r'name="Mini-Monitor-CLI".*?upx=False,.*?console=True,',
         text,
         re.DOTALL,
     )
     assert 'contents_directory="_internal"' in text
-    assert 'name="AI-Mini-Monitor",' in text
+    assert 'name="Mini-Monitor",' in text
     assert "onefile" not in text.casefold()
 
 
@@ -163,15 +163,15 @@ def test_helper_scripts_route_noninteractive_work_through_console_exe() -> None:
     key = read("scripts/Set-OpenAIKey.ps1")
     previews = read("scripts/Render-Previews.ps1")
 
-    assert "AI-Mini-Monitor.exe" in run
-    assert "AI-Mini-Monitor-CLI.exe" in run
-    assert "AI-Mini-Monitor-CLI.exe" in diagnose
+    assert "Mini-Monitor.exe" in run
+    assert "Mini-Monitor-CLI.exe" in run
+    assert "Mini-Monitor-CLI.exe" in diagnose
     assert "--diagnose" in diagnose
     assert "never opens" in diagnose
-    assert "AI-Mini-Monitor-CLI.exe" in key
+    assert "Mini-Monitor-CLI.exe" in key
     assert "--set-openai-key" in key
     assert "Read-Host" not in key
-    assert "AI-Mini-Monitor-CLI.exe" in previews
+    assert "Mini-Monitor-CLI.exe" in previews
     assert "--render-previews" in previews
 
 
@@ -221,7 +221,7 @@ def test_spec_declares_per_monitor_v2_with_legacy_fallback() -> None:
 
 
 def test_built_artifact_layout_and_pe_subsystems_when_present() -> None:
-    artifact = ROOT / "dist" / "AI-Mini-Monitor"
+    artifact = ROOT / "dist" / "Mini-Monitor"
     # COLLECT creates the directory before all binaries have arrived.  The
     # manifest is written by Build.ps1 only after the onedir is complete, so
     # concurrent source-test runs must not inspect a half-built artifact.
@@ -236,12 +236,14 @@ def test_built_artifact_layout_and_pe_subsystems_when_present() -> None:
     if build_info.get("input_fingerprint") != current_build_input_fingerprint():
         pytest.skip("packaging artifact was built from an older source snapshot")
 
-    desktop = artifact / "AI-Mini-Monitor.exe"
-    cli = artifact / "AI-Mini-Monitor-CLI.exe"
+    desktop = artifact / "Mini-Monitor.exe"
+    cli = artifact / "Mini-Monitor-CLI.exe"
     assert desktop.is_file()
     assert cli.is_file()
     assert (artifact / "_internal/assets/fonts/Inter-Variable.ttf").is_file()
     assert (artifact / "_internal/assets/fonts/JetBrainsMono-Variable.ttf").is_file()
+    assert (artifact / "_internal/assets/update-public-key.pem").is_file()
+    assert (artifact / "_internal/scripts/Apply-Update.ps1").is_file()
     assert (
         artifact
         / "_internal/third_party/librehardwaremonitor/LibreHardwareMonitorLib.dll"

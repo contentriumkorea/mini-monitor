@@ -44,6 +44,7 @@ binaries = []
 
 # Immutable runtime assets retain the same resource_path() layout in _MEIPASS.
 add_tree(datas, "assets", "assets")
+add_optional_file(datas, "scripts/Apply-Update.ps1", "scripts")
 add_tree(datas, "previews", "previews")
 add_tree(datas, "third_party/source", "third_party/source")
 add_tree(
@@ -109,7 +110,7 @@ WINDOWS_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"
           xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
   <assemblyIdentity version="1.0.0.0" processorArchitecture="*"
-                    name="AI-Mini-Monitor" type="win32"/>
+                    name="Mini-Monitor" type="win32"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -154,7 +155,7 @@ desktop_exe = EXE(
     analysis.scripts,
     [],
     exclude_binaries=True,
-    name="AI-Mini-Monitor",
+    name="Mini-Monitor",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -173,7 +174,7 @@ cli_exe = EXE(
     analysis.scripts,
     [],
     exclude_binaries=True,
-    name="AI-Mini-Monitor-CLI",
+    name="Mini-Monitor-CLI",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -194,5 +195,5 @@ distribution = COLLECT(
     analysis.datas,
     strip=False,
     upx=False,
-    name="AI-Mini-Monitor",
+    name="Mini-Monitor",
 )

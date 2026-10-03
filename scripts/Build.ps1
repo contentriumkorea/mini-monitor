@@ -13,7 +13,7 @@ $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $Spec = Join-Path $ProjectRoot "AI-Mini-Monitor.spec"
 $WorkRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot "build\pyinstaller"))
 $DistRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot "dist"))
-$ArtifactRoot = [IO.Path]::GetFullPath((Join-Path $DistRoot "AI-Mini-Monitor"))
+$ArtifactRoot = [IO.Path]::GetFullPath((Join-Path $DistRoot "Mini-Monitor"))
 
 function Assert-ProjectChildPath {
     param([Parameter(Mandatory = $true)][string]$Candidate)
@@ -134,6 +134,8 @@ try {
     }
     if (-not $SkipTests) {
         & $Python -m pytest `
+            "tests\test_release_contract.py" `
+            "tests\test_release_archive.py" `
             "tests\test_packaging_config.py" `
             "tests\test_licenses.py" `
             "tests\test_environment_integrity.py" `
@@ -164,8 +166,8 @@ try {
         throw "Build inputs changed during PyInstaller analysis. Rerun after source changes settle."
     }
 
-    $DesktopExe = Join-Path $ArtifactRoot "AI-Mini-Monitor.exe"
-    $CliExe = Join-Path $ArtifactRoot "AI-Mini-Monitor-CLI.exe"
+    $DesktopExe = Join-Path $ArtifactRoot "Mini-Monitor.exe"
+    $CliExe = Join-Path $ArtifactRoot "Mini-Monitor-CLI.exe"
     foreach ($required in @($DesktopExe, $CliExe)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required executable is missing: $required"
@@ -250,6 +252,7 @@ try {
         "THIRD_PARTY_NOTICES.md",
         "THIRD_PARTY_COMPONENTS.json",
         "README_KO.md",
+        "README.md",
         "DEVICE_BENCHMARK.md",
         "TEST_RESULTS.md",
         "SOURCE-OFFER.md"
@@ -304,6 +307,8 @@ try {
     # only after BUILD-INFO and SHA256SUMS exist for this exact snapshot.
     if (-not $SkipTests) {
         & $Python -m pytest `
+            "tests\test_release_contract.py" `
+            "tests\test_release_archive.py" `
             "tests\test_packaging_config.py" `
             "tests\test_licenses.py" `
             -q

@@ -6,7 +6,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$Executable = Join-Path $ProjectRoot "dist\AI-Mini-Monitor\AI-Mini-Monitor-CLI.exe"
+$Executable = Join-Path $ProjectRoot "dist\Mini-Monitor\Mini-Monitor-CLI.exe"
 
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Packaged CLI is missing. Run scripts\Build.ps1 first: $Executable"

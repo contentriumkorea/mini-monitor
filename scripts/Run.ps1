@@ -10,8 +10,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$name = if ($Cli) { "AI-Mini-Monitor-CLI.exe" } else { "AI-Mini-Monitor.exe" }
-$Executable = Join-Path $ProjectRoot "dist\AI-Mini-Monitor\$name"
+$name = if ($Cli) { "Mini-Monitor-CLI.exe" } else { "Mini-Monitor.exe" }
+$Executable = Join-Path $ProjectRoot "dist\Mini-Monitor\$name"
 
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Packaged executable is missing. Run scripts\Build.ps1 first: $Executable"

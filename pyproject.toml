@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-mini-monitor"
-version = "0.1.0"
-description = "Brand-neutral 480x320 and 320x480 Windows system monitor for USB35INCHIPSV2 displays"
+version = "0.2.0"
+description = "Mini Monitor for Windows USB35INCHIPSV2 displays"
 readme = "README_KO.md"
 requires-python = ">=3.10,<3.14"
 license = { text = "GPL-3.0-or-later" }
-authors = [{ name = "AI Mini Monitor contributors" }]
+authors = [{ name = "Mini Monitor contributors" }]
 dependencies = [
   "cryptography==50.0.2",
   "Pillow==12.3.0",
