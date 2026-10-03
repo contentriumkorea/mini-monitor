@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 import ctypes
 from ctypes import wintypes
+import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import tkinter as tk
 
@@ -755,10 +759,18 @@ def test_tk_operations_reject_worker_threads(fake_tk) -> None:
 
 
 def test_real_tk_layered_overlay_lifecycle_keeps_host_application_alive() -> None:
-    try:
-        root = tk.Tk(className="AIMiniMonitorOverlayTestHost")
-    except tk.TclError as error:
-        pytest.skip(f"Tk display is unavailable: {error}")
+    if os.environ.get("MINI_MONITOR_OVERLAY_SMOKE_CHILD") != "1":
+        env = os.environ.copy()
+        env["MINI_MONITOR_OVERLAY_SMOKE_CHILD"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", f"{Path(__file__).resolve()}::test_real_tk_layered_overlay_lifecycle_keeps_host_application_alive"],
+            env=env,
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+        return
+    root = tk.Tk(className="AIMiniMonitorOverlayTestHost")
     root.withdraw()
     overlay = OverlayWindow(
         root,

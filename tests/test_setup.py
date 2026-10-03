@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import sys
 import tkinter as tk
+from tkinter import messagebox
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -65,6 +67,117 @@ def make_window(**overrides) -> SetupWindow:
         codex_local_consent=False,
         **callbacks,
     )
+
+
+def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner() -> None:
+    called: list[str] = []
+    window = make_window(
+        on_codex_login=lambda: called.append("login") or ActionResult(True, "로그인 대기"),
+        on_codex_cancel=lambda: called.append("cancel") or ActionResult(True, "취소됨"),
+        on_codex_logout=lambda: called.append("logout") or ActionResult(True, "로그아웃됨"),
+        on_codex_disconnect=lambda: called.append("disconnect") or ActionResult(True, "연결 해제됨"),
+        on_codex_install_guide=lambda: called.append("guide") or ActionResult(True, "안내 열림"),
+        on_update_check=lambda: called.append("check") or ActionResult(True, "확인 중"),
+        on_update_apply=lambda: called.append("apply") or ActionResult(True, "적용 준비"),
+        on_update_dismiss=lambda: called.append("dismiss") or ActionResult(True, "나중에"),
+        on_update_open_release=lambda: called.append("release") or ActionResult(True, "릴리스 열림"),
+        on_start=lambda _selection: called.append("serial") or ActionResult(True, "시작됨"),
+    )
+    try:
+        account = SimpleNamespace(state="signed_out", email=None, plan_type=None, login_pending=False, windows=(), updated_at=None, error_detail=None)
+        window.update_codex_account(account)
+        window._codex_login_button.invoke()
+        account = SimpleNamespace(state="login_pending", email=None, plan_type=None, login_pending=True, windows=(), updated_at=None, error_detail=None)
+        window.update_codex_account(account)
+        window._codex_cancel_button.invoke()
+        account = SimpleNamespace(state="ready", email="demo@example.invalid", plan_type="plus", login_pending=False, windows=(), updated_at=None, error_detail=None)
+        window.update_codex_account(account)
+        window._codex_disconnect_button.invoke()
+        window._codex_guide_button.invoke()
+        banner_height = window._update_banner.winfo_reqheight()
+        window.update_update_status(SimpleNamespace(state="available", version="2.0.0", message="업데이트가 있습니다", prepared=None, release_url="https://example.invalid"))
+        window._update_check_button.invoke()
+        window._update_apply_button.invoke()
+        window._update_dismiss_button.invoke()
+        window.update_update_status(SimpleNamespace(state="manual_required", version="2.0.0", message="수동 설치 필요", prepared=None, release_url="https://example.invalid"))
+        window._update_release_button.invoke()
+        assert window._update_banner.winfo_reqheight() == banner_height
+        window.show()
+        window.window.update()
+        assert window._update_dismiss_button.winfo_y() + window._update_dismiss_button.winfo_height() <= window._update_banner.winfo_height()
+        assert window._update_apply_button.winfo_x() + window._update_apply_button.winfo_width() <= window._update_banner.winfo_width()
+        assert called == ["login", "cancel", "disconnect", "guide", "check", "apply", "dismiss", "release"]
+        assert "demo@example.invalid" in window._codex_identity.cget("text")
+    finally:
+        window.close()
+
+
+def test_codex_logout_requires_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[str] = []
+    window = make_window(on_codex_logout=lambda: called.append("logout") or ActionResult(True, "로그아웃됨"))
+    try:
+        window.update_codex_account(SimpleNamespace(state="ready", email="demo@example.invalid", plan_type="plus", login_pending=False, windows=(), updated_at=None, error_detail=None))
+        monkeypatch.setattr(messagebox, "askyesno", lambda *_args, **_kwargs: False)
+        window._codex_logout_button.invoke()
+        assert called == []
+        monkeypatch.setattr(messagebox, "askyesno", lambda *_args, **_kwargs: True)
+        window._codex_logout_button.invoke()
+        assert called == ["logout"]
+    finally:
+        window.close()
+
+
+def test_codex_refresh_is_independent_of_legacy_selection_and_serial_start() -> None:
+    selected: list[str] = []
+    window = make_window(
+        on_check_usage=lambda selection: selected.append(selection.provider) or ActionResult(True, "갱신 요청"),
+        on_start=lambda _selection: selected.append("serial") or ActionResult(True, "시작됨"),
+    )
+    try:
+        window._provider.set(AIProviderKind.CODEX_LOCAL.value)
+        window._codex_refresh_button.invoke()
+        assert selected == [AIProviderKind.CODEX_ACCOUNT.value]
+        assert "disabled" not in window._start_button.state()
+    finally:
+        window.close()
+
+
+def test_public_provider_switch_accepts_official_account_and_rejects_unknown() -> None:
+    window = make_window()
+    try:
+        window.set_provider(AIProviderKind.CODEX_ACCOUNT.value)
+        assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
+        assert window.selection.provider == AIProviderKind.CODEX_ACCOUNT.value
+        with pytest.raises(ValueError, match="provider"):
+            window.set_provider("invalid-provider")
+        assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("scaling", [1.66625, 2.00075])
+def test_account_and_update_controls_fit_short_negative_monitor_at_high_dpi(
+    scaling: float, monkeypatch: pytest.MonkeyPatch, _shared_tk_interpreter,
+) -> None:
+    interpreter = _shared_tk_interpreter.tk
+    original_scaling = float(interpreter.call("tk", "scaling"))
+    interpreter.call("tk", "scaling", scaling)
+    monkeypatch.setattr(setup_ui_module, "_window_bounds", lambda _window: setup_ui_module.WindowBounds(-1600, 0, -576, 720, 16, 39))
+    window = make_window(on_codex_login=lambda: ActionResult(True, "대기"), on_update_check=lambda: ActionResult(True, "확인"))
+    try:
+        window.show()
+        window.window.update()
+        assert -1600 <= window.window.winfo_x()
+        assert window.window.winfo_x() + window.window.winfo_width() + 16 <= -576
+        for control in (window._codex_login_button, window._codex_cli_button, window._update_check_button, window._update_dismiss_button):
+            control.focus_force()
+            window.window.update()
+            assert control.winfo_x() + control.winfo_width() <= control.master.winfo_width()
+            assert control.winfo_rooty() >= window._left_canvas.winfo_rooty()
+            assert control.winfo_rooty() + control.winfo_height() <= window._left_canvas.winfo_rooty() + window._left_canvas.winfo_height()
+    finally:
+        window.close()
+        interpreter.call("tk", "scaling", original_scaling)
 
 
 def test_overlay_options_are_modal_live_and_keep_physical_monitor_controls_separate() -> None:
@@ -374,7 +487,7 @@ def test_setup_window_has_separate_controls_and_native_preview() -> None:
     window = make_window()
     try:
         assert not window.visible
-        assert window.window.title() == "AI Mini Monitor 설정"
+        assert window.window.title() == "Mini Monitor 설정"
         assert window.selection == SetupSelection(AIProviderKind.CODEX_LOCAL.value, False, "")
         window.update_image(Image.new("RGB", (480, 320), "black"))
         with pytest.raises(ValueError, match="480x320"):

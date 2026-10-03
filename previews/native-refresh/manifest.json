@@ -1,0 +1,21 @@
+{
+  "native_size": [
+    480,
+    320
+  ],
+  "demo_data": true,
+  "files": [
+    "normal.png",
+    "zero.png",
+    "hundred.png",
+    "temperature_warning.png",
+    "memory_99.png",
+    "ai_not_configured.png",
+    "ai_delayed.png",
+    "ai_error.png",
+    "unknown.png",
+    "vram_max.png",
+    "reconnecting.png",
+    "disconnected.png"
+  ]
+}

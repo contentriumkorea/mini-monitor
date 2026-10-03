@@ -64,9 +64,9 @@ def test_distant_changes_in_one_card_remain_separate() -> None:
 def test_card_edge_padding_is_clipped_to_the_card() -> None:
     before = frame()
     after = before.copy()
-    after.putpixel((8, 38), (255, 255, 255))
+    after.putpixel((8, 36), (255, 255, 255))
 
-    assert calculate_dirty_rectangles(before, after) == [Rect(8, 38, 2, 2)]
+    assert calculate_dirty_rectangles(before, after) == [Rect(8, 36, 2, 2)]
 
 
 def test_unchanged_and_outside_card_pixels_do_not_generate_regions() -> None:

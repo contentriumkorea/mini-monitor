@@ -16,6 +16,9 @@ PREVIEW_STATES = (
     "memory_99",
     "ai_not_configured",
     "ai_delayed",
+    "ai_error",
+    "unknown",
+    "vram_max",
     "reconnecting",
     "disconnected",
 )
@@ -40,7 +43,7 @@ def render_preview(
 
 
 def render_all_previews(output_dir: Path) -> list[Path]:
-    # These nine files are canonical landscape packaging/audit assets. The
+    # These files are canonical landscape packaging/audit assets. The
     # interactive --preview path follows the saved display orientation instead.
     output = [
         render_preview(

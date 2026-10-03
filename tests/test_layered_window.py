@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import os
+from pathlib import Path
+import subprocess
 import sys
 import tkinter as tk
 
@@ -356,10 +359,18 @@ def test_primary_failure_is_not_replaced_by_cleanup_failure() -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Win32 layered windows")
 def test_real_win32_tk_presenter_smoke_without_device_io() -> None:
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"Tk desktop is unavailable: {exc}")
+    if os.environ.get("MINI_MONITOR_LAYERED_SMOKE_CHILD") != "1":
+        env = os.environ.copy()
+        env["MINI_MONITOR_LAYERED_SMOKE_CHILD"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", f"{Path(__file__).resolve()}::test_real_win32_tk_presenter_smoke_without_device_io"],
+            env=env,
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+        return
+    root = tk.Tk()
 
     top: tk.Toplevel | None = None
     try:

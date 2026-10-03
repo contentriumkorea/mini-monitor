@@ -9,7 +9,7 @@ from ai_mini_monitor import preview
 from ai_mini_monitor.rendering.layout import LANDSCAPE_LAYOUT
 
 
-def test_render_all_previews_remains_canonical_nine_landscape_assets(
+def test_render_all_previews_includes_unknown_and_vram_boundaries(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -29,7 +29,8 @@ def test_render_all_previews_remains_canonical_nine_landscape_assets(
     paths = preview.render_all_previews(tmp_path)
 
     assert [state for state, _dimensions in calls] == list(preview.PREVIEW_STATES)
-    assert len(paths) == 9
+    assert len(paths) == 12
+    assert {"unknown", "ai_error", "vram_max"}.issubset(preview.PREVIEW_STATES)
     assert all(dimensions == (480, 320) for _state, dimensions in calls)
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["native_size"] == [480, 320]

@@ -161,13 +161,12 @@ def get_overlay_layers(image: Image.Image) -> OverlayLayers:
 
 
 def _metric_gauge(rect: Rect) -> Rect:
-    # The gauge is a primary reading on the physical 3.5-inch panel. Keep it
-    # nearly card-wide and thick enough to remain legible at arm's length.
-    return Rect(rect.x + 11, rect.bottom - (12 if rect.width > 228 else 13), rect.width - 22, 9)
+    portrait = rect.width > 228
+    return Rect(rect.x + 11, rect.bottom - (22 if portrait else 27), rect.width - 22, 8 if portrait else 10)
 
 
 def _memory_gauge(rect: Rect) -> Rect:
-    return Rect(rect.x + 11, rect.bottom - (31 if rect.width > 228 else 32), rect.width - 22, 12)
+    return _metric_gauge(rect)
 
 
 # Backwards-compatible landscape aliases used by benchmarks and existing tests.
@@ -229,22 +228,18 @@ class DashboardRenderer:
         draw = ImageDraw.Draw(background)
         surface_mask = Image.new("L", self.layout.size, 0)
         surface_draw = ImageDraw.Draw(surface_mask)
-        for x in range(16, self.layout.width, 24):
-            draw.line((x, 0, x, self.layout.height), fill=self.theme.grid, width=1)
-        for y in range(16, self.layout.height, 24):
-            draw.line((0, y, self.layout.width, y), fill=self.theme.grid, width=1)
         for name, rect in self.layout.card_rects.items():
             fill = self.theme.raised_card if name == "ai" else self.theme.card
             draw.rounded_rectangle(
                 (rect.x, rect.y, rect.right - 1, rect.bottom - 1),
-                radius=6,
+                radius=8,
                 fill=fill,
                 outline=self.theme.card_outline,
-                width=2,
+                width=1,
             )
             surface_draw.rounded_rectangle(
                 (rect.x, rect.y, rect.right - 1, rect.bottom - 1),
-                radius=6,
+                radius=8,
                 fill=255,
             )
         foreground = Image.new("RGBA", self.layout.size, (0, 0, 0, 0))
@@ -291,6 +286,7 @@ class DashboardRenderer:
             snapshot.gpu_history,
             "gpu",
             snapshot.gpu_model,
+            snapshot=snapshot,
         )
         self._draw_memory(draw, snapshot)
         self._draw_ai(draw, snapshot.ai)
@@ -466,10 +462,10 @@ class DashboardRenderer:
         }[connection.status]
         center_y = rect.y + rect.height // 2
         draw.ellipse((rect.x + 9, center_y - 3, rect.x + 15, center_y + 3), fill=color)
-        self._text(draw, "connection_label", (rect.x + 22, center_y), "MINI DISPLAY", inter(11), self.theme.secondary_text, rect, anchor="lm")
-        self._text(draw, "connection_status", (rect.x + 125, center_y), connection.status.value, mono(11), color, rect, anchor="lm")
-        detail = connection.port or connection.detail or "NO VERIFIED DEVICE"
-        detail_limit = 10 if portrait else 24
+        self._text(draw, "connection_label", (rect.x + 22, center_y), "MINI MONITOR", inter(11, "Bold"), self.theme.primary_text, rect, anchor="lm")
+        self._text(draw, "connection_status", (rect.x + (129 if portrait else 148), center_y), connection.status.value, mono(10), color, rect, anchor="lm")
+        detail = "DEMO" if snapshot.ai.demo else (connection.port or connection.detail or "NO DEVICE")
+        detail_limit = 9 if portrait else 20
         self._text(
             draw,
             "connection_detail",
@@ -491,6 +487,7 @@ class DashboardRenderer:
         history: tuple[float | None, ...],
         key_prefix: str,
         model: str | None,
+        snapshot: DisplaySnapshot | None = None,
     ) -> None:
         value_color = self.theme.primary_text
         if temperature.value is not None and temperature.value >= 90:
@@ -505,28 +502,22 @@ class DashboardRenderer:
             gauge,
             percent,
             accent,
-            (rect.right - 11, rect.y + 7),
-            "ra",
+            (rect.right - 11, gauge.y - 3),
+            "rs",
         )
         portrait = self.layout.height > self.layout.width
-        temperature_font = mono(9)
+        temperature_font = mono(12)
         temperature_text = _metric_temperature(temperature)
-        temperature_xy = (rect.right - 11, rect.y + 45)
-        temperature_bbox = draw.textbbox(
-            temperature_xy,
-            temperature_text,
-            font=temperature_font,
-            anchor="rb",
-        )
+        info_x = rect.x + (130 if portrait else 123)
         if model:
             model_font, model_text = self._fit_model_name(
                 model,
-                max(1, temperature_bbox[0] - 6 - (rect.x + 18)),
+                rect.width - 145 if portrait else rect.width - (62 if key_prefix == "gpu" and snapshot is not None and snapshot.gpu_power_w.value is not None else 30),
             )
             self._text(
                 draw,
                 f"{key_prefix}_model",
-                (rect.x + 18, rect.y + 27),
+                (info_x if portrait else rect.x + 13, rect.y + (29 if portrait else 32)),
                 model_text,
                 model_font,
                 self.theme.secondary_text,
@@ -536,59 +527,69 @@ class DashboardRenderer:
         self._draw_large_percent(
             draw,
             f"{key_prefix}_value",
-            (rect.x + 101, rect.bottom - (14 if portrait else 15)),
+            (rect.x + 112, rect.y + (73 if portrait else 80)),
             _metric_percent(percent),
-            38 if portrait else 42,
+            40 if portrait else 42,
             value_color,
             rect,
-            anchor="rb",
+            anchor="rs",
         )
         temp_color = self.theme.error if temperature.value is not None and temperature.value >= 90 else self.theme.secondary_text
         self._text(
             draw,
             f"{key_prefix}_temperature",
-            temperature_xy,
+            (info_x, rect.y + (52 if portrait else 65)),
             temperature_text,
             temperature_font,
             temp_color,
             rect,
-            anchor="rb",
+            anchor="la",
         )
-        chart_width = min(round(rect.width * 0.44), rect.width - 135)
+        if key_prefix == "gpu" and snapshot is not None:
+            used = snapshot.gpu_vram_used_gib.value
+            total = snapshot.gpu_vram_total_gib.value
+            valid = (
+                used is not None and total is not None
+                and isfinite(float(used)) and isfinite(float(total))
+                and 0 <= used <= total and total > 0
+            )
+            vram = f"VRAM {used:.1f} / {total:.1f} GiB" if valid else "VRAM -- / -- GiB"
+            self._text(draw, "gpu_vram", (info_x if portrait else rect.x + 12, rect.y + (64 if portrait else 84)), vram, mono(10), self.theme.secondary_text, rect)
+            power = snapshot.gpu_power_w.value
+            if power is not None and isfinite(float(power)) and power >= 0:
+                self._text(draw, "gpu_power", (rect.right - 11, rect.y + (51 if portrait else 31)), f"{power:.0f} W", mono(10), self.theme.secondary_text, rect, anchor="ra")
+        chart_width = rect.width - 22
         chart = Rect(
-            rect.right - 11 - chart_width,
-            rect.y + (45 if portrait else 50),
+            rect.x + 11,
+            rect.bottom - (10 if portrait else 13),
             chart_width,
-            16 if portrait else 18,
+            7 if portrait else 9,
         )
         self._draw_sparkline(draw, chart, history, accent, key=key_prefix)
 
     def _draw_memory(self, draw: ImageDraw.ImageDraw, snapshot: DisplaySnapshot) -> None:
         rect = self.layout.memory
         portrait = self.layout.height > self.layout.width
-        value_y = rect.y + (69 if portrait else 83)
         accent = self.theme.memory_accent
         self._draw_card_heading(draw, "memory_label", rect, "RAM", accent)
         self._draw_large_percent(
             draw,
             "memory_value",
-            (rect.x + (112 if portrait else 112), value_y),
+            (rect.x + 112, rect.y + (73 if portrait else 80)),
             _metric_percent(snapshot.memory_percent),
-            40 if portrait else 44,
+            40 if portrait else 42,
             self.theme.primary_text,
             rect,
-            anchor="rb",
+            anchor="rs",
         )
         if snapshot.memory_used_gib.value is None or snapshot.memory_total_gib.value is None:
             used_total = "-- / -- GiB"
         else:
             used_total = f"{snapshot.memory_used_gib.value:.1f} / {snapshot.memory_total_gib.value:.1f} GiB"
-        self._text(draw, "memory_used", (rect.right - 11, rect.y + 34), used_total, mono(10), self.theme.secondary_text, rect, anchor="ra")
+        self._text(draw, "memory_used", (rect.x + (130 if portrait else 121), rect.y + (40 if portrait else 48)), used_total, mono(11 if portrait else 10), self.theme.secondary_text, rect)
         available = "-- GiB FREE" if snapshot.memory_available_gib.value is None else f"{snapshot.memory_available_gib.value:.1f} GiB FREE"
-        self._text(draw, "memory_available", (rect.right - 11, rect.y + 55), available, mono(10), accent, rect, anchor="ra")
-        chart_y = rect.y + (78 if portrait else 94)
-        chart_height = 12 if portrait else 20
-        chart = Rect(rect.x + 11, chart_y, rect.width - 22, chart_height)
+        self._text(draw, "memory_available", (rect.x + (130 if portrait else 121), rect.y + (62 if portrait else 69)), available, mono(11), self.theme.secondary_text, rect)
+        chart = Rect(rect.x + 11, rect.bottom - (10 if portrait else 13), rect.width - 22, 7 if portrait else 9)
         self._draw_sparkline(draw, chart, snapshot.memory_history, accent, key="memory")
         self._draw_percent_gauge(
             draw,
@@ -597,18 +598,8 @@ class DashboardRenderer:
             self.memory_gauge,
             snapshot.memory_percent,
             accent,
-            (self.memory_gauge.right, rect.bottom - (6 if portrait else 7)),
+            (self.memory_gauge.right, self.memory_gauge.y - 3),
             "rs",
-        )
-        self._text(
-            draw,
-            "memory_bar_label",
-            (self.memory_gauge.x, rect.bottom - (6 if portrait else 7)),
-            "RAM USAGE",
-            inter(12, "Bold"),
-            self.theme.secondary_text,
-            rect,
-            anchor="ls",
         )
 
     def _draw_percent_gauge(
@@ -661,21 +652,13 @@ class DashboardRenderer:
             )
 
         self.last_gauges[key] = GaugePlacement(key, track, fill, ratio, state)
-        self._text(
-            draw,
-            f"{key}_gauge_status",
-            status_xy,
-            state,
-            mono(8),
-            state_color,
-            card,
-            anchor=status_anchor,
-        )
+        if state != "NORMAL":
+            self._text(draw, f"{key}_gauge_status", status_xy, state, mono(8), state_color, card, anchor=status_anchor)
 
     def _draw_ai(self, draw: ImageDraw.ImageDraw, ai: AIData) -> None:
         rect = self.layout.ai
         portrait = self.layout.height > self.layout.width
-        title_y = rect.y + 6
+        title_y = rect.y + 10
         status_color = {
             SyncStatus.OK: self.theme.success,
             SyncStatus.DELAYED: self.theme.warning,
@@ -684,7 +667,7 @@ class DashboardRenderer:
             SyncStatus.NETWORK_ERROR: self.theme.error,
             SyncStatus.SETUP_REQUIRED: self.theme.warning,
         }[ai.status]
-        badge = "DEMO" if ai.demo else ai.status.value
+        badge = ("DEMO" if ai.status is SyncStatus.OK else f"DEMO {ai.status.value}") if ai.demo else ai.status.value
         status_font = mono(9)
         status_xy = (rect.right - 11, title_y)
         status_bbox = draw.textbbox(status_xy, badge, font=status_font, anchor="ra")
@@ -700,7 +683,7 @@ class DashboardRenderer:
         self._text(draw, "ai_status", status_xy, badge, status_font, status_color, rect, anchor="ra")
         primary_is_percent = _PERCENT_VALUE.fullmatch(ai.primary_value) is not None
         codex_quota_value = (
-            ai.provider is AIProviderKind.CODEX_LOCAL
+            ai.provider in (AIProviderKind.CODEX_LOCAL, AIProviderKind.CODEX_ACCOUNT)
             and (primary_is_percent or ai.primary_value == "--")
         )
         if portrait:
@@ -710,7 +693,7 @@ class DashboardRenderer:
                 else (34 if primary_is_percent else (28 if len(ai.primary_value) <= 7 else 24))
             )
             primary_xy = (
-                (rect.x + 112, rect.y + 69)
+                (rect.x + 112, rect.y + 73)
                 if codex_quota_value
                 else (rect.x + 11, rect.y + 52)
             )
@@ -722,12 +705,12 @@ class DashboardRenderer:
             primary_label_font = inter(10)
         else:
             primary_size = (
-                44
+                42
                 if codex_quota_value
                 else (40 if primary_is_percent else (34 if len(ai.primary_value) <= 7 else 28))
             )
             primary_xy = (
-                (rect.x + 112, rect.y + 83)
+                (rect.x + 112, rect.y + 80)
                 if codex_quota_value
                 else (rect.x + 11, rect.y + 72)
             )
@@ -776,47 +759,17 @@ class DashboardRenderer:
             rect,
             anchor="rs",
         )
-        fields = ai.fields[:4]
+        fields = tuple((label, value) for label, value in ai.fields if "RESET" not in label.upper()) if ai.provider is AIProviderKind.CODEX_ACCOUNT else ai.fields
+        fields = fields[:1] if portrait or ai.budget_ratio is not None else fields[:2]
         for index, (label, value) in enumerate(fields):
-            column = index % 2
-            row = index // 2
-            if portrait:
-                column_width = (rect.width - 22) // 2
-                left = rect.x + 11 + column * column_width
-                top = rect.y + (73 if codex_quota_value else 57) + row * 17
-                label_font = inter(9)
-                value_font = mono(10)
-                value_y = top + 10
-                anchor_x = left + column_width - 11
-            else:
-                left = rect.x + 11 + column * 104
-                top = rect.y + (94 if codex_quota_value else 80) + row * 31
-                label_font = inter(11)
-                value_font = mono(11)
-                value_y = top + 18
-                anchor_x = rect.x + 103 if column == 0 else rect.right - 11
-            self._text(draw, f"ai_field_{index}_label", (left, top), label.upper()[:12], label_font, self.theme.dim, rect)
-            self._text(draw, f"ai_field_{index}_value", (anchor_x, value_y), value[:14], value_font, self.theme.ai_accent, rect, anchor="ra")
+            top = rect.y + (68 if portrait else 84) + index * 16
+            left = rect.x + (130 if portrait else 121)
+            self._text(draw, f"ai_field_{index}_label", (left, top), label.upper()[:10], inter(10), self.theme.secondary_text, rect)
+            self._text(draw, f"ai_field_{index}_value", (rect.right - 11, top), value[:8], mono(10), self.theme.ai_accent, rect, anchor="ra")
         if ai.budget_ratio is not None:
             ratio = min(1.0, max(0.0, ai.budget_ratio))
-            bar = Rect(
-                rect.x + 11,
-                rect.bottom - (18 if portrait else 25),
-                rect.width - 22,
-                9 if portrait else 10,
-            )
+            bar = _metric_gauge(rect)
             self.last_budget_bar = bar
-            if ai.budget_label:
-                self._text(
-                    draw,
-                    "ai_budget_label",
-                    (bar.x, bar.y - (2 if portrait else 3)),
-                    ai.budget_label[:30],
-                    mono(8),
-                    self.theme.secondary_text,
-                    rect,
-                    anchor="ls",
-                )
             draw.rounded_rectangle((bar.x, bar.y, bar.right - 1, bar.bottom - 1), radius=3, fill=self.theme.border)
             if ratio > 0:
                 color = self.theme.error if ratio >= 1.0 else self.theme.ai_accent
@@ -826,8 +779,8 @@ class DashboardRenderer:
         else:
             local_time = ai.last_sync.astimezone().strftime("%H:%M:%S")
             sync_text = f"LAST SYNC {local_time}"
-        sync_y = rect.bottom - 1 if portrait else rect.bottom - 7
-        self._text(draw, "ai_last_sync", (rect.x + 11, sync_y), sync_text, mono(10), self.theme.secondary_text, rect, anchor="ls")
+        sync_y = rect.bottom - 5
+        self._text(draw, "ai_last_sync", (rect.x + 11, sync_y), sync_text, mono(8), self.theme.secondary_text, rect, anchor="ls")
 
     def _draw_card_heading(
         self,
@@ -847,35 +800,20 @@ class DashboardRenderer:
         alone.  Geometry stays clear of the existing status and data lanes.
         """
 
-        rail_left = rect.x + 9
-        rail_top = rect.y + 5
-        draw.rounded_rectangle(
-            (rail_left, rail_top, rail_left + 3, rail_top + 19),
-            radius=1,
-            fill=accent,
-        )
         font = inter(18, "ExtraBold")
-        text_left = rect.x + 18
+        text_left = rect.x + 12
         if max_right is not None:
             text, font = self._fit_heading(text, max(0, max_right - text_left))
         placement = self._text(
             draw,
             key,
-            (text_left, rect.y + 5),
+            (text_left, rect.y + 7),
             text,
             font,
             self.theme.primary_text,
             rect,
             anchor="la",
         )
-        if underline:
-            underline_right = max(text_left, min(placement.bbox[2], rect.right - 11))
-            underline_y = min(rect.bottom - 2, placement.bbox[3] + 2)
-            draw.line(
-                (text_left, underline_y, underline_right, underline_y),
-                fill=accent,
-                width=2,
-            )
         return placement
 
     @staticmethod

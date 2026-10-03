@@ -9,9 +9,10 @@ import itertools
 import sys
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
@@ -33,6 +34,10 @@ from ..orientation import (
     orientation_spec,
 )
 from .preview import require_main_thread
+
+if TYPE_CHECKING:
+    from ..ai.codex_account import CodexAccountSnapshot
+    from ..updater import UpdateSnapshot
 
 
 BG = "#05070D"
@@ -375,6 +380,16 @@ class SetupWindow:
         overlay_scale_percent: int = DEFAULT_OVERLAY_SCALE_PERCENT,
         on_overlay_change: OverlayAction | None = None,
         on_overlay_reset_position: Action | None = None,
+        on_codex_login: Action | None = None,
+        on_codex_cancel: Action | None = None,
+        on_codex_logout: Action | None = None,
+        on_codex_disconnect: Action | None = None,
+        on_codex_cli_selected: Callable[[Path], ActionResult] | None = None,
+        on_codex_install_guide: Action | None = None,
+        on_update_check: Action | None = None,
+        on_update_apply: Action | None = None,
+        on_update_dismiss: Action | None = None,
+        on_update_open_release: Action | None = None,
     ) -> None:
         require_main_thread()
         initial_brightness = validate_brightness(brightness)
@@ -413,6 +428,16 @@ class SetupWindow:
         self._on_autostart_change = on_autostart_change
         self._on_overlay_change = on_overlay_change
         self._on_overlay_reset_position = on_overlay_reset_position
+        self._on_codex_login = on_codex_login
+        self._on_codex_cancel = on_codex_cancel
+        self._on_codex_logout = on_codex_logout
+        self._on_codex_disconnect = on_codex_disconnect
+        self._on_codex_cli_selected = on_codex_cli_selected
+        self._on_codex_install_guide = on_codex_install_guide
+        self._on_update_check = on_update_check
+        self._on_update_apply = on_update_apply
+        self._on_update_dismiss = on_update_dismiss
+        self._on_update_open_release = on_update_open_release
         self._on_exit = on_exit
         self._enable_serial = enable_serial
         self._openai_key_configured = bool(openai_key_configured)
@@ -553,6 +578,15 @@ class SetupWindow:
 
         require_main_thread()
         return self._provider.get()
+
+    def set_provider(self, provider: str) -> None:
+        """Select a known data source without reaching into Tk internals."""
+
+        require_main_thread()
+        self._ensure_open()
+        if provider not in {item.value for item in AIProviderKind}:
+            raise ValueError("invalid provider")
+        self._provider.set(provider)
 
     @property
     def selected_rotation(self) -> str:
@@ -885,7 +919,7 @@ class SetupWindow:
         self._usage_detail.configure(text=detail or ai.status.value)
 
     def _configure_window(self) -> None:
-        self._window.title("AI Mini Monitor 설정")
+        self._window.title("Mini Monitor 설정")
         self._window.configure(background=BG)
         self._window.geometry("960x640")
         self._window.minsize(920, 600)
@@ -1057,7 +1091,7 @@ class SetupWindow:
         self._header = header
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="AI MINI MONITOR", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Mini Monitor", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="USB 디스플레이 설정 및 실시간 상태", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
         run_box = ttk.Frame(header, style="App.TFrame")
         run_box.grid(row=0, column=1, rowspan=2, sticky="e")
@@ -1113,7 +1147,9 @@ class SetupWindow:
             add="+",
         )
         self._build_device_card(self._left_scroll_content)
+        self._build_codex_account_card(self._left_scroll_content)
         self._build_usage_card(self._left_scroll_content)
+        self._build_update_banner(self._left_scroll_content)
         self._bind_left_viewport_interactions(self._left_scroll_content)
         self._left_canvas.bind(
             "<MouseWheel>",
@@ -1285,24 +1321,91 @@ class SetupWindow:
             pady=(12, 0),
         )
 
-    def _build_usage_card(self, parent: ttk.Frame) -> None:
+    def _build_codex_account_card(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
         card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         card.columnconfigure(0, weight=1)
-        ttk.Label(card, text="2. AI 사용량", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(card, text="로그인 대신 필요한 정보만 안전하게 읽습니다.", style="CardText.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
+        ttk.Label(card, text="Codex 계정", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        self._codex_identity = ttk.Label(card, text="연결된 계정 없음", style="Status.TLabel", wraplength=310)
+        self._codex_identity.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self._codex_limits = ttk.Label(card, text="한도 정보 없음", style="CardText.TLabel", wraplength=310)
+        self._codex_limits.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._codex_feedback = ttk.Label(card, text=" ", style="CardText.TLabel", wraplength=310)
+        self._codex_feedback.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        actions = ttk.Frame(card, style="Card.TFrame")
+        actions.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        for column in range(2):
+            actions.columnconfigure(column, weight=1)
+        self._codex_login_button = ttk.Button(actions, text="ChatGPT로 로그인", style="Primary.TButton", command=lambda: self._account_action(self._on_codex_login, "로그인을 시작하지 못했습니다"))
+        self._codex_login_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._codex_cancel_button = ttk.Button(actions, text="로그인 취소", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_cancel, "로그인을 취소하지 못했습니다"))
+        self._codex_cancel_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._codex_refresh_button = ttk.Button(actions, text="새로고침", style="Secondary.TButton", command=self._refresh_codex_account)
+        self._codex_refresh_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(7, 0))
+        self._codex_disconnect_button = ttk.Button(actions, text="연결 해제", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_disconnect, "연결을 해제하지 못했습니다"))
+        self._codex_disconnect_button.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(7, 0))
+        self._codex_logout_button = ttk.Button(actions, text="로그아웃", style="Secondary.TButton", command=self._confirm_codex_logout)
+        self._codex_logout_button.grid(row=2, column=1, sticky="ew", padx=(4, 0), pady=(7, 0))
+        self._codex_cli_button = ttk.Button(actions, text="설치된 CLI 찾기", style="Secondary.TButton", command=self._select_codex_cli)
+        self._codex_cli_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(7, 0))
+        self._codex_guide_button = ttk.Button(actions, text="Codex CLI 설치 안내", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_install_guide, "설치 안내를 열지 못했습니다"))
+        self._codex_guide_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self._codex_cancel_button.state(["disabled"])
+        self._codex_logout_button.state(["disabled"])
+        self._codex_disconnect_button.state(["disabled"])
+        if self._on_codex_login is None:
+            self._codex_login_button.state(["disabled"])
+        if self._on_codex_cli_selected is None:
+            self._codex_cli_button.state(["disabled"])
+        if self._on_codex_install_guide is None:
+            self._codex_guide_button.state(["disabled"])
+
+    def _build_update_banner(self, parent: ttk.Frame) -> None:
+        banner = ttk.Frame(parent, style="Card.TFrame", padding=(14, 8))
+        self._update_banner = banner
+        banner.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        banner.grid_propagate(False)
+        banner.configure(height=84)
+        banner.columnconfigure(0, weight=1)
+        ttk.Label(banner, text="업데이트", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        self._update_message = ttk.Label(banner, text="최신 버전 확인 전", style="CardText.TLabel", wraplength=170)
+        self._update_message.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self._update_check_button = ttk.Button(banner, text="업데이트 확인", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_check, "업데이트를 확인하지 못했습니다"))
+        self._update_check_button.grid(row=0, column=1, rowspan=2, padx=(8, 0))
+        self._update_apply_button = ttk.Button(banner, text="업데이트 후 다시 시작", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_apply, "업데이트를 준비하지 못했습니다"))
+        self._update_apply_button.grid(row=0, column=2, rowspan=2, padx=(8, 0))
+        self._update_dismiss_button = ttk.Button(banner, text="나중에", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_dismiss, "알림을 닫지 못했습니다"))
+        self._update_dismiss_button.grid(row=2, column=2, sticky="e")
+        self._update_dismiss_button.state(["disabled"])
+        self._update_release_button = ttk.Button(banner, text="릴리스 보기", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_open_release, "릴리스를 열지 못했습니다"))
+        self._update_release_button.grid(row=2, column=1, sticky="e")
+        self._update_release_button.state(["disabled"])
+        self._update_apply_button.state(["disabled"])
+        if self._on_update_check is None:
+            self._update_check_button.state(["disabled"])
+        banner.update_idletasks()
+        _x, _y, _width, content_height = banner.grid_bbox(0, 0, 2, 2)
+        banner.configure(height=max(104, content_height + 16))
+
+    def _build_usage_card(self, parent: ttk.Frame) -> None:
+        card = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        card.columnconfigure(0, weight=1)
+        ttk.Label(card, text="고급 · 다른 데이터 원본", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(card, text="아래 항목은 ChatGPT 구독 한도와 별개입니다.", style="CardText.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
 
         choices = (
-            ("Codex 로컬 한도 · 추천", AIProviderKind.CODEX_LOCAL.value),
+            ("Codex 계정 · 공식 로그인", AIProviderKind.CODEX_ACCOUNT.value),
+            ("Codex 로컬 기록 · 실시간 아님", AIProviderKind.CODEX_LOCAL.value),
             ("OpenAI API 조직 사용량", AIProviderKind.OPENAI_API.value),
             ("ChatGPT/Codex 앱 활동 시간", AIProviderKind.CHATGPT_ACTIVITY.value),
             ("사용 안 함", AIProviderKind.NOT_CONFIGURED.value),
         )
         for index, (label, value) in enumerate(choices):
-            if index < 2:
+            if index < 3:
                 row, column, span = 2 + index, 0, 2
             else:
-                row, column, span = 4, index - 2, 1
+                row, column, span = 5, index - 3, 1
             button = ttk.Radiobutton(
                 card,
                 text=label,
@@ -1314,16 +1417,16 @@ class SetupWindow:
             self._provider_buttons.append(button)
 
         self._provider_detail = ttk.Label(card, text="", style="CardText.TLabel", wraplength=316, justify="left")
-        self._provider_detail.grid(row=5, column=0, columnspan=2, sticky="w", pady=(5, 2))
+        self._provider_detail.grid(row=6, column=0, columnspan=2, sticky="w", pady=(5, 2))
         self._consent = ttk.Checkbutton(
             card,
             text="Codex 한도 숫자만 로컬에서 읽는 데 동의합니다.",
             variable=self._codex_consent,
             style=self._checkbutton_style,
         )
-        self._consent.grid(row=6, column=0, columnspan=2, sticky="w")
+        self._consent.grid(row=7, column=0, columnspan=2, sticky="w")
         self._key_frame = ttk.Frame(card, style="Card.TFrame")
-        self._key_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._key_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._key_frame.columnconfigure(0, weight=1)
         self._openai_options_button = ttk.Button(
             self._key_frame,
@@ -1336,7 +1439,7 @@ class SetupWindow:
         self.set_openai_key_configured(self._openai_key_configured)
 
         usage_bottom = ttk.Frame(card, style="Card.TFrame")
-        usage_bottom.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(9, 0))
+        usage_bottom.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(9, 0))
         usage_bottom.columnconfigure(0, weight=1)
         self._usage_status = ttk.Label(usage_bottom, text="확인 전", style="Status.TLabel")
         self._usage_status.grid(row=0, column=0, sticky="nw")
@@ -1476,6 +1579,7 @@ class SetupWindow:
         if self._closed:
             return
         widget = event.widget
+        self._scroll_left_widget_into_view(widget)
         self._window.after_idle(
             lambda: self._scroll_left_widget_into_view(widget)
         )
@@ -2258,7 +2362,11 @@ class SetupWindow:
             self._admin_key.set("")
             self._preserve_or_restore_openai_options()
             self._hide_openai_options()
-        if provider == AIProviderKind.CODEX_LOCAL.value:
+        if provider == AIProviderKind.CODEX_ACCOUNT.value:
+            self._provider_detail.configure(text="공식 Codex CLI로 격리된 계정을 연결합니다. 로그인과 갱신은 모니터 시작과 별개입니다.")
+            self._consent.grid_remove()
+            self._key_frame.grid_remove()
+        elif provider == AIProviderKind.CODEX_LOCAL.value:
             self._provider_detail.configure(text="이 PC의 Codex 세션 파일에서 5시간·7일 사용률만 추출합니다. 프롬프트와 답변은 수집하거나 전송하지 않습니다.")
             self._consent.grid()
             self._key_frame.grid_remove()
@@ -2296,6 +2404,89 @@ class SetupWindow:
             self._device_detail.configure(text=result.detail or " ")
         else:
             self.complete_device(result)
+
+    def update_codex_account(self, snapshot: CodexAccountSnapshot) -> None:
+        """Apply a non-secret account snapshot on Tk's main thread."""
+
+        require_main_thread()
+        self._ensure_open()
+        state = str(getattr(snapshot, "state", "unavailable"))
+        pending = bool(getattr(snapshot, "login_pending", False))
+        email = getattr(snapshot, "email", None)
+        plan = getattr(snapshot, "plan_type", None)
+        if state in {"ready", "delayed", "no_data"} and email:
+            self._codex_identity.configure(text=f"{email} · {plan or '플랜 미상'}")
+        else:
+            self._codex_identity.configure(text={
+                "login_pending": "ChatGPT 로그인 대기 중",
+                "signed_out": "연결된 계정 없음",
+                "auth_error": "로그인이 필요합니다",
+                "unavailable": "Codex CLI 확인 필요",
+            }.get(state, "한도 정보 없음"))
+        windows = getattr(snapshot, "windows", ())
+        limit_lines = []
+        for window in tuple(windows)[:2]:
+            duration = getattr(window, "duration_mins", 0)
+            label = f"{duration // 10080}주" if duration >= 10080 and duration % 10080 == 0 else f"{duration // 1440}일" if duration >= 1440 and duration % 1440 == 0 else f"{duration // 60}시간" if duration >= 60 and duration % 60 == 0 else f"{duration}분"
+            remaining = getattr(window, "remaining_percent", None)
+            reset = getattr(window, "resets_at", None)
+            reset_text = reset.astimezone().strftime("%m-%d %H:%M") if reset is not None else "초기화 미상"
+            limit_lines.append(f"{label} 남음 {remaining:.0f}% · {reset_text}" if remaining is not None else f"{label} 한도 미상 · {reset_text}")
+        self._codex_limits.configure(text=" / ".join(limit_lines) if limit_lines else "한도 정보 없음")
+        refreshed = getattr(snapshot, "updated_at", None)
+        detail = "지연 · 마지막 확인 " + refreshed.astimezone().strftime("%H:%M") if state == "delayed" and refreshed is not None else getattr(snapshot, "error_detail", None) or " "
+        self._codex_feedback.configure(text=detail[:80])
+        self._codex_login_button.state(["disabled"] if pending or self._on_codex_login is None else ["!disabled"])
+        self._codex_cancel_button.state(["!disabled"] if pending and self._on_codex_cancel is not None else ["disabled"])
+        connected = state in {"ready", "delayed", "no_data"}
+        self._codex_disconnect_button.state(["!disabled"] if connected and self._on_codex_disconnect is not None else ["disabled"])
+        self._codex_logout_button.state(["!disabled"] if connected and self._on_codex_logout is not None else ["disabled"])
+
+    def update_update_status(self, snapshot: UpdateSnapshot) -> None:
+        """Refresh fixed-size update feedback without moving setup controls."""
+
+        require_main_thread()
+        self._ensure_open()
+        state = str(getattr(snapshot, "state", "idle"))
+        message = str(getattr(snapshot, "message", ""))
+        version = getattr(snapshot, "version", None)
+        self._update_message.configure(text=(f"{version} · {message}" if version else message)[:70] or "최신 버전 확인 전")
+        self._update_apply_button.state(["!disabled"] if state in {"available", "ready"} and self._on_update_apply is not None else ["disabled"])
+        self._update_dismiss_button.state(["!disabled"] if state in {"available", "manual_required"} and self._on_update_dismiss is not None else ["disabled"])
+        self._update_release_button.state(["!disabled"] if state == "manual_required" and self._on_update_open_release is not None else ["disabled"])
+
+    def _account_action(self, action: Action | None, fallback: str) -> None:
+        if action is None:
+            return
+        result = self._invoke(action, fallback)
+        self._codex_feedback.configure(text=(result.title + (f" · {result.detail}" if result.detail else ""))[:80])
+
+    def _confirm_codex_logout(self) -> None:
+        if self._on_codex_logout is not None and messagebox.askyesno(
+            "Codex 로그아웃",
+            "Mini Monitor 전용 Codex 계정에서 로그아웃할까요? 기본 Codex 앱 계정은 변경되지 않습니다.",
+            parent=self._window,
+        ):
+            self._account_action(self._on_codex_logout, "로그아웃하지 못했습니다")
+
+    def _refresh_codex_account(self) -> None:
+        selection = SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False)
+        result = self._invoke(lambda: self._on_check_usage(selection), "한도를 확인하지 못했습니다")
+        self._codex_feedback.configure(text=(result.title + (f" · {result.detail}" if result.detail else ""))[:80])
+
+    def _select_codex_cli(self) -> None:
+        if self._on_codex_cli_selected is None:
+            return
+        path = filedialog.askopenfilename(parent=self._window, title="Codex CLI 선택", filetypes=(("실행 파일", "*.exe"),))
+        if path:
+            result = self._invoke(lambda: self._on_codex_cli_selected(Path(path)), "CLI를 확인하지 못했습니다")
+            self._codex_feedback.configure(text=result.title[:80])
+
+    def _update_action(self, action: Action | None, fallback: str) -> None:
+        if action is None:
+            return
+        result = self._invoke(action, fallback)
+        self._update_message.configure(text=result.title[:70])
 
     def _check_usage(self) -> None:
         self._usage_busy = True

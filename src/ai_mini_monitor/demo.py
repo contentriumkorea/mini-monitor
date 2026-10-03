@@ -31,6 +31,9 @@ def demo_snapshot(
         "temperature_warning": (78.0, 84.0, 94.0, 96.0, 71.0, ConnectionStatus.ONLINE, SyncStatus.OK),
         "memory_99": (34.0, 44.0, 62.0, 68.0, 99.0, ConnectionStatus.ONLINE, SyncStatus.OK),
         "ai_delayed": (41.0, 56.0, 64.0, 70.0, 76.0, ConnectionStatus.ONLINE, SyncStatus.DELAYED),
+        "ai_error": (41.0, 56.0, 64.0, 70.0, 76.0, ConnectionStatus.ONLINE, SyncStatus.AUTH_ERROR),
+        "unknown": (41.0, 56.0, 64.0, 70.0, 76.0, ConnectionStatus.DISCONNECTED, SyncStatus.SETUP_REQUIRED),
+        "vram_max": (99.0, 100.0, 89.0, 91.0, 99.0, ConnectionStatus.ONLINE, SyncStatus.OK),
         "reconnecting": (40.0, 49.0, 61.0, 66.0, 73.0, ConnectionStatus.RECONNECTING, SyncStatus.OK),
         "disconnected": (39.0, 48.0, 60.0, 65.0, 72.0, ConnectionStatus.DISCONNECTED, SyncStatus.OK),
     }
@@ -48,15 +51,15 @@ def demo_snapshot(
     else:
         cpu, gpu, cpu_temp, gpu_temp, memory, connection, sync = values.get(state, values["normal"])
         ai = AIData(
-            provider=AIProviderKind.CODEX_LOCAL,
-            title="CODEX LIMITS",
+            provider=AIProviderKind.CODEX_ACCOUNT,
+            title="CODEX",
             status=sync,
-            primary_value="62%",
-            primary_label="5H LEFT",
-            fields=(("7D LEFT", "79%"), ("7D RESET", "3D 8H")),
+            primary_value="--" if state in {"unknown", "ai_error"} else "79%",
+            primary_label="7D LEFT",
+            fields=(("5H LEFT", "62%"),),
             last_sync=captured,
-            budget_ratio=0.38,
-            budget_label="5H USED 38%",
+            budget_ratio=None if state in {"unknown", "ai_error"} else 0.79,
+            budget_label="7D LEFT 79%",
             demo=True,
         )
     total = 31.3
@@ -73,6 +76,9 @@ def demo_snapshot(
         memory_used_gib=Metric(used, "GiB"),
         memory_total_gib=Metric(total, "GiB"),
         memory_available_gib=Metric(total - used, "GiB"),
+        gpu_vram_used_gib=Metric(None if state == "unknown" else 15.9 if state == "vram_max" else 7.5, "GiB"),
+        gpu_vram_total_gib=Metric(None if state == "unknown" else 16.0, "GiB"),
+        gpu_power_w=Metric(None if state == "unknown" else 235.0, "W"),
         cpu_history=_history(60, cpu, min(18.0, max(3.0, cpu / 3.0))),
         gpu_history=_history(60, gpu, min(22.0, max(3.0, gpu / 3.0)), 1.2),
         memory_history=_history(60, memory, 3.5, 0.7),

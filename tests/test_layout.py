@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from itertools import combinations
 
-import pytest
-
 from ai_mini_monitor.rendering.layout import (
     AI,
     CARD_GAP,
@@ -29,11 +27,11 @@ def test_exact_480x320_geometry() -> None:
     assert OUTER_MARGIN == 8
     assert CARD_GAP == 8
     assert CARD_RECTS == {
-        "connection": Rect(8, 8, 464, 22),
-        "cpu": Rect(8, 38, 228, 89),
-        "gpu": Rect(244, 38, 228, 89),
-        "memory": Rect(8, 135, 228, 177),
-        "ai": Rect(244, 135, 228, 177),
+        "connection": Rect(8, 8, 464, 20),
+        "cpu": Rect(8, 36, 228, 134),
+        "gpu": Rect(244, 36, 228, 134),
+        "memory": Rect(8, 178, 228, 134),
+        "ai": Rect(244, 178, 228, 134),
     }
     assert CONNECTION.bottom + CARD_GAP == CPU.y
     assert CPU.right + CARD_GAP == GPU.x
@@ -62,10 +60,8 @@ def test_area_ratios_preserve_the_integer_pixel_realization() -> None:
         "ai": AI.area / CPU.area,
     }
     assert ratios["gpu"] == 1.0
-    assert ratios["memory"] == ratios["ai"] == 177 / 89
-    assert ratios["connection"] == (464 * 22) / (228 * 89)
-    assert ratios["memory"] == pytest.approx(2.0, abs=0.012)
-    assert ratios["connection"] == pytest.approx(0.5, abs=0.004)
+    assert ratios["memory"] == ratios["ai"] == 1.0
+    assert ratios["connection"] == (464 * 20) / (228 * 134)
 
 
 def test_half_open_rectangles_and_clamping_are_stable() -> None:
@@ -77,6 +73,13 @@ def test_half_open_rectangles_and_clamping_are_stable() -> None:
 
 def test_portrait_layout_is_native_size_horizontal_text_geometry() -> None:
     assert PORTRAIT_LAYOUT.size == (320, 480)
+    assert PORTRAIT_LAYOUT.card_rects == {
+        "connection": Rect(8, 8, 304, 20),
+        "cpu": Rect(8, 36, 304, 103),
+        "gpu": Rect(8, 147, 304, 103),
+        "memory": Rect(8, 258, 304, 103),
+        "ai": Rect(8, 369, 304, 103),
+    }
     assert validate_layout(PORTRAIT_LAYOUT) == []
     cards = tuple(PORTRAIT_LAYOUT.card_rects.values())
     for rect in cards:

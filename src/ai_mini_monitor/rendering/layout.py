@@ -79,11 +79,11 @@ class DashboardLayout:
 LANDSCAPE_LAYOUT = DashboardLayout(
     width=SCREEN_WIDTH,
     height=SCREEN_HEIGHT,
-    connection=Rect(8, 8, 464, 22),
-    cpu=Rect(8, 38, 228, 89),
-    gpu=Rect(244, 38, 228, 89),
-    memory=Rect(8, 135, 228, 177),
-    ai=Rect(244, 135, 228, 177),
+    connection=Rect(8, 8, 464, 20),
+    cpu=Rect(8, 36, 228, 134),
+    gpu=Rect(244, 36, 228, 134),
+    memory=Rect(8, 178, 228, 134),
+    ai=Rect(244, 178, 228, 134),
 )
 
 # A genuine portrait dashboard: every card is rendered in a 320x480 logical
@@ -92,11 +92,11 @@ LANDSCAPE_LAYOUT = DashboardLayout(
 PORTRAIT_LAYOUT = DashboardLayout(
     width=PORTRAIT_WIDTH,
     height=PORTRAIT_HEIGHT,
-    connection=Rect(8, 8, 304, 22),
-    cpu=Rect(8, 38, 304, 82),
-    gpu=Rect(8, 128, 304, 82),
-    memory=Rect(8, 218, 304, 123),
-    ai=Rect(8, 349, 304, 123),
+    connection=Rect(8, 8, 304, 20),
+    cpu=Rect(8, 36, 304, 103),
+    gpu=Rect(8, 147, 304, 103),
+    memory=Rect(8, 258, 304, 103),
+    ai=Rect(8, 369, 304, 103),
 )
 
 
@@ -127,14 +127,14 @@ def validate_layout(layout: DashboardLayout = LANDSCAPE_LAYOUT) -> list[str]:
         for other_name, other in rects[index + 1 :]:
             if rect.intersects(other):
                 errors.append(f"{name} overlaps {other_name}")
-    if layout.connection.width != layout.width - 16 or layout.connection.height != 22:
+    if layout.connection.width != layout.width - 16 or layout.connection.height != 20:
         errors.append("connection dimensions changed")
     if layout is LANDSCAPE_LAYOUT:
         expected = {
-            "cpu": (228, 89),
-            "gpu": (228, 89),
-            "memory": (228, 177),
-            "ai": (228, 177),
+            "cpu": (228, 134),
+            "gpu": (228, 134),
+            "memory": (228, 134),
+            "ai": (228, 134),
         }
         for name, dimensions in expected.items():
             rect = layout.card_rects[name]
