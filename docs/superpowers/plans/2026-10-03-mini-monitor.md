@@ -172,7 +172,7 @@ def test_login_without_monitor_start(desktop_harness):
 
 **Files:** Modify `AI-Mini-Monitor.spec`(내부 이름 유지), `scripts/{Build,Run,Diagnose,Render-Previews,Set-OpenAIKey}.ps1`, `scripts/verify_environment.py`, `pyproject.toml`, `P/__init__.py`, `requirements.lock`, `.gitignore`, `README_KO.md`, `TEST_RESULTS.md`, `THIRD_PARTY_*`, `LICENSES/*`, `SOURCE-OFFER.md`, `tests/test_packaging_config.py`; Create `tests/test_release_contract.py`.
 
-**Interfaces:** Release `v0.2.0`, runtime `0.2.0`, folder `dist/Mini-Monitor`; signed assets `update.json`·`update.sig`, timestamped ZIP, SHA256SUMS, corresponding source. `scripts/sign_release.py`의 Task 4 계약을 사용한다.
+**Interfaces:** Release `v0.2.0`, runtime `0.2.0`, folder `dist/Mini-Monitor`; signed assets `update-manifest.json`·`update-manifest.sig`, timestamped ZIP, SHA256SUMS, corresponding source. `scripts/sign_release.py`의 Task 4 계약을 사용한다.
 
 - [ ] **Red:** 배포 계약 테스트를 먼저 작성한다.
 ```python
@@ -187,7 +187,7 @@ def test_release_versions_and_program_names_match(release_inputs):
 - [ ] `dist\Mini-Monitor\Mini-Monitor.exe --no-serial --desktop-smoke 8`의 정상 종료를 확인한다. GPU 실제 수치는 센서 읽기 결과와 비교할 수 있지만 COM 연결은 하지 않는다. 실로그인은 사용자 브라우저 인증 없으면 미검증으로 정확히 기록한다.
 - [ ] 임시 설치 두 버전과 signed fixture release로 다운로드→검증→정상 종료→교체→ACK 및 실패 복구를 검증한다. 이전 설치/사용자 데이터 해시, custom-config 거부, unknown-file 거부, Run opt-in 보존을 확인하고 테스트 stable을 공개하지 않는다.
 - [ ] 공개 허용 목록·secret/PII 검사·라이선스·README 링크·실측 테스트 결과를 점검한다. 현재 runtime manifest에 없는 사용자 파일과 diagnostics/baseline/개인 경로를 제외하고 서명 개인키가 git/ZIP 어느 곳에도 없음을 검사한다.
-- [ ] 정확한 최종 ZIP과 `update.json`/`update.sig`를 생성한다. pinned public key로 최종 메타데이터 서명을 재검증하고 ZIP 전체 해시·파일 manifest를 재검증한다. 서명 키 운영 또는 두 버전 테스트가 실패하면 자동 업데이트 완료를 주장하지 않는다.
+- [ ] 정확한 최종 ZIP과 `update-manifest.json`/`update-manifest.sig`를 생성한다. pinned public key로 최종 메타데이터 서명을 재검증하고 ZIP 전체 해시·파일 manifest를 재검증한다. 서명 키 운영 또는 두 버전 테스트가 실패하면 자동 업데이트 완료를 주장하지 않는다.
 - [ ] 통합 담당이 최종 검토를 반영해 `release: publish Mini Monitor 0.2.0` 커밋·태그를 만들고 승인 저장소에 push한다. GitHub Release는 자산을 올리고 검증할 때까지 draft로 두며 검증 후 stable 공개한다.
 - [ ] 공개 저장소·Release·실제 다운로드 파일을 다시 확인하고 다운로드 SHA256이 로컬 최종 ZIP과 같은지 검사한다. 재현 가능한 소스·라이선스·미서명 Windows 앱 경고·기준 버전의 1회 수동 설치·실계정/실장치 검증 한계를 Release에 명시한다.
 - [ ] 최종 응답은 GitHub/Release 링크·타임스탬프 ZIP 경로·실제 테스트 결과·남은 검증 한계만 간결히 전달한다. 코드/빌드/다운로드만 성공한 상태를 배포 완료로 표현하지 않는다.
