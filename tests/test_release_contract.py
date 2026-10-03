@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
 from ai_mini_monitor import __version__
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,3 +66,31 @@ def test_build_checks_release_contract_before_and_after_freeze() -> None:
 def test_corresponding_source_contains_root_readme() -> None:
     build = (ROOT / "scripts/Build.ps1").read_text(encoding="utf-8")
     assert build.count('"README.md"') == 3
+
+
+def test_license_inventory_files_are_in_public_git_source() -> None:
+    if shutil.which("git") is None:
+        pytest.skip("Git is unavailable; local license hash checks still run")
+    root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    if root.returncode != 0 or Path(root.stdout.strip()).resolve() != ROOT:
+        pytest.skip("source archive has no Git index")
+    tracked = set(subprocess.run(
+        ["git", "ls-files", "--cached"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=True,
+    ).stdout.splitlines())
+    license_manifest = json.loads((ROOT / "LICENSES/MANIFEST.json").read_text(encoding="utf-8"))
+    inventory = json.loads((ROOT / "THIRD_PARTY_COMPONENTS.json").read_text(encoding="utf-8"))
+    required = {row["path"] for row in license_manifest["files"]}
+    required.update(
+        record["path"] for component in inventory["components"] for record in component["files"]
+    )
+    assert required <= tracked, sorted(required - tracked)
+
+
+def test_git_index_audit_skips_when_git_is_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda executable: None)
+    with pytest.raises(pytest.skip.Exception):
+        test_license_inventory_files_are_in_public_git_source()

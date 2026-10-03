@@ -12,7 +12,7 @@ Mini Monitor는 Windows PC의 CPU·GPU·RAM과 Codex 계정 한도를 3.5인치 
 1. [Releases](https://github.com/contentriumkorea/mini-monitor/releases)에서 최신 stable `Mini-Monitor.zip`을 받습니다. `Mini-Monitor` 폴더 전체를 원하는 위치에 압축 해제하세요. EXE만 따로 옮기면 실행되지 않습니다.
 2. `Mini-Monitor.exe`를 실행합니다. 처음에는 설정창만 열리며 직렬 화면에 데이터를 전송하지 않습니다. Windows가 미서명 앱 경고를 표시할 수 있으니, 게시처와 [해시](https://github.com/contentriumkorea/mini-monitor/releases)를 직접 확인한 뒤 실행 여부를 결정하세요. 이 EXE는 Authenticode 코드 서명이 없습니다. 업데이트 메타데이터의 Ed25519 서명은 EXE 코드 서명과 다릅니다.
 3. Codex 한도를 보려면 공식 [Codex CLI 설치 안내](https://learn.chatgpt.com/docs/codex/cli)의 Windows 탭을 따라 CLI를 별도 설치하고, 설정창에서 `Codex 계정 · 공식 로그인`을 고릅니다. `ChatGPT로 로그인`은 웹 브라우저 인증을 엽니다. Mini Monitor는 기본 Codex 홈의 로그인 자료를 복사하지 않고 앱 전용 `codex-home`을 사용합니다. CLI 바이너리나 인증 정보는 이 배포본에 들어 있지 않습니다.
-4. 화면 방향과 밝기를 확인한 다음 지원 USB 장치를 연결하고 `모니터 시작`을 누릅니다. 다른 프로그램이 같은 COM 포트를 사용 중이라면 먼저 해당 프로그램에서 포트를 닫으세요. PC에만 표시하려면 `PC 상태창 켜기`를 사용합니다.
+4. 화면 방향과 밝기를 확인한 다음 지원 USB 장치를 연결하고 `모니터 시작`을 누릅니다. 다른 프로그램이 같은 COM 포트를 사용 중이라면 먼저 해당 프로그램에서 포트를 닫으세요. 같은 화면을 PC에도 표시하려면 `PC 상태창 켜기`를 사용합니다. 실시간 센서 수집은 `모니터 시작` 후 활성화됩니다.
 
 이 프로그램이 화면에 전송하는 장치는 USB VID `1A86`, PID `5722`, 일련번호 `USB35INCHIPSV2`가 모두 일치해야 합니다. 임의의 COM 포트를 지정해도 이 검증을 건너뛰지 않습니다. Windows 10/11 64비트, USB 직렬 드라이버, 센서 수집을 위한 .NET Framework 환경이 필요합니다.
 

@@ -12,6 +12,11 @@ dist/
 !Mini-Monitor.spec
 logs/
 runtime/
+!LICENSES/runtime/
+!LICENSES/runtime/CPython-3.13.3-LICENSE.txt
+!LICENSES/runtime/OpenSSL-3.0.16-LICENSE.txt
+!LICENSES/runtime/Tcl-8.6-license.terms
+!LICENSES/runtime/Tk-8.6-license.terms
 secrets/
 *.key
 *.token
