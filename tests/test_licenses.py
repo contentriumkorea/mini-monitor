@@ -22,6 +22,7 @@ EXPECTED_PYTHON_PACKAGES = {
     "clr_loader": "0.3.1",
     "colorama": "0.4.6",
     "coverage": "7.15.4",
+    "cryptography": "50.0.2",
     "iniconfig": "2.3.0",
     "packaging": "26.3",
     "pefile": "2024.8.26",

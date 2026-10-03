@@ -14,5 +14,5 @@ from verify_environment import expected_versions, verify_environment  # noqa: E4
 
 def test_pinned_environment_versions_and_record_hashes() -> None:
     distributions, files = verify_environment()
-    assert distributions == len(expected_versions()) == 23
+    assert distributions == len(expected_versions()) == 24
     assert files > 500

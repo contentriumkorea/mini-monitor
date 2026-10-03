@@ -23,6 +23,7 @@ design-system/
 .superpowers/
 .worktrees/
 *.pem
+!assets/update-public-key.pem
 *.pfx
 *.p12
 *.dpapi

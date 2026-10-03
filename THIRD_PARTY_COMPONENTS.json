@@ -1,7 +1,7 @@
 {
   "schema_name": "AI Mini Monitor third-party component inventory",
   "schema_version": "1.1",
-  "generated_on": "2026-08-10",
+  "generated_on": "2026-10-04",
   "project": {
     "name": "AI Mini Monitor",
     "version": "0.1.0",
@@ -173,6 +173,25 @@
       ],
       "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
       "source_offer_note": "Source for version 7.15.4 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/cryptography@50.0.2",
+      "name": "cryptography",
+      "version": "50.0.2",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "Apache-2.0 OR BSD-3-Clause",
+      "source_url": "https://github.com/pyca/cryptography",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/cryptography-50.0.2.dist-info/licenses/LICENSE",
+        ".venv/Lib/site-packages/cryptography-50.0.2.dist-info/licenses/LICENSE.APACHE",
+        ".venv/Lib/site-packages/cryptography-50.0.2.dist-info/licenses/LICENSE.BSD"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 50.0.2 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
     },
     {
       "bom_ref": "pkg:pypi/iniconfig@2.3.0",

@@ -32,6 +32,7 @@ project, not whether a package is embedded in every release artifact.
 | clr_loader | 0.3.1 | runtime transitive | MIT | [source](https://github.com/pythonnet/clr-loader) |
 | colorama | 0.4.6 | test transitive on Windows | BSD-3-Clause | [source](https://github.com/tartley/colorama) |
 | coverage | 7.15.4 | test transitive | Apache-2.0 | [source](https://github.com/coveragepy/coveragepy) |
+| cryptography | 50.0.2 | runtime direct | Apache-2.0 OR BSD-3-Clause | [source](https://github.com/pyca/cryptography) |
 | iniconfig | 2.3.0 | test transitive | MIT | [source](https://github.com/pytest-dev/iniconfig) |
 | packaging | 26.3 | build/test transitive | Apache-2.0 OR BSD-2-Clause | [source](https://github.com/pypa/packaging) |
 | pefile | 2024.8.26 | build transitive on Windows | MIT | [source](https://github.com/erocarrera/pefile) |
