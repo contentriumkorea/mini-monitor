@@ -27,8 +27,31 @@ from ..models import AIData, AIProviderKind, SyncStatus
 _MAX_LINE = 1024 * 1024
 _RPC_TIMEOUT = 8.0
 _MAX_RESET = 253_402_300_799
+_STALE_SECONDS = 120
 _AUTH_HOSTS = {"chatgpt.com", "auth.openai.com"}
 _SENSITIVE_ENV = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CHATGPT_ACCESS_TOKEN")
+
+
+class _RpcError(RuntimeError):
+    """Classified server failure without carrying response text or credentials."""
+
+    def __init__(self, *, authentication: bool) -> None:
+        super().__init__("codex_auth_error" if authentication else "codex_rpc_error")
+        self.authentication = authentication
+
+
+def _is_auth_error(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    candidates = (value, value.get("data"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for name in ("code", "status", "statusCode", "httpStatus"):
+            code = candidate.get(name)
+            if type(code) is int and code in (401, 403):
+                return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +284,7 @@ class CodexAccountService:
         self._refresh_seconds = refresh_seconds
         self._lock = threading.RLock()
         self._commands: queue.Queue[tuple[str, int, str | None]] = queue.Queue(maxsize=32)
-        self._incoming: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._incoming: queue.Queue[tuple[Any, dict[str, Any] | None]] = queue.Queue()
         self._events: queue.Queue[CodexAccountEvent] = queue.Queue()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
@@ -270,6 +293,7 @@ class CodexAccountService:
         self._next_id = 1
         self._login_id: str | None = None
         self._early_login: dict[str, bool] = {}
+        self._expected_logout_notice: int | None = None
         self._polling = False
         self._next_poll = float("inf")
         self._backoff = refresh_seconds
@@ -284,7 +308,7 @@ class CodexAccountService:
             value = self._snapshot
         if value.state == "ready" and value.updated_at is not None:
             age = (datetime.now(timezone.utc) - value.updated_at).total_seconds()
-            if age > 2 * self._refresh_seconds:
+            if age > _STALE_SECONDS:
                 return replace(value, state="delayed", ai=_display("delayed", value.windows, value.updated_at, "stale"))
         return value
 
@@ -364,12 +388,14 @@ class CodexAccountService:
         with self._lock:
             if self._stop.is_set():
                 return False
+            login_id = self._login_id if self._snapshot.login_pending else None
             generation = self._snapshot.generation + 1
             self._snapshot = CodexAccountSnapshot(
                 generation, "signed_out", None, None, False, (), None, None,
                 _display("signed_out"),
             )
-        return self._enqueue("logout", generation)
+            self._expected_logout_notice = generation
+        return self._enqueue("logout", generation, login_id)
 
     def set_polling(self, enabled: bool) -> None:
         with self._lock:
@@ -431,12 +457,17 @@ class CodexAccountService:
                 elif operation == "cancel":
                     self._work_cancel(argument)
                 elif operation == "logout":
-                    self._work_logout(generation)
+                    self._work_logout(generation, argument)
             except (OSError, RuntimeError, ValueError, TimeoutError) as error:
                 self._dispose_process()
+                if operation == "logout":
+                    with self._lock:
+                        self._expected_logout_notice = None
                 if operation == "refresh":
                     if isinstance(error, FileNotFoundError):
                         self._publish(generation, "setup_required", error="codex_cli_unavailable")
+                    elif isinstance(error, _RpcError) and error.authentication:
+                        self._publish(generation, "auth_error", error="authentication_required")
                     else:
                         self._failed_refresh(generation, type(error).__name__)
                 elif operation == "login":
@@ -501,10 +532,10 @@ class CodexAccountService:
                 except (json.JSONDecodeError, ValueError):
                     continue
                 if isinstance(message, dict):
-                    self._incoming.put(message)
+                    self._incoming.put((process, message))
         except (OSError, ValueError):
             pass
-        self._incoming.put(None)
+        self._incoming.put((process, None))
 
     def _send(self, message: dict[str, Any]) -> None:
         if self._process is None or self._process.poll() is not None:
@@ -513,6 +544,7 @@ class CodexAccountService:
         self._process.stdin.flush()
 
     def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        process = self._process
         request_id = self._next_id
         self._next_id += 1
         message: dict[str, Any] = {"method": method, "id": request_id}
@@ -525,14 +557,16 @@ class CodexAccountService:
             if remaining <= 0:
                 raise TimeoutError("codex_rpc_timeout")
             try:
-                incoming = self._incoming.get(timeout=min(0.1, remaining))
+                source, incoming = self._incoming.get(timeout=min(0.1, remaining))
             except queue.Empty:
+                continue
+            if source is not process:
                 continue
             if incoming is None:
                 raise RuntimeError("codex_process_exited")
             if incoming.get("id") == request_id:
                 if "error" in incoming:
-                    raise RuntimeError("codex_rpc_error")
+                    raise _RpcError(authentication=_is_auth_error(incoming["error"]))
                 return incoming.get("result")
             if "method" in incoming:
                 self._handle_notification(incoming)
@@ -541,9 +575,11 @@ class CodexAccountService:
     def _drain_incoming(self) -> None:
         while True:
             try:
-                incoming = self._incoming.get_nowait()
+                source, incoming = self._incoming.get_nowait()
             except queue.Empty:
                 return
+            if source is not self._process:
+                continue
             if incoming is None:
                 self._dispose_process()
                 return
@@ -571,6 +607,11 @@ class CodexAccountService:
             auth_mode = params.get("authMode")
             with self._lock:
                 old = self._snapshot
+                expected = self._expected_logout_notice
+                if auth_mode is None and expected is not None:
+                    self._expected_logout_notice = None
+                    if old.generation >= expected:
+                        return
                 if auth_mode != "chatgpt" or not old.login_pending:
                     generation = old.generation + 1
                     state = "unavailable" if auth_mode == "chatgpt" else "signed_out"
@@ -671,9 +712,19 @@ class CodexAccountService:
         if login_id and self._process is not None:
             self._rpc("account/login/cancel", {"loginId": login_id})
 
-    def _work_logout(self, generation: int) -> None:
+    def _work_logout(self, generation: int, login_id: str | None) -> None:
+        if login_id and self._process is not None:
+            try:
+                self._rpc("account/login/cancel", {"loginId": login_id})
+            except (RuntimeError, TimeoutError):
+                # Killing only our isolated child also tears down its OAuth
+                # callback before a fresh process performs account/logout.
+                self._dispose_process()
         self._ensure_process()
         self._rpc("account/logout")
+        self._dispose_process()
+        with self._lock:
+            self._expected_logout_notice = None
         self._publish(generation, "signed_out")
 
     def _dispose_process(self) -> None:

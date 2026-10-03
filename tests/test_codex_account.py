@@ -8,6 +8,8 @@ import queue
 import shutil
 import threading
 import time
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -470,6 +472,204 @@ def test_api_key_account_is_not_shown_as_chatgpt_quota(monkeypatch, tmp_path: Pa
         _eventually(lambda: service.snapshot().state == "auth_error")
         assert service.snapshot().windows == ()
         assert not any(m["method"] == "account/rateLimits/read" for m in process.sent)
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("notification_first", [False, True])
+def test_old_logout_notification_does_not_cancel_new_login(monkeypatch, tmp_path: Path, notification_first: bool) -> None:
+    """Catches an old logout's authMode:null invalidating a newly accepted login."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class LogoutNotifies(_FakeProcess):
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/logout":
+                notice = {"method": "account/updated", "params": {"authMode": None, "planType": None}}
+                reply = {"id": message["id"], "result": {}}
+                for item in ((notice, reply) if notification_first else (reply, notice)):
+                    self.emit(item)
+                return
+            super().respond(message)
+
+    process = LogoutNotifies()
+    next_process = _FakeProcess()
+    launches = iter((process, next_process))
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: next(launches))
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.logout()
+        assert service.begin_login()
+        _eventually(lambda: any(e.kind == "auth_url" for e in service.drain_events()))
+        assert any(m["method"] == "account/login/start" for m in next_process.sent)
+        assert service.snapshot().login_pending
+    finally:
+        service.close()
+
+
+def test_delayed_old_logout_notification_cannot_cancel_new_login(monkeypatch, tmp_path: Path) -> None:
+    """Catches relying on a short timer rather than the logout operation's identity."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class DelayedLogoutNotice(_FakeProcess):
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/logout":
+                self.emit({"id": message["id"], "result": {}})
+                return
+            super().respond(message)
+
+    process = DelayedLogoutNotice()
+    next_process = _FakeProcess()
+    launches = iter((process, next_process))
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: next(launches))
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.logout()
+        assert service.begin_login()
+        _eventually(lambda: any(e.kind == "auth_url" for e in service.drain_events()))
+        assert any(m["method"] == "account/login/start" for m in next_process.sent)
+        service._incoming.put((process, {"method": "account/updated", "params": {"authMode": None}}))
+        time.sleep(0.1)
+        assert service.snapshot().login_pending
+    finally:
+        service.close()
+
+
+def test_logout_cancels_pending_oauth_before_account_logout(monkeypatch, tmp_path: Path) -> None:
+    """Catches a browser callback completing after local state alone was cleared."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.begin_login()
+        _eventually(lambda: any(e.kind == "auth_url" for e in service.drain_events()))
+        assert service.logout()
+        _eventually(lambda: any(m["method"] == "account/logout" for m in process.sent))
+        methods = [m["method"] for m in process.sent]
+        assert methods.index("account/login/cancel") < methods.index("account/logout")
+        process.emit({"method": "account/login/completed", "params": {
+            "loginId": "login-1", "success": True, "error": None,
+        }})
+        assert service.snapshot().state == "signed_out"
+    finally:
+        service.close()
+
+
+def test_logout_during_login_start_cancels_eventual_login_id(monkeypatch, tmp_path: Path) -> None:
+    """Catches an in-flight login reply escaping cancellation on logout."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class DelayedStart(_FakeProcess):
+        held_id: int | None = None
+
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/login/start":
+                self.held_id = message["id"]
+                return
+            super().respond(message)
+
+    process = DelayedStart()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.begin_login()
+        _eventually(lambda: process.held_id is not None)
+        assert service.logout()
+        process.emit({"id": process.held_id, "result": {
+            "type": "chatgpt", "loginId": "login-1", "authUrl": "https://chatgpt.com/auth",
+        }})
+        _eventually(lambda: any(m["method"] == "account/logout" for m in process.sent))
+        methods = [m["method"] for m in process.sent]
+        assert methods.index("account/login/cancel") < methods.index("account/logout")
+        assert not any(event.kind == "auth_url" for event in service.drain_events())
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("failed_method,error", [
+    ("account/read", {"code": 401, "message": "private-token=do-not-show"}),
+    ("account/rateLimits/read", {"code": -32603, "data": {"status": 403}, "message": "private-token=do-not-show"}),
+])
+def test_structured_auth_failure_clears_old_account(monkeypatch, tmp_path: Path, failed_method: str, error: dict) -> None:
+    """Catches retaining old account quota after an authentication rejection."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class AuthRejects(_FakeProcess):
+        reject = False
+
+        def respond(self, message: dict) -> None:
+            if self.reject and message["method"] == failed_method:
+                self.emit({"id": message["id"], "error": error})
+                return
+            super().respond(message)
+
+    process = AuthRejects()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        process.reject = True
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "auth_error")
+        snapshot = service.snapshot()
+        assert snapshot.email is None
+        assert snapshot.windows == ()
+        assert "private-token" not in (snapshot.error_detail or "")
+    finally:
+        service.close()
+
+
+def test_temporary_rpc_failure_retains_same_account_as_delayed(monkeypatch, tmp_path: Path) -> None:
+    """Catches treating a transient server error as account revocation."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class TemporaryFailure(_FakeProcess):
+        fail = False
+
+        def respond(self, message: dict) -> None:
+            if self.fail and message["method"] == "account/rateLimits/read":
+                self.emit({"id": message["id"], "error": {"code": 503, "message": "transient"}})
+                return
+            super().respond(message)
+
+    first = TemporaryFailure()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: first)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        first.fail = True
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "delayed")
+        snapshot = service.snapshot()
+        assert snapshot.email == "test@example.com"
+        assert snapshot.ai.primary_value == "79%"
+    finally:
+        service.close()
+
+
+def test_ready_snapshot_is_stale_after_120_seconds_even_with_long_poll(tmp_path: Path) -> None:
+    """Catches treating a 130-second-old quota as live with a 300-second poll setting."""
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow
+
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home", refresh_seconds=300)
+    old_time = datetime.now(timezone.utc) - timedelta(seconds=130)
+    with service._lock:
+        service._snapshot = replace(
+            service._snapshot,
+            state="ready", email="test@example.com", updated_at=old_time,
+            windows=(CodexLimitWindow(10080, 15, None),),
+        )
+    try:
+        assert service.snapshot().state == "delayed"
     finally:
         service.close()
 
