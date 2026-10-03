@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -155,6 +156,43 @@ def test_stage_valid_archive_prepares_sibling_without_changing_install(tmp_path,
     assert prepared.helper_path.is_file()
     assert prepared.journal_path.is_file()
     assert (root / "Mini-Monitor.exe").read_bytes() == b"old exe"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows system-directory contract")
+def test_update_helper_uses_os_system_powershell_not_environment(tmp_path, monkeypatch) -> None:
+    """Catches an attacker-controlled SystemRoot choosing the update runner."""
+    import ctypes
+    import ai_mini_monitor.updater as updater
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    assert ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer)) > 0
+    system_dir = Path(buffer.value)
+    root = tmp_path / "Mini-Monitor"
+    _old_install(root)
+    archive_data, manifest = _new_archive(tmp_path / "new.zip")
+    monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_data))
+    prepared = stage_update(manifest, install_root=root, config_path=None)
+    fake_root = tmp_path / "fake-windows"
+    fake_shell = fake_root / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    fake_shell.parent.mkdir(parents=True)
+    fake_shell.write_bytes(b"untrusted")
+    (tmp_path / "powershell.exe").write_bytes(b"untrusted")
+    monkeypatch.setenv("SystemRoot", str(fake_root))
+    monkeypatch.setenv("WINDIR", str(fake_root))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PSMODULEPATH", str(fake_root))
+    monkeypatch.chdir(tmp_path)
+    launched = {}
+
+    def popen(command, **kwargs):
+        launched.update(command=command, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(updater.subprocess, "Popen", popen)
+    assert updater.launch_update_helper(prepared, parent_pid=123)
+    assert launched["command"][0] == str(system_dir / "WindowsPowerShell/v1.0/powershell.exe")
+    assert launched["kwargs"]["env"]["PSModulePath"] == str(system_dir / "WindowsPowerShell/v1.0/Modules")
+    assert sum(key.casefold() == "psmodulepath" for key in launched["kwargs"]["env"]) == 1
 
 
 def test_stage_rejects_config_inside_install_tree(tmp_path, monkeypatch) -> None:
@@ -353,6 +391,105 @@ def test_pending_notice_is_cleared_when_latest_is_no_longer_newer(tmp_path) -> N
         _eventually(lambda: service.snapshot().message == "최신 버전")
         _eventually(lambda: json.loads(state_path.read_text(encoding="utf-8"))["pending_version"] is None)
         assert not service.check()
+    finally:
+        service.close()
+
+
+def test_check_and_snapshot_do_not_wait_for_state_file_write(tmp_path, monkeypatch) -> None:
+    """Catches synchronous check persistence and I/O while holding the snapshot lock."""
+    release = {"tag_name": "v0.1.0", "draft": False, "prerelease": False}
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=lambda _url, _limit: json.dumps(release).encode(),
+                            _state_path=tmp_path / "state.json", _clock=lambda: 1000.0)
+    entered = threading.Event()
+    release_write = threading.Event()
+    check_done = threading.Event()
+    snapshot_done = threading.Event()
+    result = []
+    original = service._save_state
+
+    def blocked_write():
+        entered.set()
+        assert release_write.wait(2)
+        original()
+
+    monkeypatch.setattr(service, "_save_state", blocked_write)
+    check_thread = threading.Thread(target=lambda: (result.append(service.check()), check_done.set()))
+    snapshot_thread = threading.Thread(target=lambda: (service.snapshot(), snapshot_done.set()))
+    check_thread.start()
+    try:
+        assert entered.wait(1)
+        snapshot_thread.start()
+        assert check_done.wait(0.3)
+        assert snapshot_done.wait(0.3)
+        assert result == [True]
+    finally:
+        release_write.set()
+        check_thread.join(2)
+        if snapshot_thread.ident is not None:
+            snapshot_thread.join(2)
+        service.close()
+
+
+def test_snapshot_does_not_wait_for_worker_record_write(tmp_path, monkeypatch) -> None:
+    """Catches the worker keeping the UI snapshot lock during record writes."""
+    release = {"tag_name": "v0.2.0", "draft": False, "prerelease": False, "assets": []}
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=lambda _url, _limit: json.dumps(release).encode(),
+                            _state_path=tmp_path / "state.json", _clock=lambda: 1000.0)
+    original = service._save_state
+    entered = threading.Event()
+    release_write = threading.Event()
+    calls = []
+
+    def blocked_second_write():
+        calls.append(1)
+        if len(calls) == 2:
+            entered.set()
+            assert release_write.wait(2)
+        original()
+
+    monkeypatch.setattr(service, "_save_state", blocked_second_write)
+    try:
+        assert service.check()
+        assert entered.wait(1)
+        read_done = threading.Event()
+        reader = threading.Thread(target=lambda: (service.snapshot(), read_done.set()))
+        reader.start()
+        try:
+            assert read_done.wait(0.3)
+        finally:
+            release_write.set()
+            reader.join(2)
+        _eventually(lambda: service.snapshot().state == "manual_required")
+        assert service.mark_notification_delivered("0.2.0")
+    finally:
+        release_write.set()
+        service.close()
+
+
+def test_state_write_error_keeps_memory_cooldown_and_worker_alive(tmp_path, monkeypatch) -> None:
+    """Catches disk errors escaping the UI call or killing future updater work."""
+    release = {"tag_name": "v0.1.0", "draft": False, "prerelease": False}
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=lambda _url, _limit: json.dumps(release).encode(),
+                            _state_path=tmp_path / "state.json", _clock=lambda: 1000.0)
+    original = service._save_state
+    calls = []
+
+    def fail_once():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk unavailable")
+        original()
+
+    monkeypatch.setattr(service, "_save_state", fail_once)
+    try:
+        assert service.check()
+        _eventually(lambda: service.snapshot().state == "error")
+        assert not service.check()
+        assert service.check(force=True)
+        _eventually(lambda: service.snapshot().message == "최신 버전")
     finally:
         service.close()
 

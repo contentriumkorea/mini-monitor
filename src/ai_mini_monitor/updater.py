@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .resources import resource_path, user_data_dir
+from .security.windows_system import pin_powershell_modules, windows_powershell_paths
 
 
 REPO = "contentriumkorea/mini-monitor"
@@ -455,10 +456,10 @@ def launch_update_helper(prepared: PreparedUpdate, *, parent_pid: int) -> bool:
             return False
     except (OSError, ValueError, KeyError, TypeError):
         return False
-    system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    powershell = Path(system_root) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    if not powershell.is_file():
+    powershell_paths = windows_powershell_paths()
+    if powershell_paths is None:
         return False
+    powershell, modules = powershell_paths
     args = [
         str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", str(helper), "-JournalPath", str(journal),
@@ -467,7 +468,7 @@ def launch_update_helper(prepared: PreparedUpdate, *, parent_pid: int) -> bool:
     ]
     try:
         environment = os.environ.copy()
-        environment["PSModulePath"] = str(Path(system_root) / "System32/WindowsPowerShell/v1.0/Modules")
+        pin_powershell_modules(environment, modules)
         subprocess.Popen(args, cwd=stage_dir, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -654,14 +655,16 @@ class UpdateService:
             pass
 
     def _save_state(self) -> None:
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._state_path.with_name(f"{self._state_path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temporary.write_bytes(_canonical({
+        with self._lock:
+            payload = _canonical({
                 "last_check": self._last_check,
                 "delivered_versions": sorted(self._delivered),
                 "pending_version": self._pending_version,
-            }))
+            })
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._state_path.with_name(f"{self._state_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(payload)
             os.replace(temporary, self._state_path)
         finally:
             if temporary.exists():
@@ -677,7 +680,6 @@ class UpdateService:
             self._busy = True
             self._startup_recheck_available = False
             self._last_check = self._clock()
-            self._save_state()
             self._snapshot = UpdateSnapshot("checking", self._snapshot.version,
                                              self._snapshot.release_url, "업데이트 확인 중", None, False)
             self._queue.put("check")
@@ -744,13 +746,13 @@ class UpdateService:
         while command := self._queue.get():
             try:
                 if command == "check":
+                    self._save_state()
                     self._check_once()
                 elif command == "prepare":
                     self._prepare_once()
                 elif command == "persist_delivery":
                     try:
-                        with self._lock:
-                            self._save_state()
+                        self._save_state()
                     except OSError:
                         # Delivery already occurred; a failed write may only
                         # cause a conservative repeat on the next launch.
@@ -812,7 +814,7 @@ class UpdateService:
     def _record_check(self) -> None:
         with self._lock:
             self._last_check = self._clock()
-            self._save_state()
+        self._save_state()
 
     def _prepare_once(self) -> None:
         assert self._manifest is not None and self.install_root is not None

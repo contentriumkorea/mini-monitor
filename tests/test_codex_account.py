@@ -6,11 +6,13 @@ import json
 import os
 import queue
 import shutil
+import subprocess
 import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -317,6 +319,82 @@ def test_installed_official_cli_has_valid_openai_signature() -> None:
     from ai_mini_monitor.ai.codex_account import _signed_by_openai
 
     assert _signed_by_openai(Path(shutil.which("codex.exe")))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows system-directory contract")
+def test_signature_verification_uses_os_system_powershell_not_environment(monkeypatch, tmp_path) -> None:
+    """Catches PATH/CWD/SystemRoot selecting a fake signature verifier."""
+    import ctypes
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    assert ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer)) > 0
+    system_dir = Path(buffer.value)
+    fake_root = tmp_path / "fake-windows"
+    fake_shell = fake_root / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    fake_shell.parent.mkdir(parents=True)
+    fake_shell.write_bytes(b"untrusted")
+    (tmp_path / "powershell.exe").write_bytes(b"untrusted")
+    monkeypatch.setenv("SystemRoot", str(fake_root))
+    monkeypatch.setenv("WINDIR", str(fake_root))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PSMODULEPATH", str(fake_root))
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def run(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(account_module.subprocess, "run", run)
+    assert account_module._signed_by_openai(tmp_path / "codex.exe")
+    assert captured["command"][0] == str(system_dir / "WindowsPowerShell/v1.0/powershell.exe")
+    assert captured["kwargs"]["env"]["PSModulePath"] == str(system_dir / "WindowsPowerShell/v1.0/Modules")
+    assert sum(key.casefold() == "psmodulepath" for key in captured["kwargs"]["env"]) == 1
+    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows system-directory contract")
+@pytest.mark.parametrize("reported, value", [(0, ""), (19, "relative\\System32")])
+def test_signature_verification_fails_closed_without_absolute_os_system_directory(
+    monkeypatch, tmp_path, reported, value,
+) -> None:
+    """Catches fallback to PATH or environment after a failed Win32 resolution."""
+    import ctypes
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    def fake_directory(buffer, _capacity):
+        buffer.value = value
+        return reported
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(
+        kernel32=SimpleNamespace(GetSystemDirectoryW=fake_directory),
+    ))
+    launched = []
+    def run(command, **kwargs):
+        launched.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(account_module.subprocess, "run", run)
+    assert not account_module._signed_by_openai(tmp_path / "codex.exe")
+    assert launched == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows CLI probe contract")
+def test_codex_cli_help_probe_does_not_open_console(monkeypatch, tmp_path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    candidate = tmp_path / "codex.exe"
+    candidate.write_bytes(b"test executable")
+    monkeypatch.setattr(account_module, "_signed_by_openai", lambda _path: True)
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(command=command, kwargs=kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="app-server")
+
+    monkeypatch.setattr(account_module.subprocess, "run", run)
+    assert account_module._resolve_cli(candidate, tmp_path, {}) == candidate
+    assert seen["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
 
 
 def test_legacy_session_provider_is_visibly_labeled_local() -> None:

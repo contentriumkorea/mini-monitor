@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..models import AIData, AIProviderKind, SyncStatus
+from ..security.windows_system import pin_powershell_modules, windows_powershell_paths
 
 
 _MAX_LINE = 1024 * 1024
@@ -207,14 +208,15 @@ def _safe_environment(home: Path) -> dict[str, str]:
 
 
 def _signed_by_openai(path: Path) -> bool:
-    if os.name != "nt":
+    powershell_paths = windows_powershell_paths()
+    if powershell_paths is None:
         return False
+    powershell, modules = powershell_paths
     environment = _safe_environment(path.parent)
     environment["MINI_MONITOR_CODEX_CLI"] = str(path)
-    system_root = environment.get("SystemRoot") or environment.get("WINDIR") or "C:\\Windows"
     # A parent PowerShell 7 PSModulePath can make Windows PowerShell import an
     # incompatible Security module and falsely reject a valid signature.
-    environment["PSModulePath"] = str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "Modules")
+    pin_powershell_modules(environment, modules)
     script = (
         "$s=Get-AuthenticodeSignature -LiteralPath $env:MINI_MONITOR_CODEX_CLI; "
         "if($s.Status -eq 'Valid' -and $s.SignerCertificate -and "
@@ -224,11 +226,12 @@ def _signed_by_openai(path: Path) -> bool:
     )
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=environment,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             timeout=6,
             check=False,
         )
@@ -263,6 +266,7 @@ def _resolve_cli(chosen: Path | None, home: Path, environment: dict[str, str]) -
                 errors="replace",
                 cwd=home,
                 env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 timeout=6,
                 check=False,
             )
