@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-mini-monitor"
+version = "0.1.0"
+description = "Brand-neutral 480x320 and 320x480 Windows system monitor for USB35INCHIPSV2 displays"
+readme = "README_KO.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "AI Mini Monitor contributors" }]
+dependencies = [
+  "Pillow==12.3.0",
+  "psutil==7.2.2",
+  "pyserial==3.5",
+  "pystray==0.19.5",
+  "pythonnet==3.1.0",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller==6.22.0"]
+test = ["pytest==9.1.1", "pytest-cov==7.1.0"]
+
+[project.scripts]
+ai-mini-monitor = "ai_mini_monitor.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]

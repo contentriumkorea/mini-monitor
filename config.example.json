@@ -1,0 +1,36 @@
+{
+  "device": {
+    "auto_detect": true,
+    "manual_port": null,
+    "usb_fps": 5.0,
+    "rotation": "landscape",
+    "brightness": 25
+  },
+  "sensors": {
+    "sample_interval_ms": 500,
+    "cpu_temperature_sensor": null,
+    "gpu_load_sensor": null,
+    "gpu_temperature_sensor": null
+  },
+  "ai": {
+    "provider": "not_configured",
+    "codex_local_consent": false,
+    "usage_refresh_seconds": 60,
+    "cost_refresh_seconds": 600,
+    "daily_budget_usd": null,
+    "monthly_budget_usd": null,
+    "activity_processes": ["ChatGPT.exe", "Codex.exe"]
+  },
+  "overlay": {
+    "enabled": false,
+    "opacity": 0.85,
+    "scale_percent": 100,
+    "x": null,
+    "y": null
+  },
+  "app": {
+    "render_fps": 12.0,
+    "start_with_windows": false,
+    "log_level": "INFO"
+  }
+}

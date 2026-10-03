@@ -1,0 +1,955 @@
+{
+  "schema_name": "AI Mini Monitor third-party component inventory",
+  "schema_version": "1.1",
+  "generated_on": "2026-08-10",
+  "project": {
+    "name": "AI Mini Monitor",
+    "version": "0.1.0",
+    "license": "GPL-3.0-or-later",
+    "combined_distribution_license": "GPL-3.0-or-later",
+    "license_file": {
+      "path": "LICENSE",
+      "size": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    "license_basis": "The rev-A protocol module is a modified derivative of GPL-3.0-or-later upstream source.",
+    "device_vendor_material_included": false
+  },
+  "audit_environment": {
+    "os": "Windows 11",
+    "python_version": "3.13.3",
+    "environment_path": ".venv",
+    "environment_tooling": [
+      {
+        "name": "pip",
+        "version": "26.0.1",
+        "relationship": "environment-tool-only"
+      }
+    ],
+    "declared_but_not_installed": [
+      {
+        "name": "wheel",
+        "version": "0.47.0",
+        "relationship": "isolated-build-requirement",
+        "note": "Declared in pyproject.toml but not installed as a distribution in the audited .venv; excluded from the installed component closure."
+      }
+    ],
+    "integrity_note": "Versions and installed license-file paths were read from importlib.metadata in the audited .venv."
+  },
+  "redistributable_license_bundle": {
+    "path": "LICENSES",
+    "manifest": "LICENSES/MANIFEST.json",
+    "readme": "LICENSES/SOURCE.md",
+    "coverage_note": "The manifest records the exact size and SHA-256 of every packaged license or notice text under LICENSES; SOURCE.md and MANIFEST.json are documentation and intentionally excluded from the manifest's self-inventory."
+  },
+  "exclusion_statement": "No device-vendor executable, library, package, or proprietary source code is included, inventoried, or reused.",
+  "components": [
+    {
+      "bom_ref": "source:github/mathoudebine/turing-smart-screen-python@262a28a3ab615f2047c0bf44afc482cc341c465c",
+      "name": "turing-smart-screen-python rev-A protocol derivative",
+      "version": "262a28a3ab615f2047c0bf44afc482cc341c465c",
+      "kind": "source-derivation",
+      "scope": [
+        "runtime",
+        "source"
+      ],
+      "license": "GPL-3.0-or-later",
+      "source_url": "https://github.com/mathoudebine/turing-smart-screen-python/blob/262a28a3ab615f2047c0bf44afc482cc341c465c/library/lcd/lcd_comm_rev_a.py",
+      "upstream_commit": "262a28a3ab615f2047c0bf44afc482cc341c465c",
+      "files": [
+        {
+          "path": "src/ai_mini_monitor/transport/protocol_rev_a.py",
+          "size": 10778,
+          "sha256": "9eb6fef04cbbf63b2c75b2e5d9d5cc115b710bf36f5324cdc7548ff756429620"
+        },
+        {
+          "path": "third_party/turing-smart-screen-python/LICENSE",
+          "size": 35149,
+          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+        },
+        {
+          "path": "third_party/turing-smart-screen-python/COPYRIGHT",
+          "size": 190,
+          "sha256": "900612068aa3d993b3210162a0e54d65714543be5d478f5190740eec5a4dbe19"
+        },
+        {
+          "path": "third_party/turing-smart-screen-python/AUTHORS",
+          "size": 547,
+          "sha256": "e995380956729b4a5d2155d90e9480fadef23795c47a9a4670bfa619467bdf8d"
+        },
+        {
+          "path": "third_party/turing-smart-screen-python/SOURCE.md",
+          "size": 1834,
+          "sha256": "0ab15c70fcd91af5094eb0ec2dcd62390fccd15387eeaf0a2cea79bafeaa67bc"
+        }
+      ],
+      "file_note": "The local protocol file is modified; the provenance files preserve pinned upstream terms and attribution.",
+      "source_offer_note": "The complete local preferred-form source is this repository. Exact upstream source is available at the pinned commit URL.",
+      "derivation_note": "Reduced to the audited rev-A brightness (safety-capped), screen-on, orientation, and bitmap command surface with strict validation; combined project distribution is GPL-3.0-or-later."
+    },
+    {
+      "bom_ref": "pkg:pypi/altgraph@0.17.5",
+      "name": "altgraph",
+      "version": "0.17.5",
+      "kind": "python-package",
+      "scope": [
+        "build-transitive"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/ronaldoussoren/altgraph",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/altgraph-0.17.5.dist-info/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 0.17.5 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/cffi@2.1.1",
+      "name": "cffi",
+      "version": "2.1.1",
+      "kind": "python-package",
+      "scope": [
+        "runtime-transitive"
+      ],
+      "license": "MIT-0",
+      "source_url": "https://github.com/python-cffi/cffi",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/cffi-2.1.1.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 2.1.1 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/clr-loader@0.3.1",
+      "name": "clr_loader",
+      "version": "0.3.1",
+      "kind": "python-package",
+      "scope": [
+        "runtime-transitive"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pythonnet/clr-loader",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/clr_loader-0.3.1.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 0.3.1 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/colorama@0.4.6",
+      "name": "colorama",
+      "version": "0.4.6",
+      "kind": "python-package",
+      "scope": [
+        "test-transitive",
+        "windows-only"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/tartley/colorama",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/colorama-0.4.6.dist-info/licenses/LICENSE.txt"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 0.4.6 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/coverage@7.15.4",
+      "name": "coverage",
+      "version": "7.15.4",
+      "kind": "python-package",
+      "scope": [
+        "test-transitive"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/coveragepy/coveragepy",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/coverage-7.15.4.dist-info/licenses/LICENSE.txt",
+        ".venv/Lib/site-packages/coverage-7.15.4.dist-info/licenses/NOTICE.txt"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 7.15.4 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/iniconfig@2.3.0",
+      "name": "iniconfig",
+      "version": "2.3.0",
+      "kind": "python-package",
+      "scope": [
+        "test-transitive"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pytest-dev/iniconfig",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/iniconfig-2.3.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 2.3.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/packaging@26.3",
+      "name": "packaging",
+      "version": "26.3",
+      "kind": "python-package",
+      "scope": [
+        "build-transitive",
+        "test-transitive"
+      ],
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "source_url": "https://github.com/pypa/packaging",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE",
+        ".venv/Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+        ".venv/Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE.BSD"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 26.3 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pefile@2024.8.26",
+      "name": "pefile",
+      "version": "2024.8.26",
+      "kind": "python-package",
+      "scope": [
+        "build-transitive",
+        "windows-only"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/erocarrera/pefile",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pefile-2024.8.26.dist-info/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 2024.8.26 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pillow@12.3.0",
+      "name": "Pillow",
+      "version": "12.3.0",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "MIT-CMU",
+      "source_url": "https://github.com/python-pillow/Pillow",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pillow-12.3.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 12.3.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pluggy@1.6.0",
+      "name": "pluggy",
+      "version": "1.6.0",
+      "kind": "python-package",
+      "scope": [
+        "test-transitive"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pytest-dev/pluggy",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pluggy-1.6.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 1.6.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/psutil@7.2.2",
+      "name": "psutil",
+      "version": "7.2.2",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/giampaolo/psutil",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/psutil-7.2.2.dist-info/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 7.2.2 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pycparser@3.0",
+      "name": "pycparser",
+      "version": "3.0",
+      "kind": "python-package",
+      "scope": [
+        "runtime-transitive"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/eliben/pycparser",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pycparser-3.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 3.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pygments@2.20.0",
+      "name": "Pygments",
+      "version": "2.20.0",
+      "kind": "python-package",
+      "scope": [
+        "test-transitive"
+      ],
+      "license": "BSD-2-Clause",
+      "source_url": "https://github.com/pygments/pygments",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pygments-2.20.0.dist-info/licenses/AUTHORS",
+        ".venv/Lib/site-packages/pygments-2.20.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 2.20.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pyinstaller@6.22.0",
+      "name": "pyinstaller",
+      "version": "6.22.0",
+      "kind": "python-package",
+      "scope": [
+        "build-direct"
+      ],
+      "license": "(GPL-2.0-or-later WITH Bootloader-exception) AND Apache-2.0 AND (GPL-2.0-or-later OR MIT)",
+      "source_url": "https://github.com/pyinstaller/pyinstaller",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pyinstaller-6.22.0.dist-info/licenses/COPYING.txt"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 6.22.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files. The bootloader exception permits linking or embedding the compiled bootloader; runtime hooks are Apache-2.0 and the isolated module is dual-licensed."
+    },
+    {
+      "bom_ref": "pkg:pypi/pyinstaller-hooks-contrib@2026.6",
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.6",
+      "kind": "python-package",
+      "scope": [
+        "build-transitive"
+      ],
+      "license": "GPL-2.0-or-later AND Apache-2.0",
+      "source_url": "https://github.com/pyinstaller/pyinstaller-hooks-contrib",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pyinstaller_hooks_contrib-2026.6.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 2026.6 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files. Standard hooks are GPL-2.0-or-later; runtime hooks are Apache-2.0."
+    },
+    {
+      "bom_ref": "pkg:pypi/pyserial@3.5",
+      "name": "pyserial",
+      "version": "3.5",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/pyserial/pyserial",
+      "files": [],
+      "installed_license_files": [],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 3.5 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files. The installed wheel has no standalone license file; its metadata reports BSD and the source repository carries the terms."
+    },
+    {
+      "bom_ref": "pkg:pypi/pystray@0.19.5",
+      "name": "pystray",
+      "version": "0.19.5",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "LGPL-3.0-or-later",
+      "source_url": "https://github.com/moses-palmer/pystray/tree/1907f8681d6d421517c63d94f425f9cdd74d0034",
+      "upstream_tag": "v0.19.5",
+      "upstream_tag_object": "c587fbe535610c177d49b585264762fa06abddca",
+      "upstream_commit": "1907f8681d6d421517c63d94f425f9cdd74d0034",
+      "files": [
+        {
+          "path": "third_party/source/pystray-v0.19.5-1907f868-source.zip",
+          "size": 68171,
+          "sha256": "4751562ba90301e054c87606079c1599301d84e7d1e4074b12af4f54a80a4768"
+        }
+      ],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pystray-0.19.5.dist-info/COPYING",
+        ".venv/Lib/site-packages/pystray-0.19.5.dist-info/COPYING.LGPL"
+      ],
+      "file_note": "Installed in the audited .venv; the unmodified complete source archive for official tag v0.19.5 at the recorded commit is bundled separately and is never executed at runtime.",
+      "source_offer_note": "The bundled archive, LGPL texts, complete application source, and build scripts preserve access to pystray's corresponding source and the practical ability to replace it with a modified build and re-freeze the application."
+    },
+    {
+      "bom_ref": "pkg:pypi/pytest@9.1.1",
+      "name": "pytest",
+      "version": "9.1.1",
+      "kind": "python-package",
+      "scope": [
+        "test-direct"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pytest-dev/pytest",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pytest-9.1.1.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 9.1.1 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pytest-cov@7.1.0",
+      "name": "pytest-cov",
+      "version": "7.1.0",
+      "kind": "python-package",
+      "scope": [
+        "test-direct"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pytest-dev/pytest-cov",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pytest_cov-7.1.0.dist-info/licenses/AUTHORS.rst",
+        ".venv/Lib/site-packages/pytest_cov-7.1.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 7.1.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pythonnet@3.1.0",
+      "name": "pythonnet",
+      "version": "3.1.0",
+      "kind": "python-package",
+      "scope": [
+        "runtime-direct"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pythonnet/pythonnet",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pythonnet-3.1.0.dist-info/licenses/AUTHORS.md",
+        ".venv/Lib/site-packages/pythonnet-3.1.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 3.1.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/pywin32-ctypes@0.2.3",
+      "name": "pywin32-ctypes",
+      "version": "0.2.3",
+      "kind": "python-package",
+      "scope": [
+        "build-transitive",
+        "windows-only"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/enthought/pywin32-ctypes",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/pywin32_ctypes-0.2.3.dist-info/LICENSE.txt"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 0.2.3 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/setuptools@84.0.0",
+      "name": "setuptools",
+      "version": "84.0.0",
+      "kind": "python-package",
+      "scope": [
+        "build-direct"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/pypa/setuptools",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/setuptools-84.0.0.dist-info/licenses/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 84.0.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:pypi/six@1.17.0",
+      "name": "six",
+      "version": "1.17.0",
+      "kind": "python-package",
+      "scope": [
+        "runtime-transitive"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/benjaminp/six",
+      "files": [],
+      "installed_license_files": [
+        ".venv/Lib/site-packages/six-1.17.0.dist-info/LICENSE"
+      ],
+      "file_note": "Installed in the audited .venv; package code is not checked into the project source tree.",
+      "source_offer_note": "Source for version 1.17.0 is available from the upstream repository and the PyPI source distribution. If redistributed in a frozen application, include applicable license and notice files."
+    },
+    {
+      "bom_ref": "pkg:generic/cpython@3.13.3?os=windows&arch=x86_64",
+      "name": "CPython Windows runtime",
+      "version": "3.13.3 x64",
+      "kind": "language-runtime",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "Python-2.0 plus bundled third-party notices and Microsoft Distributable Code conditions",
+      "source_url": "https://github.com/python/cpython/tree/6280bb547840b609feedb78887c6491af75548e8",
+      "upstream_tag": "v3.13.3",
+      "upstream_tag_object": "ac3d5eaec2d0822e81cc78c78692fe1b6a0e234c",
+      "upstream_commit": "6280bb547840b609feedb78887c6491af75548e8",
+      "runtime_files_observed": [
+        "_internal/python3.dll",
+        "_internal/python313.dll",
+        "_internal/*.pyd"
+      ],
+      "files": [
+        {
+          "path": "LICENSES/runtime/CPython-3.13.3-LICENSE.txt",
+          "size": 33861,
+          "sha256": "62bec384df47b0328307db41455ff6ea2559e5546b394ac69148561b21703120"
+        }
+      ],
+      "file_note": "The complete license installed with the official CPython 3.13.3 Windows x64 runtime is bundled; it includes the Windows binary's additional conditions and bundled third-party notices.",
+      "source_offer_note": "Preferred CPython source is available at the exact official tag commit recorded above; the bundled Windows-runtime license text governs redistribution of the binary runtime and its bundled materials."
+    },
+    {
+      "bom_ref": "pkg:generic/openssl@3.0.16",
+      "name": "OpenSSL runtime libraries",
+      "version": "3.0.16",
+      "kind": "native-library",
+      "scope": [
+        "runtime-bundled",
+        "cpython-dependency"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/openssl/openssl/tree/fa1e5dfb142bb1c26c3c38a10aafa7a095df52e5",
+      "upstream_tag": "openssl-3.0.16",
+      "upstream_tag_object": "22d88ecb267055a195fe8df11bbdf763f8e7b719",
+      "upstream_commit": "fa1e5dfb142bb1c26c3c38a10aafa7a095df52e5",
+      "runtime_files_observed": [
+        "_internal/libcrypto-3.dll",
+        "_internal/libssl-3.dll"
+      ],
+      "files": [
+        {
+          "path": "LICENSES/runtime/OpenSSL-3.0.16-LICENSE.txt",
+          "size": 10175,
+          "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+        }
+      ],
+      "file_note": "The audited onedir contains libcrypto-3.dll and libssl-3.dll reporting OpenSSL 3.0.16; the byte-exact LICENSE.txt from the official tag commit is bundled.",
+      "source_offer_note": "Exact preferred upstream source is available at the recorded official tag commit; OpenSSL 3.0.16 is Apache-2.0 licensed."
+    },
+    {
+      "bom_ref": "pkg:generic/msvc-runtime@14.42.34438",
+      "name": "Microsoft Visual C++ and Universal CRT runtime files",
+      "version": "Visual C++ 14.42.34438; UCRT 10.0.26100.8521",
+      "kind": "native-library",
+      "scope": [
+        "runtime-bundled",
+        "cpython-dependency"
+      ],
+      "license": "Microsoft Distributable Code conditions included in the official CPython Windows license copy",
+      "source_url": "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist",
+      "runtime_files_observed": [
+        "_internal/VCRUNTIME140.dll",
+        "_internal/VCRUNTIME140_1.dll",
+        "_internal/ucrtbase.dll",
+        "_internal/api-ms-win-core-*.dll",
+        "_internal/api-ms-win-crt-*.dll"
+      ],
+      "files": [
+        {
+          "path": "LICENSES/runtime/CPython-3.13.3-LICENSE.txt",
+          "size": 33861,
+          "sha256": "62bec384df47b0328307db41455ff6ea2559e5546b394ac69148561b21703120"
+        }
+      ],
+      "file_note": "The audited onedir includes the recorded Microsoft runtime files. The official CPython Windows license copy contains the Microsoft Distributable Code redistribution conditions, including notice, trademark, platform, and prohibited-use restrictions.",
+      "source_offer_note": "These are proprietary Microsoft redistributable binaries; no source offer is claimed. Redistribution is subject to the Microsoft Distributable Code conditions preserved in the bundled CPython Windows license copy."
+    },
+    {
+      "bom_ref": "pkg:generic/tcl@8.6.15",
+      "name": "Tcl runtime",
+      "version": "8.6.15",
+      "kind": "language-runtime",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "TCL",
+      "source_url": "https://github.com/tcltk/tcl/tree/1a98213e55128c8a2136379fedfaef0c8e15320b",
+      "upstream_tag": "core-8-6-15",
+      "upstream_commit": "1a98213e55128c8a2136379fedfaef0c8e15320b",
+      "runtime_files_observed": [
+        "_internal/tcl86t.dll",
+        "_internal/_tcl_data/**"
+      ],
+      "files": [
+        {
+          "path": "LICENSES/runtime/Tcl-8.6-license.terms",
+          "size": 2255,
+          "sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"
+        }
+      ],
+      "file_note": "The bundled CPython runtime ships Tcl 8.6.15; this license text is byte-identical to the official core-8-6-15 source tag.",
+      "source_offer_note": "Exact upstream source and license terms are available at the recorded official tag commit."
+    },
+    {
+      "bom_ref": "pkg:generic/tk@8.6.15",
+      "name": "Tk runtime",
+      "version": "8.6.15",
+      "kind": "language-runtime",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "TCL",
+      "source_url": "https://github.com/tcltk/tk/tree/3c4a7176319e29a790ff82c80e3c3ff74f523ffb",
+      "upstream_tag": "core-8-6-15",
+      "upstream_commit": "3c4a7176319e29a790ff82c80e3c3ff74f523ffb",
+      "runtime_files_observed": [
+        "_internal/tk86t.dll",
+        "_internal/_tk_data/**"
+      ],
+      "files": [
+        {
+          "path": "LICENSES/runtime/Tk-8.6-license.terms",
+          "size": 2307,
+          "sha256": "0d1e4405f6273f091732764ed89b57066be63ce64869be6c71ea337dc4f2f9b5"
+        }
+      ],
+      "file_note": "The bundled CPython runtime ships Tk 8.6.15; this is the installed Windows-runtime license copy and its normalized text is identical to the official core-8-6-15 source tag.",
+      "source_offer_note": "Exact upstream source and license terms are available at the recorded official tag commit."
+    },
+    {
+      "bom_ref": "font:inter-variable@4.001",
+      "name": "Inter Variable",
+      "version": "4.001;git-66647c0bb",
+      "kind": "font",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/2d85e20401920891efb7cd6272d6339685df2820/ofl/inter",
+      "upstream_commit": "2d85e20401920891efb7cd6272d6339685df2820",
+      "files": [
+        {
+          "path": "assets/fonts/Inter-Variable.ttf",
+          "size": 876576,
+          "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031"
+        },
+        {
+          "path": "assets/fonts/Inter-OFL.txt",
+          "size": 4377,
+          "sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57"
+        }
+      ],
+      "file_note": "Variable font and complete OFL-1.1 text are bundled.",
+      "source_offer_note": "Exact source is available at the pinned google/fonts commit."
+    },
+    {
+      "bom_ref": "font:jetbrains-mono-variable@2.211",
+      "name": "JetBrains Mono Variable",
+      "version": "2.211",
+      "kind": "font",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "OFL-1.1",
+      "source_url": "https://github.com/google/fonts/tree/2d85e20401920891efb7cd6272d6339685df2820/ofl/jetbrainsmono",
+      "upstream_commit": "2d85e20401920891efb7cd6272d6339685df2820",
+      "files": [
+        {
+          "path": "assets/fonts/JetBrainsMono-Variable.ttf",
+          "size": 187208,
+          "sha256": "48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"
+        },
+        {
+          "path": "assets/fonts/JetBrainsMono-OFL.txt",
+          "size": 4399,
+          "sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d"
+        }
+      ],
+      "file_note": "Variable font and complete OFL-1.1 text are bundled.",
+      "source_offer_note": "Exact source is available at the pinned google/fonts commit."
+    },
+    {
+      "bom_ref": "pkg:github/LibreHardwareMonitor/LibreHardwareMonitor@0.9.6",
+      "name": "LibreHardwareMonitor",
+      "version": "0.9.6",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled"
+      ],
+      "license": "MPL-2.0",
+      "source_url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/3d331e3370efb858411f19511373eff65a218701",
+      "upstream_commit": "3d331e3370efb858411f19511373eff65a218701",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/LibreHardwareMonitorLib.dll",
+          "size": 1203200,
+          "sha256": "6ebc194316536ba61af5be24508ad9fcbb2ecc685e716c12e787c79530f66bf0"
+        },
+        {
+          "path": "third_party/librehardwaremonitor/LibreHardwareMonitorLib.xml",
+          "size": 408117,
+          "sha256": "77aec72ad40a9e646dee5cba7b29e02902b6858a05e7ceca50470da7f004718f"
+        },
+        {
+          "path": "third_party/librehardwaremonitor/LICENSE",
+          "size": 16725,
+          "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+        },
+        {
+          "path": "third_party/librehardwaremonitor/THIRD-PARTY-NOTICES.txt",
+          "size": 25905,
+          "sha256": "a60d5ee62f4d700caff38566f42874d554b8b530437c72804fb28b958cfbda9b"
+        },
+        {
+          "path": "third_party/librehardwaremonitor/SOURCE.md",
+          "size": 851,
+          "sha256": "30924f9e65fd96d06db995abd1a0a963eb662810a2d20fb0e16aab264b22161c"
+        },
+        {
+          "path": "third_party/source/LibreHardwareMonitor-v0.9.6-source.zip",
+          "size": 3921909,
+          "sha256": "28100b87fcd7a9a213c58fabe1174e4f3064975b5ab11799224766993ca1fbfc"
+        }
+      ],
+      "file_note": "Unmodified managed library, XML documentation, terms/notices, provenance, and matching source archive are bundled.",
+      "source_offer_note": "Corresponding source is included at third_party/source/LibreHardwareMonitor-v0.9.6-source.zip."
+    },
+    {
+      "bom_ref": "pkg:github/Blacktempel/BlackSharp@1.0.7",
+      "name": "BlackSharp.Core",
+      "version": "1.0.7",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MPL-2.0",
+      "source_url": "https://github.com/Blacktempel/BlackSharp/tree/c70b735c6cec123ee8a046ac4a0bc6c606f52cf0",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/BlackSharp.Core.dll",
+          "size": 32768,
+          "sha256": "cafb93afcc8d8a367e21f619673d05c06887d8964867fed1371f02ded1cd3e23"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "c70b735c6cec123ee8a046ac4a0bc6c606f52cf0"
+    },
+    {
+      "bom_ref": "pkg:github/Blacktempel/DiskInfoToolkit@1.1.2",
+      "name": "DiskInfoToolkit",
+      "version": "1.1.2",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MPL-2.0",
+      "source_url": "https://github.com/Blacktempel/DiskInfoToolkit/tree/25319eae5781e75bcf141e844ceab2afe94d40ea",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/DiskInfoToolkit.dll",
+          "size": 903680,
+          "sha256": "1acbf51b3c10c51c986cf43021680d34a2e38d9a5ba652bcfa9a1b5f7fc09800"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "25319eae5781e75bcf141e844ceab2afe94d40ea"
+    },
+    {
+      "bom_ref": "pkg:nuget/HidSharp@2.6.4",
+      "name": "HidSharp",
+      "version": "2.6.4",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/SeekHisKingdom/HIDSharp",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/HidSharp.dll",
+          "size": 262792,
+          "sha256": "d86690efde30ea9179f669320f39148853793b743a98b531afeaf30598e22f54"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "package_url": "https://www.nuget.org/packages/HidSharp/2.6.4"
+    },
+    {
+      "bom_ref": "pkg:github/Blacktempel/RAMSPDToolkit@1.4.2",
+      "name": "RAMSPDToolkit-NDD",
+      "version": "1.4.2",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MPL-2.0",
+      "source_url": "https://github.com/Blacktempel/RAMSPDToolkit/tree/3b47b960e0830fef344624ad5e389675d5f0a1ce",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/RAMSPDToolkit-NDD.dll",
+          "size": 233472,
+          "sha256": "b6882354c7c8ec186617e421507743dbfae09c5c1fc24cef76a1d0c0c26651de"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "3b47b960e0830fef344624ad5e389675d5f0a1ce"
+    },
+    {
+      "bom_ref": "pkg:nuget/System.Buffers@4.6.1",
+      "name": "System.Buffers",
+      "version": "4.6.1",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/dotnet/maintenance-packages/tree/6b84308fcb7590726e785167fe20433094e5580f",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/System.Buffers.dll",
+          "size": 23816,
+          "sha256": "2d78d770c9cb997199154ae8c018b9f1d1efbc86729f7264dde6dbad2a12cac3"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "6b84308fcb7590726e785167fe20433094e5580f"
+    },
+    {
+      "bom_ref": "pkg:nuget/System.Memory@4.6.3",
+      "name": "System.Memory",
+      "version": "4.6.3",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/dotnet/maintenance-packages/tree/f62ca0009c81759a669cfd5dd3a4f55fd2896478",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/System.Memory.dll",
+          "size": 145200,
+          "sha256": "d5e8e4866f9cfa66f7765660f84b210198893e55335487afe5ebda342c0e913d"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "f62ca0009c81759a669cfd5dd3a4f55fd2896478"
+    },
+    {
+      "bom_ref": "pkg:nuget/System.Numerics.Vectors@4.6.1",
+      "name": "System.Numerics.Vectors",
+      "version": "4.6.1",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/dotnet/maintenance-packages/tree/6b84308fcb7590726e785167fe20433094e5580f",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/System.Numerics.Vectors.dll",
+          "size": 110344,
+          "sha256": "20c2fa81b8c70d651099d762954f285fd4f942e63b2d7217c145dab8d4b2f4c9"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "6b84308fcb7590726e785167fe20433094e5580f"
+    },
+    {
+      "bom_ref": "pkg:nuget/System.Runtime.CompilerServices.Unsafe@6.1.2",
+      "name": "System.Runtime.CompilerServices.Unsafe",
+      "version": "6.1.2",
+      "kind": "managed-library",
+      "scope": [
+        "runtime-bundled",
+        "librehardwaremonitor-dependency"
+      ],
+      "license": "MIT",
+      "source_url": "https://github.com/dotnet/maintenance-packages/tree/f62ca0009c81759a669cfd5dd3a4f55fd2896478",
+      "files": [
+        {
+          "path": "third_party/librehardwaremonitor/System.Runtime.CompilerServices.Unsafe.dll",
+          "size": 19256,
+          "sha256": "08cbd7278b66f1e68425a82d4b97181a4130d93e3dd91831407aba7212ccdacf"
+        }
+      ],
+      "file_note": "Unmodified managed dependency copied from the LibreHardwareMonitor 0.9.6 release.",
+      "source_offer_note": "Corresponding source for the unmodified library is available from the recorded upstream source URL.",
+      "upstream_commit": "f62ca0009c81759a669cfd5dd3a4f55fd2896478"
+    },
+    {
+      "bom_ref": "source:librehardwaremonitor/Aga.Controls@0.9.6-source-tree",
+      "name": "Aga.Controls",
+      "version": "LibreHardwareMonitor-0.9.6 source snapshot",
+      "kind": "source-archive-component",
+      "scope": [
+        "source-archive-only"
+      ],
+      "license": "BSD-3-Clause",
+      "source_url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/3d331e3370efb858411f19511373eff65a218701/Aga.Controls",
+      "files": [
+        {
+          "path": "third_party/source/LibreHardwareMonitor-v0.9.6-source.zip",
+          "size": 3921909,
+          "sha256": "28100b87fcd7a9a213c58fabe1174e4f3064975b5ab11799224766993ca1fbfc"
+        }
+      ],
+      "file_note": "Present only inside the unmodified upstream source archive, not as an application runtime binary.",
+      "source_offer_note": "Source and BSD notice are included in the source archive and retained upstream notices."
+    },
+    {
+      "bom_ref": "source:librehardwaremonitor/PawnIO.Modules@0.9.6-source-tree",
+      "name": "PawnIO.Modules notice and integration source",
+      "version": "LibreHardwareMonitor-0.9.6 source snapshot",
+      "kind": "source-archive-component",
+      "scope": [
+        "source-archive-only"
+      ],
+      "license": "LGPL-2.1-only",
+      "source_url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/3d331e3370efb858411f19511373eff65a218701/LibreHardwareMonitorLib/PawnIo",
+      "files": [
+        {
+          "path": "third_party/source/LibreHardwareMonitor-v0.9.6-source.zip",
+          "size": 3921909,
+          "sha256": "28100b87fcd7a9a213c58fabe1174e4f3064975b5ab11799224766993ca1fbfc"
+        },
+        {
+          "path": "third_party/librehardwaremonitor/THIRD-PARTY-NOTICES.txt",
+          "size": 25905,
+          "sha256": "a60d5ee62f4d700caff38566f42874d554b8b530437c72804fb28b958cfbda9b"
+        }
+      ],
+      "file_note": "The upstream source snapshot and retained notice are bundled; no standalone installer, driver, or service file is used by the application.",
+      "source_offer_note": "The source archive and retained LGPL-2.1 notice provide the recorded upstream materials."
+    }
+  ]
+}
