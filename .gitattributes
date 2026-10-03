@@ -1,0 +1,2 @@
+# Preserve vendored license/source bytes and reproducible package hashes.
+* -text
