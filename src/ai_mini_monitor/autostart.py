@@ -34,6 +34,7 @@ __all__ = [
     "is_enabled",
     "enable",
     "disable",
+    "migrate_known_legacy",
 ]
 
 DEFAULT_ENABLED: Final[bool] = False
@@ -41,8 +42,10 @@ RUN_KEY: Final[str] = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME: Final[str] = "AI Mini Monitor"
 MINIMIZED_ARGUMENT: Final[str] = "--minimized"
 CONFIG_ARGUMENT: Final[str] = "--config"
-GUI_EXECUTABLE_NAME: Final[str] = "AI-Mini-Monitor.exe"
-CLI_EXECUTABLE_NAME: Final[str] = "AI-Mini-Monitor-CLI.exe"
+GUI_EXECUTABLE_NAME: Final[str] = "Mini-Monitor.exe"
+CLI_EXECUTABLE_NAME: Final[str] = "Mini-Monitor-CLI.exe"
+LEGACY_GUI_EXECUTABLE_NAME: Final[str] = "AI-Mini-Monitor.exe"
+LEGACY_CLI_EXECUTABLE_NAME: Final[str] = "AI-Mini-Monitor-CLI.exe"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +88,12 @@ def resolve_gui_executable(executable: str | Path | None = None) -> Path:
         and program_path.name.casefold() == CLI_EXECUTABLE_NAME.casefold()
     ):
         return program_path.with_name(GUI_EXECUTABLE_NAME)
+    if (
+        executable is None
+        and getattr(sys, "frozen", False)
+        and program_path.name.casefold() == LEGACY_CLI_EXECUTABLE_NAME.casefold()
+    ):
+        return program_path.with_name(LEGACY_GUI_EXECUTABLE_NAME)
     return program_path
 
 
@@ -278,6 +287,35 @@ def disable(*, _registry: Any = winreg) -> bool:
                 return False
     except FileNotFoundError:
         return False
+    return True
+
+
+def migrate_known_legacy(
+    expected_command: str,
+    *,
+    config_path: str | Path | None = None,
+    _registry: Any = winreg,
+) -> bool:
+    """Migrate only an opted-in Run value pointing at this app's known old GUI.
+
+    An unrelated or manually customized command is left untouched.
+    """
+
+    if not getattr(sys, "frozen", False):
+        return False
+    current = resolve_gui_executable()
+    if current.name.casefold() != GUI_EXECUTABLE_NAME.casefold():
+        return False
+    if expected_command != build_app_command(config_path):
+        return False
+    candidates = (
+        current.with_name(LEGACY_GUI_EXECUTABLE_NAME),
+        current.parent.parent / "AI-Mini-Monitor" / LEGACY_GUI_EXECUTABLE_NAME,
+    )
+    old_commands = {build_app_command(config_path, executable=path) for path in candidates}
+    if read_command(_registry=_registry) not in old_commands:
+        return False
+    enable(command=expected_command, _registry=_registry)
     return True
 
 

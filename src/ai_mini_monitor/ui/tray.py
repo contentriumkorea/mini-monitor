@@ -77,7 +77,7 @@ class TrayController:
         self,
         command_queue: CommandQueue | None = None,
         *,
-        title: str = "AI Mini Monitor",
+        title: str = "Mini Monitor",
         icon_image: Image.Image | None = None,
     ) -> None:
         self.commands = command_queue or create_command_queue()
@@ -144,6 +144,19 @@ class TrayController:
         with self._lock:
             self._provider = str(provider).strip() or "NOT CONFIGURED"
         self._refresh_menu()
+
+    def notify_update(self, version: str) -> bool:
+        """Show a bounded native notification; the app owns once-per-version gating."""
+
+        icon = self._icon
+        if icon is None or not version:
+            return False
+        try:
+            icon.notify(f"Mini Monitor {version} 업데이트가 있습니다.", "Mini Monitor")
+            return True
+        except Exception:
+            LOGGER.warning("could not show update notification")
+            return False
 
     def emit(self, command: TrayCommand) -> None:
         """Publish a command without invoking preview or serial code."""

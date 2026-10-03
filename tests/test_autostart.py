@@ -160,16 +160,33 @@ def test_frozen_cli_registers_the_sibling_gui_executable(
     monkeypatch.setattr(
         sys,
         "executable",
-        r"C:\Apps\AI-Mini-Monitor\AI-Mini-Monitor-CLI.exe",
+        r"C:\Apps\Mini-Monitor\Mini-Monitor-CLI.exe",
     )
 
     assert autostart.resolve_gui_executable() == Path(
-        r"C:\Apps\AI-Mini-Monitor\AI-Mini-Monitor.exe"
+        r"C:\Apps\Mini-Monitor\Mini-Monitor.exe"
     )
     assert autostart.build_app_command() == quoted_command(
-        r"C:\Apps\AI-Mini-Monitor\AI-Mini-Monitor.exe",
+        r"C:\Apps\Mini-Monitor\Mini-Monitor.exe",
         "--minimized",
     )
+
+
+def test_known_opted_in_legacy_run_command_migrates_but_unknown_is_preserved(monkeypatch) -> None:
+    registry = FakeRegistry()
+    registry.key_exists = True
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Apps\Mini-Monitor\Mini-Monitor.exe")
+    old = quoted_command(r"C:\Apps\AI-Mini-Monitor\AI-Mini-Monitor.exe", "--minimized")
+    expected = quoted_command(r"C:\Apps\Mini-Monitor\Mini-Monitor.exe", "--minimized")
+    registry.values[autostart.VALUE_NAME] = (old, registry.REG_SZ)
+    registry.values["Unrelated App"] = ("unknown", registry.REG_SZ)
+    assert autostart.migrate_known_legacy(expected, _registry=registry)
+    assert registry.values[autostart.VALUE_NAME] == (expected, registry.REG_SZ)
+    assert registry.values["Unrelated App"] == ("unknown", registry.REG_SZ)
+    registry.values[autostart.VALUE_NAME] = ("some unknown command", registry.REG_SZ)
+    assert not autostart.migrate_known_legacy(expected, _registry=registry)
+    assert registry.values[autostart.VALUE_NAME][0] == "some unknown command"
 
 
 def test_frozen_gui_keeps_itself_as_the_startup_executable(

@@ -9,6 +9,32 @@ from ai_mini_monitor import cli
 from ai_mini_monitor.config import AppConfig
 
 
+def test_validated_update_config_used_only_without_explicit_config(monkeypatch, tmp_path) -> None:
+    inherited = tmp_path / "validated.json"
+    explicit = tmp_path / "explicit.json"
+    seen = []
+    monkeypatch.setattr(cli, "resolve_update_config", lambda: inherited)
+    monkeypatch.setattr(cli, "load_config", lambda path: seen.append(path) or AppConfig())
+    monkeypatch.setattr(cli, "setup_logging", lambda _level: object())
+    monkeypatch.setattr(cli, "shutdown_logging", lambda _listener: None)
+    monkeypatch.setattr(cli, "run_desktop", lambda _config, **_kwargs: 0)
+    assert cli.main(["--no-serial"]) == 0
+    assert cli.main(["--config", str(explicit), "--no-serial"]) == 0
+    assert seen == [inherited, explicit]
+
+
+@pytest.mark.parametrize("args", [
+    ["--desktop-smoke", "2"],
+    ["--desktop-smoke", "0", "--no-serial"],
+    ["--desktop-smoke", "nan", "--no-serial"],
+    ["--desktop-smoke", "inf", "--no-serial"],
+])
+def test_desktop_smoke_requires_no_serial_and_finite_positive_timeout(monkeypatch, args) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda _path: AppConfig())
+    monkeypatch.setattr(cli, "run_desktop", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("desktop started")))
+    assert cli.main(args) == 2
+
+
 def test_no_serial_is_forwarded_to_the_normal_desktop_path(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

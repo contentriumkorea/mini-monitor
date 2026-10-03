@@ -10,8 +10,34 @@ from PIL import Image, ImageDraw
 
 from ai_mini_monitor.config import AppConfig
 from ai_mini_monitor.ai.codex_usage import CodexUsageSnapshot, CodexUsageStatus
+from ai_mini_monitor.ai.codex_account import CodexAccountSnapshot
 from ai_mini_monitor.controller import MonitorController, MonitorStartError
+
+
+def test_account_provider_reads_injected_snapshot_without_local_scan_or_rpc() -> None:
+    config = AppConfig()
+    config.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
+    expected = CodexAccountSnapshot(1, "signed_out", None, None, False, (), None, None,
+                                    AIData(AIProviderKind.CODEX_ACCOUNT, "CODEX", SyncStatus.AUTH_ERROR, "LOGIN", "CHATGPT"))
+    calls = []
+    controller = MonitorController(
+        config,
+        enable_serial=False,
+        codex_account_snapshot=lambda: (calls.append("snapshot") or expected),
+        codex_provider_factory=lambda: (_ for _ in ()).throw(AssertionError("legacy scan")),
+    )
+    original_update = controller.store.update_ai
+
+    def capture(value):
+        original_update(value)
+        controller._stop.set()
+
+    controller.store.update_ai = capture
+    controller._ai_loop()
+    assert calls == ["snapshot"]
+    assert controller.store.read().ai == expected.ai
 from ai_mini_monitor.models import (
+    AIData,
     AIProviderKind,
     DisplaySnapshot,
     Metric,

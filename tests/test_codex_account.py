@@ -17,6 +17,13 @@ import pytest
 from ai_mini_monitor.ai.codex_account import CodexAccountService
 
 
+def test_structured_http_status_code_auth_failure_is_classified_without_message() -> None:
+    from ai_mini_monitor.ai.codex_account import _is_auth_error
+
+    assert _is_auth_error({"data": {"httpStatusCode": 401, "message": "private token text"}})
+    assert not _is_auth_error({"data": {"httpStatusCode": 429}})
+
+
 class _FakeOutput:
     def __init__(self) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
@@ -149,6 +156,35 @@ def test_fifteen_percent_used_is_eighty_five_remaining_not_named_pool(monkeypatc
         service.refresh()
         _eventually(lambda: service.snapshot().state == "ready")
         assert service.snapshot().ai.primary_value == "85%"
+    finally:
+        service.close()
+
+
+def test_cli_selection_reuses_service_and_revalidates_off_caller_thread(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    chosen = tmp_path / "chosen.exe"
+    chosen.write_bytes(b"test executable stand-in")
+    processes = [_FakeProcess(), _FakeProcess()]
+    resolved = []
+
+    def resolve(path, *_args):
+        resolved.append((path, threading.current_thread()))
+        return chosen if path == chosen else tmp_path / "initial.exe"
+
+    monkeypatch.setattr(account_module, "_resolve_cli", resolve)
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: processes.pop(0))
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        previous_generation = service.snapshot().generation
+        assert service.set_cli_path(chosen)
+        assert service.snapshot().generation == previous_generation + 1
+        assert service.snapshot().windows == ()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert resolved[-1] == (chosen, service._worker)
+        assert not service.set_cli_path(tmp_path / "missing.exe")
     finally:
         service.close()
 

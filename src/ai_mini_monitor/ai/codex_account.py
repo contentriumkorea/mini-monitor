@@ -47,7 +47,7 @@ def _is_auth_error(value: Any) -> bool:
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
-        for name in ("code", "status", "statusCode", "httpStatus"):
+        for name in ("code", "status", "statusCode", "httpStatus", "httpStatusCode"):
             code = candidate.get(name)
             if type(code) is int and code in (401, 403):
                 return True
@@ -384,6 +384,36 @@ class CodexAccountService:
             self._refresh_queued = False
         return False
 
+    def set_cli_path(self, path: Path | None) -> bool:
+        """Queue a CLI switch; signature and app-server validation stay off Tk."""
+
+        if path is not None:
+            try:
+                selected = Path(path).resolve(strict=True)
+            except (OSError, ValueError, TypeError):
+                return False
+            if not selected.is_file() or selected.suffix.lower() != ".exe":
+                return False
+        else:
+            selected = None
+        with self._lock:
+            if self._stop.is_set():
+                return False
+            generation = self._snapshot.generation + 1
+            self._cli_path = selected
+            self._login_id = None
+            self._early_login.clear()
+            self._expected_logout_notice = None
+            self._refresh_queued = False
+            self._snapshot = CodexAccountSnapshot(
+                generation, "setup_required", None, None, False, (), None, None,
+                _display("setup_required"),
+            )
+        if self._enqueue("cli", generation):
+            return True
+        self._publish(generation, "unavailable", error="queue_full")
+        return False
+
     def logout(self) -> bool:
         with self._lock:
             if self._stop.is_set():
@@ -448,9 +478,11 @@ class CodexAccountService:
             if self._stop.is_set():
                 break
             try:
-                if operation == "refresh":
+                if operation in ("refresh", "cli"):
                     with self._lock:
                         self._refresh_queued = False
+                    if operation == "cli":
+                        self._dispose_process()
                     self._work_refresh(generation)
                 elif operation == "login":
                     self._work_login(generation)
@@ -463,7 +495,7 @@ class CodexAccountService:
                 if operation == "logout":
                     with self._lock:
                         self._expected_logout_notice = None
-                if operation == "refresh":
+                if operation in ("refresh", "cli"):
                     if isinstance(error, FileNotFoundError):
                         self._publish(generation, "setup_required", error="codex_cli_unavailable")
                     elif isinstance(error, _RpcError) and error.authentication:

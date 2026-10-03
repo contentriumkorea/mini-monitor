@@ -13,6 +13,7 @@ from typing import Callable
 from PIL import Image
 
 from .ai.activity import ChatGPTActivityProvider
+from .ai.codex_account import CodexAccountSnapshot
 from .ai.codex_usage import (
     CodexUsageProvider,
     CodexUsageSnapshot,
@@ -121,6 +122,7 @@ class MonitorController:
         sensor_collector_factory: Callable[[], SystemSensorCollector] | None = None,
         serial_writer: SerialWriter | None = None,
         codex_provider_factory: Callable[[], CodexUsageProvider] | None = None,
+        codex_account_snapshot: Callable[[], CodexAccountSnapshot] | None = None,
         initial_restore_timeout: float = INITIAL_RESTORE_TIMEOUT_SECONDS,
     ) -> None:
         config.validate()
@@ -171,6 +173,7 @@ class MonitorController:
                 consent_granted=self.config.ai.codex_local_consent,
             )
         )
+        self._codex_account_snapshot = codex_account_snapshot
         self._initial_restore_timeout = restore_timeout
 
         if enable_serial:
@@ -373,6 +376,8 @@ class MonitorController:
             provider_name = self.config.ai.provider
             if provider_name == AIProviderKind.CODEX_LOCAL.value:
                 self._run_codex_provider()
+            elif provider_name == AIProviderKind.CODEX_ACCOUNT.value:
+                self._run_codex_account()
             elif provider_name == AIProviderKind.OPENAI_API.value:
                 self._run_openai_provider()
             elif provider_name == AIProviderKind.CHATGPT_ACTIVITY.value:
@@ -389,6 +394,25 @@ class MonitorController:
                 "AI provider worker stopped unexpectedly (%s)",
                 type(error).__name__,
             )
+
+    def _run_codex_account(self) -> None:
+        """Mirror the app-owned account service; never spawn a second client."""
+
+        snapshot = self._codex_account_snapshot
+        if snapshot is None:
+            self.store.update_ai(AIData(
+                provider=AIProviderKind.CODEX_ACCOUNT,
+                title="CODEX",
+                status=SyncStatus.SETUP_REQUIRED,
+                primary_value="SETUP",
+                primary_label="REQUIRED",
+            ))
+            self._stop.wait()
+            return
+        while not self._stop.is_set():
+            self._ai_wake.clear()
+            self.store.update_ai(snapshot().ai)
+            self._ai_wake.wait(0.5)
 
     def _run_codex_provider(self) -> None:
         if not self.config.ai.codex_local_consent:

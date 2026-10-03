@@ -29,6 +29,7 @@ class FakeIcon:
         self.title = title
         self.menu = menu
         self.stopped = False
+        self.notifications = []
 
     def run(self) -> None:
         return
@@ -38,6 +39,9 @@ class FakeIcon:
 
     def update_menu(self) -> None:
         return
+
+    def notify(self, message, title) -> None:
+        self.notifications.append((message, title))
 
 
 def test_tray_overlay_menu_only_queues_a_toggle_intent(monkeypatch) -> None:
@@ -68,3 +72,14 @@ def test_tray_rejects_non_enum_commands() -> None:
         assert "TrayCommand" in str(error)
     else:
         raise AssertionError("raw strings must not enter the tray queue")
+
+
+def test_tray_update_notification_has_visible_new_brand(monkeypatch) -> None:
+    fake = SimpleNamespace(Menu=FakeMenu, MenuItem=FakeMenuItem, Icon=FakeIcon)
+    monkeypatch.setattr(tray_module, "_load_pystray", lambda: fake)
+    controller = TrayController()
+    controller.start()
+    assert controller.title == "Mini Monitor"
+    assert controller.notify_update("0.2.0")
+    assert controller._icon.notifications == [("Mini Monitor 0.2.0 업데이트가 있습니다.", "Mini Monitor")]
+    controller.stop()

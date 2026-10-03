@@ -14,6 +14,32 @@ from ai_mini_monitor.controller import MonitorStartError
 from ai_mini_monitor.desktop_session import DesktopSession, SerialTaskWorker, SessionState
 
 
+def test_codex_snapshot_callback_is_injected_into_each_controller_without_creating_service() -> None:
+    received = []
+
+    class Controller:
+        def __init__(self, config, *, enable_serial, codex_account_snapshot):
+            received.append(codex_account_snapshot)
+
+        def start(self):
+            pass
+
+        def stop(self, timeout=20.0):
+            return True
+
+    snapshot = lambda: object()
+    session = DesktopSession(
+        enable_serial=False,
+        controller_factory=Controller,
+        codex_account_snapshot=snapshot,
+    )
+    assert session.start(AppConfig()).ok
+    assert session.stop().ok
+    assert session.start(AppConfig()).ok
+    assert session.stop().ok
+    assert received == [snapshot, snapshot]
+
+
 class FakeController:
     instances: list["FakeController"] = []
 

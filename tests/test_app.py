@@ -9,6 +9,8 @@ from PIL import Image
 
 from ai_mini_monitor import app
 from ai_mini_monitor.ai.codex_usage import CodexUsageSnapshot, CodexUsageStatus
+from ai_mini_monitor.ai.codex_account import CodexAccountSnapshot, CodexAccountEvent
+from ai_mini_monitor.updater import UpdateSnapshot
 from ai_mini_monitor.config import AppConfig, load_config
 from ai_mini_monitor.desktop_session import SessionResult, SessionState
 from ai_mini_monitor.models import (
@@ -224,7 +226,7 @@ def test_minimized_not_configured_provider_is_not_silently_recommended() -> None
     )
     assert (
         app._initial_setup_provider(config, minimized=False)
-        == AIProviderKind.CODEX_LOCAL.value
+        == AIProviderKind.CODEX_ACCOUNT.value
     )
 
 
@@ -806,7 +808,7 @@ def test_shutdown_overlay_merge_preserves_latest_worker_settings(tmp_path) -> No
     assert load_config(path) == merged
 
 
-@pytest.mark.parametrize("auto_exit_seconds", [0.0, -1.0])
+@pytest.mark.parametrize("auto_exit_seconds", [0.0, -1.0, float("nan"), float("inf")])
 def test_desktop_smoke_timeout_is_validated_before_mutex(
     monkeypatch,
     auto_exit_seconds: float,
@@ -826,6 +828,12 @@ def test_desktop_smoke_timeout_is_validated_before_mutex(
     assert mutex_calls == 0
 
 
+def test_desktop_smoke_rejects_serial_before_mutex(monkeypatch) -> None:
+    monkeypatch.setattr(app, "acquire_single_instance", lambda *_args: (_ for _ in ()).throw(AssertionError("mutex")))
+    with pytest.raises(ValueError, match="no serial"):
+        app.run_desktop(AppConfig(), enable_serial=True, auto_exit_seconds=1.0)
+
+
 def test_early_service_initialization_failure_releases_mutex(monkeypatch) -> None:
     class Guard:
         released = False
@@ -843,6 +851,23 @@ def test_early_service_initialization_failure_releases_mutex(monkeypatch) -> Non
 
     assert app.run_desktop(AppConfig(), enable_serial=False) == 1
     assert guard.released is True
+
+
+def test_no_serial_desktop_smoke_uses_only_scoped_distinct_mutex(monkeypatch) -> None:
+    names = []
+
+    class Guard:
+        def release(self):
+            pass
+
+    def acquire(name):
+        names.append(name)
+        return Guard()
+
+    monkeypatch.setattr(app, "acquire_single_instance", acquire)
+    monkeypatch.setattr(app, "TrayController", lambda _commands: (_ for _ in ()).throw(RuntimeError("stop before Tk")))
+    assert app.run_desktop(AppConfig(), enable_serial=False, auto_exit_seconds=1.0) == 1
+    assert names == [app.DEFAULT_MUTEX_NAME + "-DesktopSmoke"]
 
 
 def test_read_autostart_state_preserves_custom_config_and_exact_match(
@@ -910,6 +935,274 @@ def test_one_autostart_action_enables_and_disables_with_exact_readback(
     disabled = app._change_autostart(False, expected)
     assert disabled.ok
     assert configured == {}
+
+
+@pytest.mark.parametrize("helper_success", [False, True])
+@pytest.mark.parametrize("manual_refresh", [False, True])
+def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart_service(
+    monkeypatch, tmp_path, helper_success, manual_refresh,
+) -> None:
+    events = []
+    actions = []
+    rendered_ai = []
+    accounts = []
+
+    class Guard:
+        def release(self):
+            events.append("guard_close")
+
+    class Account:
+        def __init__(self, **kwargs):
+            events.append("account_create")
+            accounts.append(self)
+            self.generation = 0
+            self.state = "signed_out"
+
+        def snapshot(self):
+            value = "85%" if self.state == "ready" else "LOGIN"
+            ai = AIData(AIProviderKind.CODEX_ACCOUNT, "CODEX", SyncStatus.DELAYED, value, "7D LEFT")
+            return CodexAccountSnapshot(self.generation, self.state, "user@example.com" if self.state == "ready" else None,
+                                        None, self.state == "login_pending", (), None, None, ai)
+
+        def drain_events(self):
+            return ()
+
+        def begin_login(self):
+            events.append("login")
+            self.generation += 1
+            self.state = "login_pending"
+            return True
+
+        def refresh(self):
+            events.append("refresh")
+            self.state = "ready"
+            return True
+
+        def set_polling(self, enabled):
+            events.append(("polling", enabled))
+
+        def close(self):
+            events.append("account_close")
+
+    class Session:
+        def __init__(self, **kwargs):
+            events.append("session_create")
+            self.enable_serial = kwargs["enable_serial"]
+            self.shutting_down = False
+            self.running = False
+            self.state = SessionState.STOPPED
+            assert kwargs["codex_account_snapshot"] is not None
+
+        def start(self, config, *, prepare=None):
+            events.append("session_start")
+            if prepare:
+                prepare()
+            self.running = True
+            self.state = SessionState.RUNNING
+            return SessionResult(True, self.state)
+
+        def stop(self, timeout=20.0):
+            events.append("session_stop")
+            self.running = False
+            self.state = SessionState.STOPPED
+            return SessionResult(True, self.state)
+
+        def begin_shutdown(self):
+            self.shutting_down = True
+
+        def latest_image(self):
+            return None
+
+        def runtime_values(self):
+            return None
+
+        def suspend_active(self, timeout=2.0):
+            return True
+
+        def resume_active(self):
+            return True
+
+    class Worker:
+        def __init__(self):
+            self.results = []
+
+        def submit(self, kind, callback):
+            events.append(("work", kind))
+            self.results.append(app.WorkResult(kind, callback()))
+            return True
+
+        def poll(self):
+            results, self.results = self.results, []
+            return results
+
+        def begin_shutdown(self):
+            pass
+
+        def close(self, timeout=10.0):
+            return True
+
+    class Window:
+        def __init__(self, setup):
+            self.setup = setup
+            self.scheduled = []
+
+        def after(self, delay, callback):
+            self.scheduled.append((delay, callback))
+
+        def mainloop(self):
+            callbacks = self.setup.callbacks
+            callbacks["on_codex_login"]()
+            if manual_refresh:
+                callbacks["on_check_usage"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
+            assert "session_start" not in events
+            assert not any(item == ("work", "usage") for item in events)
+            callbacks["on_start"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
+            self._poll_once()
+            callbacks["on_stop"]()
+            self._poll_once()
+            if not manual_refresh:
+                assert accounts[0].snapshot().login_pending
+            self.setup.hide()
+            self._poll_once()
+            self._poll_once()
+            self.setup.show()
+            callbacks["on_update_apply"]()
+            self._poll_once()
+            if not helper_success:
+                assert "window_quit" not in events
+                callbacks["on_exit"]()
+
+        def _poll_once(self):
+            callback = next(callback for delay, callback in self.scheduled if delay in (50, 100))
+            self.scheduled.clear()
+            callback()
+
+        def quit(self):
+            events.append("window_quit")
+
+    class Setup:
+        def __init__(self, **kwargs):
+            self.callbacks = kwargs
+            self.window = Window(self)
+            self.visible = False
+            self.closed = False
+            self.images = []
+            self.accounts = []
+
+        def __getattr__(self, name):
+            if name.startswith(("complete_", "set_", "update_", "clear_")):
+                def invoke(*args, **kwargs):
+                    if name == "update_image":
+                        self.images.append(args[0])
+                        events.append("image")
+                return invoke
+            raise AttributeError(name)
+
+        def show(self):
+            self.visible = True
+
+        def hide(self):
+            self.visible = False
+
+        def close(self):
+            self.closed = True
+
+        def selected_provider(self):
+            return AIProviderKind.CODEX_ACCOUNT.value
+
+    class Overlay:
+        visible = False
+        closed = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def hide(self, **_kwargs):
+            pass
+
+        def destroy(self):
+            self.closed = True
+
+    class Tray:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def notify_update(self, version):
+            events.append(("update_notice", version))
+            return True
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    class Power:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def install(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Updater:
+        def __init__(self, **_kwargs):
+            events.append("updater_create")
+            self.state = "available"
+
+        def check(self, **_kwargs):
+            return True
+
+        def snapshot(self):
+            return UpdateSnapshot(self.state, "0.2.0", None, "", object() if self.state == "ready" else None,
+                                  self.state == "available")
+
+        def prepare(self):
+            events.append("update_prepare")
+            self.state = "ready"
+            return True
+
+        def dismiss(self):
+            pass
+
+        def close(self):
+            events.append("updater_close")
+
+    monkeypatch.setattr(app, "acquire_single_instance", lambda: Guard())
+    monkeypatch.setattr(app, "CodexAccountService", Account, raising=False)
+    monkeypatch.setattr(app, "UpdateService", Updater, raising=False)
+    monkeypatch.setattr(app, "DesktopSession", Session)
+    monkeypatch.setattr(app, "SerialTaskWorker", Worker)
+    monkeypatch.setattr(app, "SetupWindow", Setup)
+    monkeypatch.setattr(app, "OverlayWindow", Overlay)
+    monkeypatch.setattr(app, "TrayController", Tray)
+    monkeypatch.setattr(app, "WindowsPowerEventHook", Power)
+    monkeypatch.setattr(app, "_read_autostart_state", lambda _path: ("", False, False, False))
+    monkeypatch.setattr(app, "_persist_latest_overlay_on_shutdown", lambda config, _path: config)
+    class Renderer:
+        def render(self, snapshot):
+            rendered_ai.append(snapshot.ai)
+            return Image.new("RGB", (480, 320))
+
+    monkeypatch.setattr(app, "_renderer_for_rotation", lambda _rotation: Renderer())
+    monkeypatch.setattr(app.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(app, "acknowledge_update_startup", lambda **_kwargs: actions.append("ack") or events.append("ack") or True)
+    monkeypatch.setattr(app, "launch_update_helper", lambda *_args, **_kwargs: events.append("helper_launch") or helper_success)
+    config = AppConfig()
+    config.ai.provider = AIProviderKind.CODEX_LOCAL.value
+    assert app.run_desktop(config, enable_serial=False, config_path=tmp_path / "settings.json") == 0
+    assert events.count("account_create") == 1
+    assert events.count("account_close") == 1
+    assert "login" in events
+    assert ("refresh" in events) is manual_refresh
+    assert ("polling", True) in events and ("polling", False) in events
+    assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+    assert any(ai.provider is AIProviderKind.CODEX_ACCOUNT and ai.primary_value == ("85%" if manual_refresh else "LOGIN") for ai in rendered_ai)
+    assert events.count("helper_launch") == 1
+    assert events.count(("update_notice", "0.2.0")) == 1
+    assert events.count("window_quit") == 1
+    assert actions == ["ack"]
+    assert "image" in events
+    assert events.index("image") < events.index("ack")
 
 
 def test_autostart_action_reports_failed_readback_without_claiming_success(

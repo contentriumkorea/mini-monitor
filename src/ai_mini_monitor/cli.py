@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import logging
+import math
 import sys
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from .preview import PREVIEW_STATES, render_all_previews, render_preview
 from .resources import user_data_dir
 from .security.dpapi import DPAPISecretStore
 from .ui.preview import PreviewWindow
+from .updater import resolve_update_config
 
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ LOGGER = logging.getLogger(__name__)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="AI-Mini-Monitor",
+        prog="Mini Monitor",
         description="480x320 or 320x480 USB35INCHIPSV2 system monitor",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -52,8 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.desktop_smoke is not None and (
+        not args.no_serial or not math.isfinite(args.desktop_smoke)
+        or args.desktop_smoke <= 0
+    ):
+        print("--desktop-smoke requires --no-serial and a positive finite timeout", file=sys.stderr)
+        return 2
+    selected_config = args.config if args.config is not None else resolve_update_config()
     try:
-        config = load_config(args.config)
+        config = load_config(selected_config)
     except Exception as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
@@ -92,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             minimized=args.minimized,
             enable_serial=not args.no_serial,
-            config_path=args.config,
+            config_path=selected_config,
             auto_exit_seconds=args.desktop_smoke,
         )
     except KeyboardInterrupt:
@@ -149,7 +158,7 @@ def _preview(
         return 0
     from PIL import Image
 
-    window = PreviewWindow(title=f"AI Mini Monitor · DEMO · {state}")
+    window = PreviewWindow(title=f"Mini Monitor · DEMO · {state}")
     with Image.open(path) as image:
         window.update_image(image.copy())
     window.run()

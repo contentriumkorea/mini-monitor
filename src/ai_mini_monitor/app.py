@@ -3,17 +3,23 @@ from __future__ import annotations
 import copy
 import ctypes
 import logging
+import math
+import os
 import queue
 import signal
+import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
 
+from . import __version__
 from . import autostart
+from .ai.codex_account import CodexAccountService, CodexAccountSnapshot
 from .ai.codex_usage import CodexUsageProvider, CodexUsageStatus, to_ai_data as codex_to_ai_data
 from .config import (
     AppConfig,
@@ -41,6 +47,7 @@ from .orientation import orientation_spec
 from .power_events import WindowsPowerEventHook
 from .rendering.layout import layout_for_dimensions
 from .rendering.renderer import DashboardRenderer
+from .resources import user_data_dir
 from .security.dpapi import DPAPISecretStore
 from .single_instance import acquire_single_instance
 from .state import not_configured_ai
@@ -53,6 +60,13 @@ from .ui.setup import (
     SetupWindow,
 )
 from .ui.tray import TrayCommand, TrayController, create_command_queue
+from .updater import (
+    UpdateService,
+    acknowledge_update_startup,
+    cleanup_healthy_update_backup,
+    launch_update_helper,
+)
+from .single_instance import DEFAULT_MUTEX_NAME
 
 
 LOGGER = logging.getLogger(__name__)
@@ -88,6 +102,8 @@ def _close_partial_desktop_services(
     tray: TrayController | None,
     session: DesktopSession | None,
     worker: SerialTaskWorker | None,
+    account: CodexAccountService | None = None,
+    updater: UpdateService | None = None,
 ) -> None:
     """Best-effort cleanup for failures before the main runtime ``try``."""
 
@@ -108,6 +124,16 @@ def _close_partial_desktop_services(
             tray.stop()
         except Exception:
             LOGGER.exception("could not close partial tray service")
+    if account is not None:
+        try:
+            account.close()
+        except Exception:
+            LOGGER.exception("could not close partial account service")
+    if updater is not None:
+        try:
+            updater.close()
+        except Exception:
+            LOGGER.exception("could not close partial update service")
 
 
 def run_desktop(
@@ -124,17 +150,25 @@ def run_desktop(
     always-on-top PC status window do not open COM until Monitor Start.
     """
 
-    if auto_exit_seconds is not None and auto_exit_seconds <= 0:
-        raise ValueError("auto_exit_seconds must be positive")
+    if auto_exit_seconds is not None and (
+        not isinstance(auto_exit_seconds, (int, float))
+        or not math.isfinite(auto_exit_seconds)
+        or auto_exit_seconds <= 0
+        or enable_serial
+    ):
+        raise ValueError("auto_exit_seconds requires no serial and a positive finite timeout")
     current_config = copy.deepcopy(config)
     current_config.validate()
 
-    guard = acquire_single_instance()
+    guard = (
+        acquire_single_instance(DEFAULT_MUTEX_NAME + "-DesktopSmoke")
+        if auto_exit_seconds is not None else acquire_single_instance()
+    )
     if guard is None:
         ctypes.windll.user32.MessageBoxW(
             None,
-            "AI Mini Monitor가 이미 알림 영역에서 실행 중입니다.",
-            "AI Mini Monitor",
+            "Mini Monitor가 이미 알림 영역에서 실행 중입니다.",
+            "Mini Monitor",
             0x40,
         )
         return 3
@@ -142,14 +176,26 @@ def run_desktop(
     tray: TrayController | None = None
     session: DesktopSession | None = None
     worker: SerialTaskWorker | None = None
+    account: CodexAccountService | None = None
+    updater: UpdateService | None = None
     try:
         commands = create_command_queue()
         tray = TrayController(commands)
-        session = DesktopSession(enable_serial=enable_serial)
+        account = CodexAccountService(
+            cli_path=Path(current_config.ai.codex_cli_path) if current_config.ai.codex_cli_path else None,
+            home=user_data_dir() / "codex-home",
+            refresh_seconds=current_config.ai.usage_refresh_seconds,
+        )
+        updater = UpdateService(
+            current_version=__version__,
+            install_root=Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None,
+            config_path=config_path,
+        )
+        session = DesktopSession(enable_serial=enable_serial, codex_account_snapshot=account.snapshot)
         worker = SerialTaskWorker()
         secret_store = DPAPISecretStore()
         renderer = _renderer_for_rotation(current_config.device.rotation)
-        preview_ai = _initial_ai(current_config)
+        preview_ai = _initial_ai(current_config, account.snapshot())
         preview_frame = None
         (
             startup_command,
@@ -160,7 +206,7 @@ def run_desktop(
     except Exception:
         LOGGER.exception("desktop services failed during initialization")
         try:
-            _close_partial_desktop_services(tray, session, worker)
+            _close_partial_desktop_services(tray, session, worker, account, updater)
         finally:
             guard.release()
         return 1
@@ -172,6 +218,11 @@ def run_desktop(
     setup: SetupWindow | None = None
     overlay: OverlayWindow | None = None
     power_events: WindowsPowerEventHook | None = None
+    apply_requested = False
+    notified_versions: set[str] = set()
+    last_account_snapshot: CodexAccountSnapshot | None = None
+    last_update_snapshot: object | None = None
+    next_update_check = time.monotonic() + 3600.0
 
     def request_exit() -> None:
         nonlocal exiting
@@ -247,6 +298,13 @@ def run_desktop(
         return submit_brightness(value)
 
     def request_usage(selection: SetupSelection) -> ActionResult:
+        if selection.provider == AIProviderKind.CODEX_ACCOUNT.value:
+            selected = select_account_provider()
+            if not selected.ok:
+                return selected
+            if not account.refresh():
+                return ActionResult(False, "Codex 한도 확인 실패", "계정 서비스를 다시 시작해 주세요.")
+            return ActionResult(True, "Codex 계정 한도 확인 중…", pending=False)
         if "usage" in pending:
             return ActionResult(True, "사용량 확인 중…", pending=True)
         if pending.intersection({"start", "stop"}):
@@ -369,6 +427,103 @@ def run_desktop(
             )
         return result.action
 
+    def select_account_provider() -> ActionResult:
+        nonlocal current_config, preview_ai
+        if exiting:
+            return ActionResult(False, "프로그램 종료 중")
+        if pending.intersection({"start", "brightness"}):
+            return ActionResult(False, "설정 저장 중", "현재 작업이 끝난 뒤 다시 시도해 주세요.")
+        if current_config.ai.provider != AIProviderKind.CODEX_ACCOUNT.value:
+            try:
+                with _CONFIG_WRITE_LOCK:
+                    draft = _latest_persisted_config(current_config, config_path)
+                    draft.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
+                    draft.validate()
+                    save_config(draft, config_path)
+                    current_config = draft
+            except (OSError, ValueError):
+                return ActionResult(False, "계정 방식 저장 실패", "설정 파일을 확인해 주세요.")
+        preview_ai = account.snapshot().ai
+        if setup is not None:
+            setup.set_provider(AIProviderKind.CODEX_ACCOUNT.value)
+        return ActionResult(True, "Codex 계정 선택됨")
+
+    def request_codex_login() -> ActionResult:
+        selected = select_account_provider()
+        if not selected.ok:
+            return selected
+        if not account.begin_login():
+            return ActionResult(False, "로그인을 시작하지 못했습니다", "진행 중인 로그인 또는 종료 상태를 확인해 주세요.")
+        return ActionResult(True, "ChatGPT 로그인 준비 중…")
+
+    def request_codex_cancel() -> ActionResult:
+        return ActionResult(bool(account.cancel_login()), "로그인 취소됨")
+
+    def request_codex_logout() -> ActionResult:
+        return ActionResult(bool(account.logout()), "Mini Monitor 전용 계정 로그아웃 중…")
+
+    def request_codex_disconnect() -> ActionResult:
+        nonlocal current_config, preview_ai
+        if session.running or pending.intersection({"start", "stop"}):
+            return ActionResult(False, "모니터를 먼저 중지하세요", "실행 중인 계정 표시를 자동으로 바꾸지 않습니다.")
+        if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+            try:
+                with _CONFIG_WRITE_LOCK:
+                    draft = _latest_persisted_config(current_config, config_path)
+                    draft.ai.provider = AIProviderKind.NOT_CONFIGURED.value
+                    draft.validate()
+                    save_config(draft, config_path)
+                    current_config = draft
+            except (OSError, ValueError):
+                return ActionResult(False, "연결 해제 저장 실패", "설정 파일을 확인해 주세요.")
+        account.set_polling(False)
+        preview_ai = not_configured_ai()
+        return ActionResult(True, "표시 연결 해제됨", "Mini Monitor 전용 로그인은 유지됩니다.")
+
+    def request_codex_cli_selected(path: Path) -> ActionResult:
+        nonlocal current_config
+        if not account.set_cli_path(path):
+            return ActionResult(False, "CLI 경로 적용 실패", "경로를 다시 선택해 주세요.")
+        try:
+            with _CONFIG_WRITE_LOCK:
+                draft = _latest_persisted_config(current_config, config_path)
+                draft.ai.codex_cli_path = str(path.resolve(strict=True))
+                draft.validate()
+                save_config(draft, config_path)
+                current_config = draft
+        except (OSError, ValueError):
+            return ActionResult(False, "CLI 경로 저장 실패", "다시 선택해 주세요.")
+        return ActionResult(True, "CLI 확인 중…", "서명과 app-server 지원 여부를 확인합니다.")
+
+    def open_codex_install_guide() -> ActionResult:
+        return ActionResult(bool(webbrowser.open("https://learn.chatgpt.com/docs/codex/cli")), "Codex CLI 설치 안내 열기")
+
+    def request_update_check() -> ActionResult:
+        try:
+            accepted = updater.check(force=True)
+        except Exception as error:
+            LOGGER.warning("update check could not start (%s)", type(error).__name__)
+            return ActionResult(False, "업데이트 확인 실패", "나중에 다시 시도해 주세요.")
+        return ActionResult(bool(accepted), "업데이트 확인 중…" if accepted else "이미 확인 중입니다")
+
+    def request_update_apply() -> ActionResult:
+        nonlocal apply_requested
+        snapshot = updater.snapshot()
+        if snapshot.state == "ready" and snapshot.prepared is not None:
+            apply_requested = True
+            return ActionResult(True, "업데이트 적용 준비 완료")
+        if not updater.prepare():
+            return ActionResult(False, "자동 업데이트 불가", "릴리스 페이지에서 수동 설치를 확인해 주세요.")
+        apply_requested = True
+        return ActionResult(True, "업데이트 준비 중…")
+
+    def request_update_dismiss() -> ActionResult:
+        updater.dismiss()
+        return ActionResult(True, "나중에 확인")
+
+    def open_update_release() -> ActionResult:
+        return ActionResult(bool(webbrowser.open("https://github.com/contentriumkorea/mini-monitor/releases")), "릴리스 페이지 열기")
+
     def reset_overlay_position() -> ActionResult:
         nonlocal current_config
         if exiting:
@@ -452,13 +607,8 @@ def run_desktop(
             current_config,
             minimized=minimized,
         )
-        if (
-            not minimized
-            and current_config.ai.provider == AIProviderKind.NOT_CONFIGURED.value
-        ):
-            preview_ai = codex_to_ai_data(
-                CodexUsageProvider(consent_granted=False).refresh()
-            )
+        if current_config.ai.provider == AIProviderKind.NOT_CONFIGURED.value and not minimized:
+            preview_ai = account.snapshot().ai
         setup = SetupWindow(
             provider=initial_provider,
             codex_local_consent=current_config.ai.codex_local_consent,
@@ -487,6 +637,16 @@ def run_desktop(
             overlay_scale_percent=current_config.overlay.scale_percent,
             on_overlay_change=request_overlay,
             on_overlay_reset_position=reset_overlay_position,
+            on_codex_login=request_codex_login,
+            on_codex_cancel=request_codex_cancel,
+            on_codex_logout=request_codex_logout,
+            on_codex_disconnect=request_codex_disconnect,
+            on_codex_cli_selected=request_codex_cli_selected,
+            on_codex_install_guide=open_codex_install_guide,
+            on_update_check=request_update_check,
+            on_update_apply=request_update_apply,
+            on_update_dismiss=request_update_dismiss,
+            on_update_open_release=open_update_release,
         )
         overlay_position = (
             (current_config.overlay.x, current_config.overlay.y)
@@ -496,7 +656,7 @@ def run_desktop(
         )
         overlay = OverlayWindow(
             setup.window,
-            title="AI Mini Monitor · PC 상태창",
+            title="Mini Monitor · PC 상태창",
             frame_size=orientation_spec(current_config.device.rotation).dimensions,
             opacity=current_config.overlay.opacity,
             scale_percent=current_config.overlay.scale_percent,
@@ -528,6 +688,16 @@ def run_desktop(
                 overlay.show(notify=False)
             except Exception as error:
                 recover_overlay_hidden(error)
+        setup.update_codex_account(account.snapshot())
+        setup.update_update_status(updater.snapshot())
+        update_acknowledged = acknowledge_update_startup(current_version=__version__)
+        if not update_acknowledged and getattr(sys, "frozen", False):
+            threading.Thread(
+                target=cleanup_healthy_update_backup,
+                args=(Path(sys.executable).resolve().parent,),
+                name="mini-monitor-update-cleanup",
+                daemon=True,
+            ).start()
     except Exception:
         LOGGER.exception("desktop windows failed during initialization")
         try:
@@ -546,7 +716,7 @@ def run_desktop(
                     setup.close()
                 except (RuntimeError, tk.TclError):
                     pass
-            _close_partial_desktop_services(tray, session, worker)
+            _close_partial_desktop_services(tray, session, worker, account, updater)
         finally:
             guard.release()
         return 1
@@ -613,6 +783,8 @@ def run_desktop(
                 except OSError:
                     LOGGER.warning("could not re-merge desktop overlay settings")
             setup.complete_start(result.value.action, running=session.running)
+            if result.value.action.ok and current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+                account.set_polling(True)
             setup.set_openai_key_configured(secret_store.configured())
         elif result.kind == "stop" and isinstance(result.value, SessionResult):
             action = ActionResult(
@@ -625,6 +797,19 @@ def run_desktop(
                 running=session.running,
                 blocked=result.value.state is SessionState.ERROR,
             )
+            if result.value.ok:
+                account.set_polling(False)
+                if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+                    preview_ai = account.snapshot().ai
+                    preview_frame = renderer.render(DisplaySnapshot(
+                        ai=preview_ai,
+                        connection=ConnectionData(
+                            ConnectionStatus.DISCONNECTED,
+                            detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
+                        ),
+                    ))
+                    setup.update_image(preview_frame)
+                    update_visible_overlay(preview_frame)
         elif result.kind == "brightness" and isinstance(
             result.value,
             BrightnessWorkResult,
@@ -670,7 +855,8 @@ def run_desktop(
                 )
 
     def poll() -> None:
-        nonlocal preview_frame
+        nonlocal preview_frame, preview_ai, last_account_snapshot
+        nonlocal last_update_snapshot, apply_requested, next_update_check
         if exiting:
             return
         try:
@@ -689,6 +875,58 @@ def run_desktop(
 
         for result in worker.poll():
             apply_worker_result(result)
+
+        for event in account.drain_events():
+            if event.kind == "auth_url" and event.auth_url and event.generation == account.snapshot().generation:
+                try:
+                    webbrowser.open(event.auth_url)
+                except (OSError, webbrowser.Error):
+                    LOGGER.warning("could not open Codex authorization browser")
+
+        account_snapshot = account.snapshot()
+        if account_snapshot != last_account_snapshot:
+            last_account_snapshot = account_snapshot
+            setup.update_codex_account(account_snapshot)
+            if not session.running and current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+                preview_ai = account_snapshot.ai
+                preview_frame = renderer.render(DisplaySnapshot(
+                    ai=preview_ai,
+                    connection=ConnectionData(
+                        ConnectionStatus.DISCONNECTED,
+                        detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
+                    ),
+                ))
+                setup.update_image(preview_frame)
+                update_visible_overlay(preview_frame)
+
+        now = time.monotonic()
+        if now >= next_update_check:
+            try:
+                updater.check()
+            except Exception as error:
+                LOGGER.warning("periodic update check failed (%s)", type(error).__name__)
+            next_update_check = now + 3600.0
+        update_snapshot = updater.snapshot()
+        if update_snapshot != last_update_snapshot:
+            last_update_snapshot = update_snapshot
+            setup.update_update_status(update_snapshot)
+        if (
+            update_snapshot.notification_pending and update_snapshot.version
+            and not setup.visible and update_snapshot.version not in notified_versions
+        ):
+            tray.notify_update(update_snapshot.version)
+            notified_versions.add(update_snapshot.version)
+        if apply_requested and update_snapshot.state == "ready" and update_snapshot.prepared is not None:
+            apply_requested = False
+            try:
+                launched = launch_update_helper(update_snapshot.prepared, parent_pid=os.getpid())
+            except Exception as error:
+                LOGGER.warning("update helper could not start (%s)", type(error).__name__)
+                launched = False
+            if launched:
+                request_exit()
+                return
+            LOGGER.warning("update helper launch failed; app remains running")
 
         image = session.latest_image()
         if image is not None:
@@ -721,6 +959,12 @@ def run_desktop(
         signal.signal(signal.SIGINT, lambda _signum, _frame: request_exit())
         power_events.install()
         tray.start()
+        try:
+            updater.check()
+        except Exception as error:
+            LOGGER.warning("startup update check failed (%s)", type(error).__name__)
+        if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+            account.refresh()
         request_device()
         if minimized:
             setup.hide()
@@ -756,6 +1000,14 @@ def run_desktop(
             LOGGER.error("application shutdown did not complete before timeout")
         if not worker.close(timeout=10.0):
             LOGGER.error("desktop worker did not stop before timeout")
+        try:
+            account.close()
+        except Exception as error:
+            LOGGER.error("account service close failed (%s)", type(error).__name__)
+        try:
+            updater.close()
+        except Exception as error:
+            LOGGER.error("update service close failed (%s)", type(error).__name__)
         try:
             # A start/brightness task can finish its atomic save after the Tk
             # loop has stopped consuming results.  Reapply only the newest
@@ -1169,11 +1421,17 @@ def _persist_latest_overlay_on_shutdown(
 def _read_autostart_state(
     config_path: Path | None,
 ) -> tuple[str, bool, bool, bool]:
-    """Read the exact per-user startup state without mutating the registry."""
+    """Read Run state, migrating only a verified opt-in command from this app."""
 
     command = autostart.build_app_command(config_path)
     try:
         state = autostart.read_state(command)
+        if state.configured and not state.enabled:
+            try:
+                if autostart.migrate_known_legacy(command, config_path=config_path):
+                    state = autostart.read_state(command)
+            except (OSError, ValueError):
+                LOGGER.warning("known legacy autostart could not be migrated")
     except OSError:
         return command, False, False, True
     return command, state.enabled, state.configured and not state.enabled, False
@@ -1310,11 +1568,11 @@ def _renderer_for_rotation(rotation: str) -> DashboardRenderer:
 
 
 def _initial_setup_provider(config: AppConfig, *, minimized: bool) -> str:
-    """Recommend local Codex only for an interactive first-run setup."""
+    """Recommend official account limits for interactive first-run setup."""
 
     if minimized or config.ai.provider != AIProviderKind.NOT_CONFIGURED.value:
         return config.ai.provider
-    return AIProviderKind.CODEX_LOCAL.value
+    return AIProviderKind.CODEX_ACCOUNT.value
 
 
 def _start_session(
@@ -1423,7 +1681,15 @@ def _start_failure_action(reason: str | None, port: str | None) -> ActionResult:
     )
 
 
-def _initial_ai(config: AppConfig) -> AIData:
+def _initial_ai(config: AppConfig, account: CodexAccountSnapshot | None = None) -> AIData:
+    if config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
+        return account.ai if account is not None else AIData(
+            provider=AIProviderKind.CODEX_ACCOUNT,
+            title="CODEX",
+            status=SyncStatus.DELAYED,
+            primary_value="--",
+            primary_label="NO LIMIT",
+        )
     if config.ai.provider == AIProviderKind.CODEX_LOCAL.value:
         if not config.ai.codex_local_consent:
             return codex_to_ai_data(CodexUsageProvider(consent_granted=False).refresh())
@@ -1440,6 +1706,7 @@ def _initial_ai(config: AppConfig) -> AIData:
 
 def _provider_title(provider: str) -> str:
     return {
+        AIProviderKind.CODEX_ACCOUNT.value: "CODEX",
         AIProviderKind.CODEX_LOCAL.value: "CODEX LIMITS",
         AIProviderKind.OPENAI_API.value: "OPENAI API",
         AIProviderKind.CHATGPT_ACTIVITY.value: "APP ACTIVITY",

@@ -16,6 +16,7 @@ from typing import Any
 
 from PIL import Image
 
+from .ai.codex_account import CodexAccountSnapshot
 from .config import AppConfig, validate_brightness
 from .controller import MonitorController, MonitorStartError
 from .state import RuntimeValues
@@ -47,9 +48,11 @@ class DesktopSession:
         *,
         enable_serial: bool,
         controller_factory: ControllerFactory = MonitorController,
+        codex_account_snapshot: Callable[[], CodexAccountSnapshot] | None = None,
     ) -> None:
         self.enable_serial = bool(enable_serial)
         self._controller_factory = controller_factory
+        self._codex_account_snapshot = codex_account_snapshot
         self._lock = threading.RLock()
         self._operation_lock = threading.Lock()
         self._shutdown_gate_lock = threading.Lock()
@@ -110,9 +113,14 @@ class DesktopSession:
             try:
                 draft = copy.deepcopy(config)
                 draft.validate()
+                account_kwargs = (
+                    {"codex_account_snapshot": self._codex_account_snapshot}
+                    if self._codex_account_snapshot is not None else {}
+                )
                 controller = self._controller_factory(
                     draft,
                     enable_serial=self.enable_serial,
+                    **account_kwargs,
                 )
             except Exception:
                 with self._lock:
