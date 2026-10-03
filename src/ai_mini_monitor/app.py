@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import messagebox
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,7 @@ from .updater import (
     cleanup_healthy_update_backup,
     launch_update_helper,
 )
+from .update_recovery import RecoveryNotice, discover_update_recovery
 from .single_instance import DEFAULT_MUTEX_NAME
 
 
@@ -97,6 +99,22 @@ class BrightnessWorkResult:
 class OverlayWorkResult:
     action: ActionResult
     config: AppConfig
+
+
+def _queue_update_recovery(
+    worker: SerialTaskWorker, *, install_root: Path, acknowledged: bool, frozen: bool,
+) -> bool:
+    if not frozen or acknowledged:
+        return False
+    return worker.submit("update_recovery", lambda: discover_update_recovery(install_root))
+
+
+def _present_update_recovery(notice: RecoveryNotice, setup: SetupWindow) -> None:
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Tk recovery notice must be shown on the main thread")
+    if not setup.visible:
+        setup.show()
+    messagebox.showwarning("Mini Monitor 업데이트 복구 확인", notice.message, parent=setup.window)
 
 
 def _close_partial_desktop_services(
@@ -722,6 +740,11 @@ def run_desktop(
         setup.update_update_status(updater.snapshot())
         update_acknowledged = acknowledge_update_startup(current_version=__version__)
         if not update_acknowledged and getattr(sys, "frozen", False):
+            if not _queue_update_recovery(
+                worker, install_root=Path(sys.executable).parent,
+                acknowledged=False, frozen=True,
+            ):
+                LOGGER.warning("update recovery check could not start")
             threading.Thread(
                 target=cleanup_healthy_update_backup,
                 args=(Path(sys.executable).resolve().parent,),
@@ -782,6 +805,14 @@ def run_desktop(
                         action,
                         brightness=completed_brightness,
                     )
+            return
+
+        if result.kind == "update_recovery":
+            if isinstance(result.value, RecoveryNotice):
+                try:
+                    _present_update_recovery(result.value, setup)
+                except (RuntimeError, tk.TclError):
+                    LOGGER.warning("update recovery notice could not be shown")
             return
 
         if result.kind == "device" and isinstance(result.value, ActionResult):

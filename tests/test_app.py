@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import threading
+import time
 
 import pytest
 from PIL import Image
@@ -13,7 +15,8 @@ from ai_mini_monitor.ai.codex_usage import CodexUsageSnapshot, CodexUsageStatus
 from ai_mini_monitor.ai.codex_account import CodexAccountSnapshot, CodexAccountEvent
 from ai_mini_monitor.updater import UpdateSnapshot
 from ai_mini_monitor.config import AppConfig, load_config
-from ai_mini_monitor.desktop_session import SessionResult, SessionState
+from ai_mini_monitor.desktop_session import SerialTaskWorker, SessionResult, SessionState
+from ai_mini_monitor.update_recovery import RecoveryNotice
 from ai_mini_monitor.models import (
     AIData,
     AIProviderKind,
@@ -1301,3 +1304,54 @@ def test_autostart_write_success_then_read_error_is_uncertain(
     assert not result.ok
     assert result.state_uncertain
     assert ("command" in configured) is enabled
+
+
+def test_recovery_discovery_is_worker_only_and_dialog_is_presented_on_tk_thread(monkeypatch, tmp_path) -> None:
+    main_ident = threading.get_ident()
+    scanned_on: list[int] = []
+    shown_on: list[int] = []
+    install = tmp_path / "Mini-Monitor"
+    install.mkdir()
+    notice = RecoveryNotice("needs_manual_recovery_alive", tmp_path / "journal.json", tmp_path / "backup")
+
+    def discover(_install):
+        scanned_on.append(threading.get_ident())
+        assert _install == install
+        return notice
+
+    monkeypatch.setattr(app, "discover_update_recovery", discover, raising=False)
+    monkeypatch.setattr(
+        app,
+        "messagebox",
+        SimpleNamespace(showwarning=lambda _title, _message, **kwargs:
+                        shown_on.append(threading.get_ident()) or kwargs["parent"]),
+        raising=False,
+    )
+
+    class Setup:
+        visible = False
+        window = object()
+
+        def show(self):
+            self.visible = True
+
+    setup = Setup()
+    worker = SerialTaskWorker()
+    try:
+        assert app._queue_update_recovery(worker, install_root=install, acknowledged=False, frozen=True)
+        deadline = time.monotonic() + 2
+        results = []
+        while not results and time.monotonic() < deadline:
+            results = worker.poll()
+            time.sleep(0.01)
+        assert len(results) == 1 and results[0].kind == "update_recovery"
+        assert results[0].value is notice
+        app._present_update_recovery(results[0].value, setup)
+        assert scanned_on and scanned_on[0] != main_ident
+        assert shown_on == [main_ident]
+        assert setup.visible
+        assert not app._queue_update_recovery(worker, install_root=install, acknowledged=True, frozen=True)
+        assert not app._queue_update_recovery(worker, install_root=install, acknowledged=False, frozen=False)
+        assert len(scanned_on) == 1
+    finally:
+        worker.close()
