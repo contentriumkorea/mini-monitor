@@ -1,4 +1,4 @@
-# Corresponding source for Mini Monitor 0.2.0
+# Corresponding source for Mini Monitor 0.2.1
 
 Mini Monitor is distributed under GPL-3.0-or-later. The public [source repository](https://github.com/contentriumkorea/mini-monitor) and each onedir release's `source/` folder provide the preferred application source, tests, build scripts, pinned requirements, public update verification key, update helper, license information and device-protocol attribution corresponding to that release. The private Ed25519 signing key and user authentication material are neither source required to build/modify the program nor distributed.
 

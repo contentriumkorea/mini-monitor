@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
 import threading
 import time
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -30,6 +32,24 @@ def _digest(data: bytes) -> str:
 
 def _canonical(value: dict[str, object]) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+@pytest.mark.parametrize("url, required_accept", [
+    (API_URL, "application/vnd.github+json"),
+    ("https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/update-manifest.json",
+     "application/octet-stream"),
+])
+def test_metadata_fetch_uses_media_type_accepted_by_endpoint(monkeypatch, url, required_accept) -> None:
+    import ai_mini_monitor.updater as updater
+
+    class Endpoint:
+        def open(self, request, *, timeout):
+            if request.get_header("Accept") != required_accept:
+                raise urllib.error.HTTPError(url, 415, "Unsupported Media Type", None, None)
+            return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(updater, "_OPENER", Endpoint())
+    assert updater._fetch_bytes(url) == b"{}"
 
 
 @pytest.fixture

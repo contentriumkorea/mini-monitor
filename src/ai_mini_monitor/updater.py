@@ -271,7 +271,8 @@ _OPENER = urllib.request.build_opener(_SafeRedirect)
 
 
 def _fetch_bytes(url: str, limit: int = MAX_METADATA) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "Mini-Monitor-Updater/1", "Accept": "application/octet-stream"})
+    accept = "application/vnd.github+json" if url == API_URL else "application/octet-stream"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mini-Monitor-Updater/1", "Accept": accept})
     with _OPENER.open(request, timeout=REQUEST_TIMEOUT) as response:
         data = response.read(limit + 1)
     if len(data) > limit:

@@ -16,3 +16,7 @@ This is the verification snapshot at documentation freeze, not a claim that late
 | Windows executable Authenticode signature | **Not signed** | Ed25519 update-manifest signing does not sign the PE files. |
 
 Existing `dist\AI-Mini-Monitor`, any running older app and user configuration were not modified for this QA. Local candidate reports and fixture archives are ignored QA artifacts, not release assets. Historical test counts or previous build hashes do not establish final 0.2.0 acceptance.
+
+## 0.2.1 correction and release gate
+
+After 0.2.0 was briefly published, a read-only live GitHub API probe revealed HTTP 415 on `/releases/latest`: the updater sent the release-asset `Accept: application/octet-stream` header to the JSON API. The 0.2.0 Release was returned to draft without rewriting its tag or assets. A new endpoint-specific regression test first reproduced that HTTP 415 behavior; the 0.2.1 source sends `application/vnd.github+json` only for the API URL while retaining the asset media type and existing URL, size and signature validation. The 0.2.0 test counts above remain historical evidence, **not** 0.2.1 acceptance. Final 0.2.1 build, full tests, frozen update/rollback QA, public download hashes and live read-only update discovery must be measured separately and reported with its Release.
