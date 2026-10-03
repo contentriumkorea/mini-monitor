@@ -627,7 +627,7 @@ class UpdateService:
         self._closed = False
         self._busy = False
         self._last_check: float | None = None
-        self._notified: set[str] = set()
+        self._delivered: set[str] = set()
         self._load_state()
         self._thread = threading.Thread(target=self._run, name="mini-monitor-updater", daemon=True)
         self._thread.start()
@@ -637,7 +637,7 @@ class UpdateService:
             state = json.loads(self._state_path.read_text(encoding="utf-8"))
             value = state.get("last_check")
             self._last_check = float(value) if value is not None else None
-            self._notified = set(item for item in state.get("notified_versions", []) if isinstance(item, str))
+            self._delivered = set(item for item in state.get("delivered_versions", []) if isinstance(item, str))
         except (OSError, ValueError, TypeError, AttributeError):
             pass
 
@@ -647,7 +647,7 @@ class UpdateService:
         try:
             temporary.write_bytes(_canonical({
                 "last_check": self._last_check,
-                "notified_versions": sorted(self._notified),
+                "delivered_versions": sorted(self._delivered),
             }))
             os.replace(temporary, self._state_path)
         finally:
@@ -687,11 +687,34 @@ class UpdateService:
         with self._lock:
             return self._snapshot
 
-    def dismiss(self) -> None:
+    def mark_notification_delivered(self, version: str) -> bool:
+        """Acknowledge only a displayed banner or successful native notification."""
+
         with self._lock:
             current = self._snapshot
+            if (
+                self._closed or not isinstance(version, str)
+                or not version or current.version != version
+                or current.state not in {"available", "manual_required"}
+            ):
+                return False
+            if version not in self._delivered:
+                self._delivered.add(version)
+                self._queue.put("persist_delivery")
+            self._snapshot = UpdateSnapshot(
+                current.state, current.version, current.release_url,
+                current.message, current.prepared, False,
+            )
+            return True
+
+    def dismiss(self) -> bool:
+        with self._lock:
+            current = self._snapshot
+            if current.version and current.state in {"available", "manual_required"}:
+                return self.mark_notification_delivered(current.version)
             self._snapshot = UpdateSnapshot(current.state, current.version, current.release_url,
                                              current.message, current.prepared, False)
+            return True
 
     def close(self) -> None:
         with self._lock:
@@ -708,6 +731,14 @@ class UpdateService:
                     self._check_once()
                 elif command == "prepare":
                     self._prepare_once()
+                elif command == "persist_delivery":
+                    try:
+                        with self._lock:
+                            self._save_state()
+                    except OSError:
+                        # Delivery already occurred; a failed write may only
+                        # cause a conservative repeat on the next launch.
+                        pass
             except Exception:
                 with self._lock:
                     previous = self._snapshot
@@ -754,8 +785,7 @@ class UpdateService:
                 manifest = None
         with self._lock:
             self._manifest = manifest
-            first_notice = version not in self._notified
-            self._notified.add(version)
+            first_notice = version not in self._delivered
             state = "available" if manifest is not None and self.install_root is not None else "manual_required"
             message = "업데이트를 적용할 수 있습니다" if state == "available" else "새 버전은 수동 다운로드가 필요합니다"
             self._snapshot = UpdateSnapshot(state, version, release_url, message, None, first_notice)

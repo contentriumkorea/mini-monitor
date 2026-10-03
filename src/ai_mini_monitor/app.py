@@ -71,6 +71,7 @@ from .single_instance import DEFAULT_MUTEX_NAME
 
 LOGGER = logging.getLogger(__name__)
 _CONFIG_WRITE_LOCK = threading.RLock()
+_UPDATE_NOTICE_RETRY_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +220,7 @@ def run_desktop(
     overlay: OverlayWindow | None = None
     power_events: WindowsPowerEventHook | None = None
     apply_requested = False
-    notified_versions: set[str] = set()
+    notice_retry_at: dict[str, float] = {}
     last_account_snapshot: CodexAccountSnapshot | None = None
     last_update_snapshot: object | None = None
     next_update_check = time.monotonic() + 3600.0
@@ -299,12 +300,18 @@ def run_desktop(
 
     def request_usage(selection: SetupSelection) -> ActionResult:
         if selection.provider == AIProviderKind.CODEX_ACCOUNT.value:
-            selected = select_account_provider()
-            if not selected.ok:
-                return selected
+            deferred = account_selection_deferred()
+            if not deferred:
+                selected = select_account_provider()
+                if not selected.ok:
+                    return selected
             if not account.refresh():
                 return ActionResult(False, "Codex 한도 확인 실패", "계정 서비스를 다시 시작해 주세요.")
-            return ActionResult(True, "Codex 계정 한도 확인 중…", pending=False)
+            return ActionResult(
+                True,
+                "Codex 계정 한도 확인 중…",
+                "현재 모니터의 표시 방식은 중지 후 변경할 수 있습니다." if deferred else None,
+            )
         if "usage" in pending:
             return ActionResult(True, "사용량 확인 중…", pending=True)
         if pending.intersection({"start", "stop"}):
@@ -427,10 +434,18 @@ def run_desktop(
             )
         return result.action
 
+    def account_selection_deferred() -> bool:
+        return (
+            current_config.ai.provider != AIProviderKind.CODEX_ACCOUNT.value
+            and (session.running or bool(pending.intersection({"start", "stop"})))
+        )
+
     def select_account_provider() -> ActionResult:
         nonlocal current_config, preview_ai
         if exiting:
             return ActionResult(False, "프로그램 종료 중")
+        if account_selection_deferred():
+            return ActionResult(False, "모니터를 먼저 중지하세요", "실행 중인 표시 방식은 바꾸지 않습니다.")
         if pending.intersection({"start", "brightness"}):
             return ActionResult(False, "설정 저장 중", "현재 작업이 끝난 뒤 다시 시도해 주세요.")
         if current_config.ai.provider != AIProviderKind.CODEX_ACCOUNT.value:
@@ -449,12 +464,18 @@ def run_desktop(
         return ActionResult(True, "Codex 계정 선택됨")
 
     def request_codex_login() -> ActionResult:
-        selected = select_account_provider()
-        if not selected.ok:
-            return selected
+        deferred = account_selection_deferred()
+        if not deferred:
+            selected = select_account_provider()
+            if not selected.ok:
+                return selected
         if not account.begin_login():
             return ActionResult(False, "로그인을 시작하지 못했습니다", "진행 중인 로그인 또는 종료 상태를 확인해 주세요.")
-        return ActionResult(True, "ChatGPT 로그인 준비 중…")
+        return ActionResult(
+            True,
+            "ChatGPT 로그인 준비 중…",
+            "현재 모니터의 표시 방식은 중지 후 변경할 수 있습니다." if deferred else None,
+        )
 
     def request_codex_cancel() -> ActionResult:
         return ActionResult(bool(account.cancel_login()), "로그인 취소됨")
@@ -463,7 +484,7 @@ def run_desktop(
         return ActionResult(bool(account.logout()), "Mini Monitor 전용 계정 로그아웃 중…")
 
     def request_codex_disconnect() -> ActionResult:
-        nonlocal current_config, preview_ai
+        nonlocal current_config, preview_ai, preview_frame
         if session.running or pending.intersection({"start", "stop"}):
             return ActionResult(False, "모니터를 먼저 중지하세요", "실행 중인 계정 표시를 자동으로 바꾸지 않습니다.")
         if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
@@ -478,6 +499,16 @@ def run_desktop(
                 return ActionResult(False, "연결 해제 저장 실패", "설정 파일을 확인해 주세요.")
         account.set_polling(False)
         preview_ai = not_configured_ai()
+        setup.set_provider(AIProviderKind.NOT_CONFIGURED.value)
+        preview_frame = renderer.render(DisplaySnapshot(
+            ai=preview_ai,
+            connection=ConnectionData(
+                ConnectionStatus.DISCONNECTED,
+                detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
+            ),
+        ))
+        setup.update_image(preview_frame)
+        update_visible_overlay(preview_frame)
         return ActionResult(True, "표시 연결 해제됨", "Mini Monitor 전용 로그인은 유지됩니다.")
 
     def request_codex_cli_selected(path: Path) -> ActionResult:
@@ -518,8 +549,7 @@ def run_desktop(
         return ActionResult(True, "업데이트 준비 중…")
 
     def request_update_dismiss() -> ActionResult:
-        updater.dismiss()
-        return ActionResult(True, "나중에 확인")
+        return ActionResult(bool(updater.dismiss()), "나중에 확인")
 
     def open_update_release() -> ActionResult:
         return ActionResult(bool(webbrowser.open("https://github.com/contentriumkorea/mini-monitor/releases")), "릴리스 페이지 열기")
@@ -910,12 +940,19 @@ def run_desktop(
         if update_snapshot != last_update_snapshot:
             last_update_snapshot = update_snapshot
             setup.update_update_status(update_snapshot)
-        if (
-            update_snapshot.notification_pending and update_snapshot.version
-            and not setup.visible and update_snapshot.version not in notified_versions
-        ):
-            tray.notify_update(update_snapshot.version)
-            notified_versions.add(update_snapshot.version)
+        if update_snapshot.notification_pending and update_snapshot.version:
+            if setup.visible:
+                updater.mark_notification_delivered(update_snapshot.version)
+            elif now >= notice_retry_at.get(update_snapshot.version, 0.0):
+                try:
+                    delivered = tray.notify_update(update_snapshot.version)
+                except Exception as error:
+                    LOGGER.warning("update notification failed (%s)", type(error).__name__)
+                    delivered = False
+                if delivered:
+                    updater.mark_notification_delivered(update_snapshot.version)
+                else:
+                    notice_retry_at[update_snapshot.version] = now + _UPDATE_NOTICE_RETRY_SECONDS
         if apply_requested and update_snapshot.state == "ready" and update_snapshot.prepared is not None:
             apply_requested = False
             try:
@@ -929,7 +966,7 @@ def run_desktop(
             LOGGER.warning("update helper launch failed; app remains running")
 
         image = session.latest_image()
-        if image is not None:
+        if image is not None and session.state in {SessionState.STARTING, SessionState.RUNNING}:
             preview_frame = image.copy()
             if setup.visible:
                 setup.update_image(image)

@@ -250,6 +250,54 @@ def test_service_checks_stable_release_once_per_version_and_persists_notice(tmp_
         second.close()
 
 
+def test_discovery_without_delivery_retries_after_restart(tmp_path, monkeypatch, signed_release) -> None:
+    import ai_mini_monitor.updater as updater
+    payload, signature, public_key = signed_release
+    key_path = tmp_path / "public.pem"
+    key_path.write_bytes(public_key)
+    monkeypatch.setattr(updater, "resource_path", lambda _name: key_path)
+    asset_base = "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/"
+    release = {
+        "tag_name": "v0.2.0", "draft": False, "prerelease": False,
+        "assets": [
+            {"name": "update-manifest.json", "browser_download_url": asset_base + "update-manifest.json"},
+            {"name": "update-manifest.sig", "browser_download_url": asset_base + "update-manifest.sig"},
+        ],
+    }
+    responses = {API_URL: json.dumps(release).encode(), asset_base + "update-manifest.json": payload,
+                 asset_base + "update-manifest.sig": signature}
+    state_path = tmp_path / "state.json"
+    make_service = lambda: UpdateService(
+        current_version="0.1.0", install_root=tmp_path / "Mini-Monitor", config_path=None,
+        _fetcher=lambda url, _limit: responses[url], _state_path=state_path, _clock=lambda: 1000.0,
+    )
+    first = make_service()
+    try:
+        assert first.check()
+        _eventually(lambda: first.snapshot().state == "available")
+        assert first.snapshot().notification_pending
+    finally:
+        first.close()
+    second = make_service()
+    try:
+        assert second.check(force=True)
+        _eventually(lambda: second.snapshot().state == "available")
+        assert second.snapshot().notification_pending
+        assert not second.mark_notification_delivered("0.3.0")
+        assert second.snapshot().notification_pending
+        assert second.mark_notification_delivered("0.2.0")
+        assert not second.snapshot().notification_pending
+    finally:
+        second.close()
+    third = make_service()
+    try:
+        assert third.check(force=True)
+        _eventually(lambda: third.snapshot().state == "available")
+        assert not third.snapshot().notification_pending
+    finally:
+        third.close()
+
+
 def test_update_ack_rejects_wrong_runtime_version_and_unowned_environment(tmp_path, monkeypatch) -> None:
     import ai_mini_monitor.updater as updater
     root = tmp_path / "Mini-Monitor"

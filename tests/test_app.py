@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -939,13 +940,17 @@ def test_one_autostart_action_enables_and_disables_with_exact_readback(
 
 @pytest.mark.parametrize("helper_success", [False, True])
 @pytest.mark.parametrize("manual_refresh", [False, True])
+@pytest.mark.parametrize("disconnect_after_stop", [False, True])
+@pytest.mark.parametrize("running_legacy", [False, True])
 def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart_service(
-    monkeypatch, tmp_path, helper_success, manual_refresh,
+    monkeypatch, tmp_path, helper_success, manual_refresh, disconnect_after_stop, running_legacy,
 ) -> None:
     events = []
     actions = []
     rendered_ai = []
     accounts = []
+    updaters = []
+    clock = [1000.0]
 
     class Guard:
         def release(self):
@@ -1011,7 +1016,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             self.shutting_down = True
 
         def latest_image(self):
-            return None
+            return Image.new("RGB", (480, 320), "red") if not self.running else None
 
         def runtime_values(self):
             return None
@@ -1051,19 +1056,42 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
 
         def mainloop(self):
             callbacks = self.setup.callbacks
+            if running_legacy:
+                callbacks["on_start"](SetupSelection(AIProviderKind.CODEX_LOCAL.value, True))
+                self._poll_once()
             callbacks["on_codex_login"]()
             if manual_refresh:
                 callbacks["on_check_usage"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
-            assert "session_start" not in events
+            if running_legacy:
+                assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_LOCAL.value
+                assert self.setup.selected_provider() == AIProviderKind.CODEX_LOCAL.value
+                callbacks["on_stop"]()
+                self._poll_once()
+                callbacks["on_check_usage"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
+            else:
+                assert "session_start" not in events
             assert not any(item == ("work", "usage") for item in events)
             callbacks["on_start"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
             self._poll_once()
             callbacks["on_stop"]()
             self._poll_once()
-            if not manual_refresh:
+            if not manual_refresh and not running_legacy:
                 assert accounts[0].snapshot().login_pending
+            if disconnect_after_stop:
+                callbacks["on_codex_disconnect"]()
+                assert self.setup.selected_provider() == AIProviderKind.NOT_CONFIGURED.value
+                self._poll_once()
+                assert self.setup.images[-1].getpixel((0, 0)) == (0, 0, 0)
+                callbacks["on_start"](self.setup.selection)
+                self._poll_once()
+                callbacks["on_stop"]()
+                self._poll_once()
             self.setup.hide()
+            updaters[0].state = "available"
             self._poll_once()
+            self._poll_once()
+            assert events.count(("update_notice", "0.2.0")) == 1
+            clock[0] += 31.0
             self._poll_once()
             self.setup.show()
             callbacks["on_update_apply"]()
@@ -1083,6 +1111,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     class Setup:
         def __init__(self, **kwargs):
             self.callbacks = kwargs
+            self.provider = kwargs["provider"]
             self.window = Window(self)
             self.visible = False
             self.closed = False
@@ -1108,7 +1137,14 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             self.closed = True
 
         def selected_provider(self):
-            return AIProviderKind.CODEX_ACCOUNT.value
+            return self.provider
+
+        @property
+        def selection(self):
+            return SetupSelection(self.provider, False)
+
+        def set_provider(self, provider):
+            self.provider = provider
 
     class Overlay:
         visible = False
@@ -1129,7 +1165,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
 
         def notify_update(self, version):
             events.append(("update_notice", version))
-            return True
+            return events.count(("update_notice", version)) > 1
 
         def __getattr__(self, name):
             return lambda *args, **kwargs: None
@@ -1147,14 +1183,23 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     class Updater:
         def __init__(self, **_kwargs):
             events.append("updater_create")
-            self.state = "available"
+            updaters.append(self)
+            self.state = "idle"
+            self.delivered = False
 
         def check(self, **_kwargs):
             return True
 
         def snapshot(self):
-            return UpdateSnapshot(self.state, "0.2.0", None, "", object() if self.state == "ready" else None,
-                                  self.state == "available")
+            version = "0.2.0" if self.state != "idle" else None
+            return UpdateSnapshot(self.state, version, None, "", object() if self.state == "ready" else None,
+                                  self.state == "available" and not self.delivered)
+
+        def mark_notification_delivered(self, version):
+            assert version == "0.2.0"
+            self.delivered = True
+            events.append(("notice_delivered", version))
+            return True
 
         def prepare(self):
             events.append("update_prepare")
@@ -1184,6 +1229,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             return Image.new("RGB", (480, 320))
 
     monkeypatch.setattr(app, "_renderer_for_rotation", lambda _rotation: Renderer())
+    monkeypatch.setattr(app, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(app.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(app, "acknowledge_update_startup", lambda **_kwargs: actions.append("ack") or events.append("ack") or True)
     monkeypatch.setattr(app, "launch_update_helper", lambda *_args, **_kwargs: events.append("helper_launch") or helper_success)
@@ -1193,12 +1239,17 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     assert events.count("account_create") == 1
     assert events.count("account_close") == 1
     assert "login" in events
-    assert ("refresh" in events) is manual_refresh
+    assert ("refresh" in events) is (manual_refresh or running_legacy)
     assert ("polling", True) in events and ("polling", False) in events
-    assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_ACCOUNT.value
-    assert any(ai.provider is AIProviderKind.CODEX_ACCOUNT and ai.primary_value == ("85%" if manual_refresh else "LOGIN") for ai in rendered_ai)
+    expected_provider = AIProviderKind.NOT_CONFIGURED.value if disconnect_after_stop else AIProviderKind.CODEX_ACCOUNT.value
+    assert load_config(tmp_path / "settings.json").ai.provider == expected_provider
+    if disconnect_after_stop:
+        assert rendered_ai[-1].provider is AIProviderKind.NOT_CONFIGURED
+        assert events.count(("polling", True)) == 1
+    assert any(ai.provider is AIProviderKind.CODEX_ACCOUNT and ai.primary_value == ("85%" if manual_refresh or running_legacy else "LOGIN") for ai in rendered_ai)
     assert events.count("helper_launch") == 1
-    assert events.count(("update_notice", "0.2.0")) == 1
+    assert events.count(("update_notice", "0.2.0")) == 2
+    assert events.count(("notice_delivered", "0.2.0")) == 1
     assert events.count("window_quit") == 1
     assert actions == ["ack"]
     assert "image" in events
