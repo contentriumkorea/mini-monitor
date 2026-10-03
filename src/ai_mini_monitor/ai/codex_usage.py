@@ -269,7 +269,7 @@ def to_ai_data(
     remaining_values = [value for value in (five_remaining, seven_remaining) if value is not None]
     return AIData(
         provider=AIProviderKind.CODEX_LOCAL,
-        title="CODEX LIMITS",
+        title="CODEX LOCAL",
         status=(
             SyncStatus.DELAYED
             if snapshot.status is CodexUsageStatus.STALE
@@ -302,7 +302,7 @@ def _codex_error(
 ) -> AIData:
     return AIData(
         provider=AIProviderKind.CODEX_LOCAL,
-        title="CODEX LIMITS",
+        title="CODEX LOCAL",
         status=SyncStatus.DELAYED if delayed else SyncStatus.SETUP_REQUIRED,
         primary_value=primary,
         primary_label=label,

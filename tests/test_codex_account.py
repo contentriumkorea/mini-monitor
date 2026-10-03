@@ -1,0 +1,503 @@
+"""Contract tests for the isolated Codex app-server account reader."""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shutil
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from ai_mini_monitor.ai.codex_account import CodexAccountService
+
+
+class _FakeOutput:
+    def __init__(self) -> None:
+        self.lines: queue.Queue[str | None] = queue.Queue()
+
+    def readline(self, _limit: int = -1) -> str:
+        line = self.lines.get()
+        return "" if line is None else line
+
+
+class _FakeInput:
+    def __init__(self, process: "_FakeProcess") -> None:
+        self.process = process
+
+    def write(self, data: str) -> int:
+        message = json.loads(data)
+        self.process.sent.append(message)
+        self.process.respond(message)
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+
+class _FakeProcess:
+    def __init__(self, *, limits: object | None = None, account: object | None = None) -> None:
+        self.stdout = _FakeOutput()
+        self.stdin = _FakeInput(self)
+        self.stderr = None
+        self.sent: list[dict] = []
+        self.limits = limits or {
+            "rateLimitsByLimitId": {
+                "codex_other": {
+                    "limitId": "codex_other",
+                    "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1791000000},
+                },
+                "codex": {
+                    "limitId": "codex",
+                    "primary": {"usedPercent": 38, "windowDurationMins": 300, "resetsAt": 1791000000},
+                    "secondary": {"usedPercent": 21, "windowDurationMins": 10080, "resetsAt": 1791000000},
+                },
+            }
+        }
+        self.account = account if account is not None else {
+            "type": "chatgpt", "email": "test@example.com", "planType": "pro"
+        }
+        self.alive = True
+
+    def respond(self, message: dict) -> None:
+        method = message["method"]
+        if method == "initialized":
+            return
+        if method == "initialize":
+            result = {"userAgent": "fake", "platformFamily": "windows", "platformOs": "windows"}
+        elif method == "account/read":
+            result = {"account": self.account, "requiresOpenaiAuth": True}
+        elif method == "account/rateLimits/read":
+            result = self.limits
+        elif method == "account/login/start":
+            result = {"type": "chatgpt", "loginId": "login-1", "authUrl": "https://chatgpt.com/auth?secret=never-log"}
+        elif method in {"account/login/cancel", "account/logout"}:
+            result = {}
+        else:
+            raise AssertionError(f"unexpected request {method}")
+        self.emit({"id": message["id"], "result": result})
+
+    def emit(self, message: dict) -> None:
+        self.stdout.lines.put(json.dumps(message) + "\n")
+
+    def poll(self) -> int | None:
+        return None if self.alive else 0
+
+    def terminate(self) -> None:
+        self.alive = False
+        self.stdout.lines.put(None)
+
+    def kill(self) -> None:
+        self.terminate()
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.terminate()
+        return 0
+
+
+def _eventually(predicate, *, seconds: float = 3) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    assert predicate()
+
+
+def test_longest_codex_window_is_primary(monkeypatch, tmp_path: Path) -> None:
+    """Catches selecting the named model pool or short window as the headline."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "설치 경로" / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "앱 홈")
+    try:
+        assert service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        snapshot = service.snapshot()
+        assert snapshot.ai.primary_value == "79%"
+        assert snapshot.ai.primary_label == "7D LEFT"
+        assert snapshot.windows[0].duration_mins == 10080
+        assert snapshot.windows[1].remaining_percent == 62
+        assert [m["method"] for m in process.sent[:4]] == [
+            "initialize", "initialized", "account/read", "account/rateLimits/read"
+        ]
+    finally:
+        service.close()
+
+
+def test_fifteen_percent_used_is_eighty_five_remaining_not_named_pool(monkeypatch, tmp_path: Path) -> None:
+    """Catches the original false 100%-remaining bug."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(limits={
+        "rateLimitsByLimitId": {
+            "codex_other": {"limitId": "codex_other", "primary": {"usedPercent": 0, "windowDurationMins": 10080}},
+            "codex": {"limitId": "codex", "primary": {"usedPercent": 15, "windowDurationMins": 10080}},
+        }
+    })
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert service.snapshot().ai.primary_value == "85%"
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("limits", [
+    {"rateLimitsByLimitId": {"codex": {"limitId": "codex", "primary": None}}},
+    {"rateLimitsByLimitId": {"codex_other": {"limitId": "codex_other", "primary": {"usedPercent": 0, "windowDurationMins": 10080}}}},
+    {"rateLimits": {"limitId": "codex", "primary": {"usedPercent": None, "windowDurationMins": 10080}}},
+])
+def test_missing_or_null_window_never_becomes_hundred(monkeypatch, tmp_path: Path, limits: dict) -> None:
+    """Catches defaulting missing percentages or buckets to a full allowance."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(limits=limits)
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "no_data")
+        assert service.snapshot().ai.primary_value != "100%"
+        assert service.snapshot().windows == ()
+    finally:
+        service.close()
+
+
+def test_oversized_numeric_usage_is_unknown_not_worker_crash(monkeypatch, tmp_path: Path) -> None:
+    """Catches numeric conversion overflow from an external rate-limit payload."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(limits={"rateLimits": {"limitId": "codex", "primary": {
+        "usedPercent": 10**1000, "windowDurationMins": 10080,
+    }}})
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "no_data")
+        assert service.snapshot().windows == ()
+    finally:
+        service.close()
+
+
+def test_invalid_reset_time_does_not_hide_valid_percent(monkeypatch, tmp_path: Path) -> None:
+    """Catches a huge optional reset timestamp crashing the reader."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(limits={"rateLimits": {"limitId": "codex", "primary": {
+        "usedPercent": 15, "windowDurationMins": 10080, "resetsAt": 10**1000,
+    }}})
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert service.snapshot().ai.primary_value == "85%"
+        assert service.snapshot().windows[0].resets_at is None
+    finally:
+        service.close()
+
+
+def test_isolated_cli_environment_and_one_time_url(monkeypatch, tmp_path: Path) -> None:
+    """Catches inherited credentials, cwd leakage, and repeated auth URL events."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    captured: dict = {}
+    executable = tmp_path / "한글 설치 경로" / "codex.exe"
+    home = tmp_path / "내 앱 홈"
+    monkeypatch.setenv("OPENAI_API_KEY", "private-key")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "private-token")
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: executable)
+
+    def launch(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return process
+
+    monkeypatch.setattr(account_module.subprocess, "Popen", launch)
+    service = CodexAccountService(cli_path=executable, home=home)
+    try:
+        assert service.begin_login()
+        _eventually(lambda: any(event.kind == "auth_url" for event in service.drain_events()))
+        assert captured["argv"][0] == str(executable)
+        assert captured["cwd"] == home
+        assert captured["env"]["CODEX_HOME"] == str(home)
+        assert "OPENAI_API_KEY" not in captured["env"]
+        assert "CODEX_ACCESS_TOKEN" not in captured["env"]
+        assert service.drain_events() == ()
+    finally:
+        service.close()
+
+
+def test_cancelled_login_cannot_publish_stale_auth_url(monkeypatch, tmp_path: Path) -> None:
+    """Catches opening an OAuth URL after the user cancelled that login generation."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.begin_login()
+        _eventually(lambda: any(message["method"] == "account/login/start" for message in process.sent))
+        assert service.cancel_login()
+        assert service.snapshot().state == "signed_out"
+        assert not any(event.kind == "auth_url" for event in service.drain_events())
+    finally:
+        service.close()
+
+
+def test_missing_cli_is_setup_required(monkeypatch, tmp_path: Path) -> None:
+    """Catches treating an installation prerequisite as a transient network outage."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: None)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().error_detail is not None)
+        assert service.snapshot().state == "setup_required"
+    finally:
+        service.close()
+
+
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("codex.exe"), reason="installed Windows Codex CLI required")
+def test_installed_official_cli_has_valid_openai_signature() -> None:
+    """Catches a signer check that rejects a legitimately installed official CLI."""
+    from ai_mini_monitor.ai.codex_account import _signed_by_openai
+
+    assert _signed_by_openai(Path(shutil.which("codex.exe")))
+
+
+def test_legacy_session_provider_is_visibly_labeled_local() -> None:
+    """Catches presenting log-derived limits as the new official account source."""
+    from ai_mini_monitor.ai.codex_usage import CodexUsageSnapshot, CodexUsageStatus, to_ai_data
+
+    assert to_ai_data(CodexUsageSnapshot(CodexUsageStatus.CONSENT_REQUIRED)).title == "CODEX LOCAL"
+
+
+def test_login_completion_before_start_reply_still_refreshes(monkeypatch, tmp_path: Path) -> None:
+    """Catches losing a fast OAuth callback before loginId is stored."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class FastLogin(_FakeProcess):
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/login/start":
+                self.emit({"method": "account/login/completed", "params": {
+                    "loginId": "login-1", "success": True, "error": None,
+                }})
+            super().respond(message)
+
+    process = FastLogin()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        assert service.begin_login()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert service.snapshot().login_pending is False
+    finally:
+        service.close()
+
+
+def test_partial_limit_notification_causes_full_read(monkeypatch, tmp_path: Path) -> None:
+    """Catches publishing a partial notification as if it were a complete quota."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        before = sum(m["method"] == "account/rateLimits/read" for m in process.sent)
+        process.limits = {"rateLimits": {"limitId": "codex", "primary": {
+            "usedPercent": 15, "windowDurationMins": 10080,
+        }}}
+        process.emit({"method": "account/rateLimits/updated", "params": {
+            "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 99}}
+        }})
+        _eventually(lambda: service.snapshot().ai.primary_value == "85%")
+        assert sum(m["method"] == "account/rateLimits/read" for m in process.sent) > before
+    finally:
+        service.close()
+
+
+def test_logout_discards_inflight_old_limit_response(monkeypatch, tmp_path: Path) -> None:
+    """Catches a prior account response restoring quota after logout."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class DelayedLimit(_FakeProcess):
+        defer = False
+        held_id: int | None = None
+
+        def respond(self, message: dict) -> None:
+            if self.defer and message["method"] == "account/rateLimits/read":
+                self.held_id = message["id"]
+                return
+            super().respond(message)
+
+    process = DelayedLimit()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        process.defer = True
+        service.refresh()
+        _eventually(lambda: process.held_id is not None)
+        assert service.logout()
+        process.emit({"id": process.held_id, "result": {
+            "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 0, "windowDurationMins": 10080}}
+        }})
+        _eventually(lambda: any(m["method"] == "account/logout" for m in process.sent))
+        assert service.snapshot().state == "signed_out"
+        assert service.snapshot().windows == ()
+    finally:
+        service.close()
+
+
+def test_account_updated_clears_old_quota_before_new_account_read(monkeypatch, tmp_path: Path) -> None:
+    """Catches showing the previous account's percentage during an account switch."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class DelayedAccount(_FakeProcess):
+        hold_account = False
+        held_id: int | None = None
+
+        def respond(self, message: dict) -> None:
+            if self.hold_account and message["method"] == "account/read":
+                self.held_id = message["id"]
+                return
+            super().respond(message)
+
+    process = DelayedAccount()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        previous_generation = service.snapshot().generation
+        process.hold_account = True
+        process.emit({"method": "account/updated", "params": {"authMode": "chatgpt", "planType": "plus"}})
+        _eventually(lambda: process.held_id is not None)
+        assert service.snapshot().generation > previous_generation
+        assert service.snapshot().windows == ()
+        assert service.snapshot().email is None
+    finally:
+        service.close()
+
+
+def test_close_during_cli_launch_does_not_leave_child_running(monkeypatch, tmp_path: Path) -> None:
+    """Catches a subprocess created after close checked for one to terminate."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    process = _FakeProcess()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+
+    def launch(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(timeout=3)
+        return process
+
+    monkeypatch.setattr(account_module.subprocess, "Popen", launch)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    assert service.refresh()
+    assert entered.wait(timeout=3)
+    closer = threading.Thread(target=service.close)
+    closer.start()
+    time.sleep(0.05)
+    release.set()
+    closer.join(timeout=4)
+    assert not closer.is_alive()
+    _eventually(lambda: not process.alive)
+
+
+def test_process_exit_is_recoverable_on_manual_refresh(monkeypatch, tmp_path: Path) -> None:
+    """Catches a dead child poisoning the next JSON-RPC connection."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class ExitsOnAccount(_FakeProcess):
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/read":
+                self.terminate()
+                return
+            super().respond(message)
+
+    first = ExitsOnAccount()
+    second = _FakeProcess()
+    launches = iter((first, second))
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: next(launches))
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "unavailable")
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert service.snapshot().ai.primary_value == "79%"
+    finally:
+        service.close()
+
+
+def test_api_key_account_is_not_shown_as_chatgpt_quota(monkeypatch, tmp_path: Path) -> None:
+    """Catches using a Platform API-key account as a ChatGPT plan allowance."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(account={"type": "apiKey"})
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "auth_error")
+        assert service.snapshot().windows == ()
+        assert not any(m["method"] == "account/rateLimits/read" for m in process.sent)
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("url", [
+    "http://chatgpt.com/auth", "https://evil.example/auth",
+    "https://chatgpt.com.evil.example/auth", "https://user@chatgpt.com/auth",
+])
+def test_untrusted_auth_url_never_reaches_ui(monkeypatch, tmp_path: Path, url: str) -> None:
+    """Catches opening a spoofed or downgraded login URL."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    class BadLogin(_FakeProcess):
+        def respond(self, message: dict) -> None:
+            if message["method"] == "account/login/start":
+                self.emit({"id": message["id"], "result": {
+                    "type": "chatgpt", "loginId": "login-1", "authUrl": url,
+                }})
+                return
+            super().respond(message)
+
+    process = BadLogin()
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.begin_login()
+        _eventually(lambda: service.snapshot().state == "auth_error")
+        assert not any(event.kind == "auth_url" for event in service.drain_events())
+    finally:
+        service.close()
