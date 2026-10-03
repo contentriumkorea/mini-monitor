@@ -628,6 +628,8 @@ class UpdateService:
         self._busy = False
         self._last_check: float | None = None
         self._delivered: set[str] = set()
+        self._pending_version: str | None = None
+        self._startup_recheck_available = False
         self._load_state()
         self._thread = threading.Thread(target=self._run, name="mini-monitor-updater", daemon=True)
         self._thread.start()
@@ -638,6 +640,16 @@ class UpdateService:
             value = state.get("last_check")
             self._last_check = float(value) if value is not None else None
             self._delivered = set(item for item in state.get("delivered_versions", []) if isinstance(item, str))
+            pending = state.get("pending_version")
+            try:
+                if (
+                    pending not in self._delivered
+                    and _version_tuple(pending) > _version_tuple(self.current_version)
+                ):
+                    self._pending_version = pending
+                    self._startup_recheck_available = True
+            except ValueError:
+                pass
         except (OSError, ValueError, TypeError, AttributeError):
             pass
 
@@ -648,6 +660,7 @@ class UpdateService:
             temporary.write_bytes(_canonical({
                 "last_check": self._last_check,
                 "delivered_versions": sorted(self._delivered),
+                "pending_version": self._pending_version,
             }))
             os.replace(temporary, self._state_path)
         finally:
@@ -657,11 +670,12 @@ class UpdateService:
     def check(self, *, force: bool = False) -> bool:
         with self._lock:
             if self._closed or self._busy or (
-                not force and self._last_check is not None
+                not force and not self._startup_recheck_available and self._last_check is not None
                 and self._clock() - self._last_check < _CHECK_INTERVAL
             ):
                 return False
             self._busy = True
+            self._startup_recheck_available = False
             self._last_check = self._clock()
             self._save_state()
             self._snapshot = UpdateSnapshot("checking", self._snapshot.version,
@@ -701,6 +715,8 @@ class UpdateService:
             if version not in self._delivered:
                 self._delivered.add(version)
                 self._queue.put("persist_delivery")
+            if self._pending_version == version:
+                self._pending_version = None
             self._snapshot = UpdateSnapshot(
                 current.state, current.version, current.release_url,
                 current.message, current.prepared, False,
@@ -759,6 +775,7 @@ class UpdateService:
         if _version_tuple(version) <= _version_tuple(self.current_version):
             with self._lock:
                 self._manifest = None
+                self._pending_version = None
                 self._snapshot = UpdateSnapshot("idle", None, None, "최신 버전", None, False)
             self._record_check()
             return
@@ -786,6 +803,7 @@ class UpdateService:
         with self._lock:
             self._manifest = manifest
             first_notice = version not in self._delivered
+            self._pending_version = version if first_notice else None
             state = "available" if manifest is not None and self.install_root is not None else "manual_required"
             message = "업데이트를 적용할 수 있습니다" if state == "available" else "새 버전은 수동 다운로드가 필요합니다"
             self._snapshot = UpdateSnapshot(state, version, release_url, message, None, first_notice)

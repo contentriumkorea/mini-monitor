@@ -280,9 +280,10 @@ def test_discovery_without_delivery_retries_after_restart(tmp_path, monkeypatch,
         first.close()
     second = make_service()
     try:
-        assert second.check(force=True)
+        assert second.check()  # Undelivered discovery gets one restart recheck.
         _eventually(lambda: second.snapshot().state == "available")
         assert second.snapshot().notification_pending
+        assert not second.check()  # The startup bypass is consumed.
         assert not second.mark_notification_delivered("0.3.0")
         assert second.snapshot().notification_pending
         assert second.mark_notification_delivered("0.2.0")
@@ -291,11 +292,69 @@ def test_discovery_without_delivery_retries_after_restart(tmp_path, monkeypatch,
         second.close()
     third = make_service()
     try:
-        assert third.check(force=True)
-        _eventually(lambda: third.snapshot().state == "available")
-        assert not third.snapshot().notification_pending
+        assert not third.check()  # Delivered notices keep the normal cooldown.
     finally:
         third.close()
+
+
+def test_failed_pending_notice_recheck_does_not_retry_until_next_restart(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "last_check": 1000.0, "delivered_versions": [], "pending_version": "0.2.0",
+    }), encoding="utf-8")
+    calls = []
+
+    def failing_fetcher(url, _limit):
+        calls.append(url)
+        raise OSError("offline")
+
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=failing_fetcher, _state_path=state_path, _clock=lambda: 1000.0)
+    try:
+        assert service.check()
+        _eventually(lambda: service.snapshot().state == "error")
+        assert not service.check()
+        assert calls == [API_URL]
+        assert json.loads(state_path.read_text(encoding="utf-8"))["pending_version"] == "0.2.0"
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("pending, delivered", [
+    ("not-a-version", []), ("0.1.0", []), ("0.0.9", []), ("0.2.0", ["0.2.0"]),
+])
+def test_invalid_or_delivered_persisted_pending_notice_keeps_cooldown(tmp_path, pending, delivered) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "last_check": 1000.0, "delivered_versions": delivered, "pending_version": pending,
+    }), encoding="utf-8")
+    calls = []
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=lambda url, _limit: calls.append(url),
+                            _state_path=state_path, _clock=lambda: 1000.0)
+    try:
+        assert not service.check()
+        assert calls == []
+    finally:
+        service.close()
+
+
+def test_pending_notice_is_cleared_when_latest_is_no_longer_newer(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "last_check": 1000.0, "delivered_versions": [], "pending_version": "0.2.0",
+    }), encoding="utf-8")
+    release = {"tag_name": "v0.1.0", "draft": False, "prerelease": False}
+    service = UpdateService(current_version="0.1.0", install_root=None, config_path=None,
+                            _fetcher=lambda _url, _limit: json.dumps(release).encode(),
+                            _state_path=state_path, _clock=lambda: 1000.0)
+    try:
+        assert service.check()
+        _eventually(lambda: service.snapshot().message == "최신 버전")
+        _eventually(lambda: json.loads(state_path.read_text(encoding="utf-8"))["pending_version"] is None)
+        assert not service.check()
+    finally:
+        service.close()
 
 
 def test_update_ack_rejects_wrong_runtime_version_and_unowned_environment(tmp_path, monkeypatch) -> None:
