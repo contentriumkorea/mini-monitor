@@ -245,6 +245,139 @@ def _eventually(predicate, *, timeout: float = 2.0) -> None:
     raise AssertionError("updater state did not arrive")
 
 
+def _signed_release_fetcher(tmp_path, monkeypatch, signed_release):
+    import ai_mini_monitor.updater as updater
+
+    payload, signature, public_key = signed_release
+    key_path = tmp_path / "public.pem"
+    key_path.write_bytes(public_key)
+    monkeypatch.setattr(updater, "resource_path", lambda _name: key_path)
+    asset_base = "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/"
+    release = {
+        "tag_name": "v0.2.0", "draft": False, "prerelease": False,
+        "assets": [
+            {"name": "update-manifest.json", "browser_download_url": asset_base + "update-manifest.json"},
+            {"name": "update-manifest.sig", "browser_download_url": asset_base + "update-manifest.sig"},
+        ],
+    }
+    responses = {
+        API_URL: json.dumps(release).encode(),
+        asset_base + "update-manifest.json": payload,
+        asset_base + "update-manifest.sig": signature,
+    }
+    return lambda url, _limit: responses[url]
+
+
+def test_available_is_not_published_until_check_finishes_persisting(tmp_path, monkeypatch, signed_release) -> None:
+    fetcher = _signed_release_fetcher(tmp_path, monkeypatch, signed_release)
+    record_entered = threading.Event()
+    release_record = threading.Event()
+    original_save = UpdateService._save_state
+    save_calls = 0
+
+    def hold_record_save(service):
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            record_entered.set()
+            assert release_record.wait(5)
+        return original_save(service)
+
+    monkeypatch.setattr(UpdateService, "_save_state", hold_record_save)
+    service = UpdateService(
+        current_version="0.1.0", install_root=tmp_path / "Mini-Monitor", config_path=None,
+        _fetcher=fetcher, _state_path=tmp_path / "state.json", _clock=lambda: 1000.0,
+    )
+    try:
+        assert service.check()
+        assert record_entered.wait(5)
+        assert service.snapshot().state == "checking"
+        assert not service.prepare()
+        assert not service.check(force=True)
+        release_record.set()
+        _eventually(lambda: service.snapshot().state == "available")
+        assert service.prepare()
+    finally:
+        release_record.set()
+        service.close()
+
+
+def test_delivery_persist_cannot_clear_new_check_reservation(tmp_path, monkeypatch, signed_release) -> None:
+    fetcher = _signed_release_fetcher(tmp_path, monkeypatch, signed_release)
+    persist_entered = threading.Event()
+    release_persist = threading.Event()
+    check_entered = threading.Event()
+    release_check = threading.Event()
+    original_save = UpdateService._save_state
+    phase = "initial"
+
+    def hold_selected_save(service):
+        selected = phase
+        if selected == "persist":
+            persist_entered.set()
+            assert release_persist.wait(5)
+        elif selected == "check":
+            check_entered.set()
+            assert release_check.wait(5)
+        return original_save(service)
+
+    monkeypatch.setattr(UpdateService, "_save_state", hold_selected_save)
+    service = UpdateService(
+        current_version="0.1.0", install_root=tmp_path / "Mini-Monitor", config_path=None,
+        _fetcher=fetcher, _state_path=tmp_path / "state.json", _clock=lambda: 1000.0,
+    )
+    try:
+        assert service.check()
+        _eventually(lambda: service.snapshot().state == "available" and not service._busy)
+        phase = "persist"
+        assert service.mark_notification_delivered("0.2.0")
+        assert persist_entered.wait(5)
+        assert service.check(force=True)
+        phase = "check"
+        release_persist.set()
+        assert check_entered.wait(5)
+        assert service.snapshot().state == "checking"
+        assert not service.check(force=True)
+    finally:
+        release_persist.set()
+        release_check.set()
+        service.close()
+
+
+@pytest.mark.parametrize("failure", [ValueError, UnicodeError])
+def test_delivery_persist_error_keeps_worker_alive_and_notice_delivered(
+    tmp_path, monkeypatch, signed_release, failure,
+) -> None:
+    fetcher = _signed_release_fetcher(tmp_path, monkeypatch, signed_release)
+    persist_attempted = threading.Event()
+    fail_next_save = threading.Event()
+    original_save = UpdateService._save_state
+
+    def fail_delivery_save(service):
+        if fail_next_save.is_set():
+            fail_next_save.clear()
+            persist_attempted.set()
+            raise failure("injected delivery persistence failure")
+        return original_save(service)
+
+    monkeypatch.setattr(UpdateService, "_save_state", fail_delivery_save)
+    service = UpdateService(
+        current_version="0.1.0", install_root=tmp_path / "Mini-Monitor", config_path=None,
+        _fetcher=fetcher, _state_path=tmp_path / "state.json", _clock=lambda: 1000.0,
+    )
+    try:
+        assert service.check()
+        _eventually(lambda: service.snapshot().state == "available" and not service._busy)
+        fail_next_save.set()
+        assert service.mark_notification_delivered("0.2.0")
+        assert persist_attempted.wait(5)
+        assert service.check(force=True)
+        _eventually(lambda: service.snapshot().state == "available")
+        assert not service.snapshot().notification_pending
+    finally:
+        service.close()
+
+
 def test_service_checks_stable_release_once_per_version_and_persists_notice(tmp_path, monkeypatch, signed_release) -> None:
     import ai_mini_monitor.updater as updater
     payload, signature, public_key = signed_release

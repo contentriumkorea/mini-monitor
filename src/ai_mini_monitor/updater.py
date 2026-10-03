@@ -744,29 +744,35 @@ class UpdateService:
 
     def _run(self) -> None:
         while command := self._queue.get():
+            if command == "persist_delivery":
+                try:
+                    self._save_state()
+                except Exception:
+                    # Notice delivery already occurred. Persistence failure
+                    # may repeat it after restart, but must neither kill the
+                    # worker nor release a reserved check/prepare operation.
+                    pass
+                continue
             try:
                 if command == "check":
                     self._save_state()
-                    self._check_once()
+                    terminal = self._check_once()
                 elif command == "prepare":
-                    self._prepare_once()
-                elif command == "persist_delivery":
-                    try:
-                        self._save_state()
-                    except OSError:
-                        # Delivery already occurred; a failed write may only
-                        # cause a conservative repeat on the next launch.
-                        pass
+                    terminal = self._prepare_once()
+                else:
+                    continue
             except Exception:
                 with self._lock:
                     previous = self._snapshot
                     self._snapshot = UpdateSnapshot("error", previous.version, previous.release_url,
                                                      "업데이트를 확인하거나 준비하지 못했습니다", None, False)
-            finally:
+                    self._busy = False
+            else:
                 with self._lock:
+                    self._snapshot = terminal
                     self._busy = False
 
-    def _check_once(self) -> None:
+    def _check_once(self) -> UpdateSnapshot:
         release = json.loads(self._fetcher(API_URL, MAX_METADATA).decode("utf-8"))
         if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not False:
             raise ValueError("latest release is not stable")
@@ -778,9 +784,8 @@ class UpdateService:
             with self._lock:
                 self._manifest = None
                 self._pending_version = None
-                self._snapshot = UpdateSnapshot("idle", None, None, "최신 버전", None, False)
             self._record_check()
-            return
+            return UpdateSnapshot("idle", None, None, "최신 버전", None, False)
         release_url = f"https://github.com/{REPO}/releases/tag/{tag}"
         assets = release.get("assets")
         if not isinstance(assets, list):
@@ -808,17 +813,17 @@ class UpdateService:
             self._pending_version = version if first_notice else None
             state = "available" if manifest is not None and self.install_root is not None else "manual_required"
             message = "업데이트를 적용할 수 있습니다" if state == "available" else "새 버전은 수동 다운로드가 필요합니다"
-            self._snapshot = UpdateSnapshot(state, version, release_url, message, None, first_notice)
         self._record_check()
+        return UpdateSnapshot(state, version, release_url, message, None, first_notice)
 
     def _record_check(self) -> None:
         with self._lock:
             self._last_check = self._clock()
         self._save_state()
 
-    def _prepare_once(self) -> None:
+    def _prepare_once(self) -> UpdateSnapshot:
         assert self._manifest is not None and self.install_root is not None
         prepared = stage_update(self._manifest, install_root=self.install_root, config_path=self.config_path)
         with self._lock:
-            self._snapshot = UpdateSnapshot("ready", self._manifest.version,
-                                             self._snapshot.release_url, "업데이트 준비 완료", prepared, False)
+            return UpdateSnapshot("ready", self._manifest.version,
+                                  self._snapshot.release_url, "업데이트 준비 완료", prepared, False)
