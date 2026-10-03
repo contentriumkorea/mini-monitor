@@ -11,7 +11,13 @@ import psutil
 
 from ..config import SensorConfig
 from ..models import Metric, SensorReading, SensorSnapshot
-from .libre_hardware import LibreHardwareCollector, LibreHardwareUnavailable, choose_sensor
+from .libre_hardware import (
+    LibreHardwareCollector,
+    LibreHardwareUnavailable,
+    _is_virtual_gpu_hardware,
+    choose_sensor,
+    gpu_device_key,
+)
 
 
 GIB = 1024.0**3
@@ -138,20 +144,23 @@ class SystemSensorCollector:
             self.config.cpu_temperature_sensor,
             "CPU temperature",
         )
-        gpu_percent, gpu_load_sensor = self._metric_and_sensor(
+        selected_gpu = _select_gpu_readings(readings, self.config)
+        gpu_percent, gpu_load_sensor = self._gpu_metric_and_sensor(
             readings,
-            "Gpu",
+            selected_gpu,
             "Load",
             self.config.gpu_load_sensor,
             "GPU load",
         )
-        gpu_temperature, gpu_temperature_sensor = self._metric_and_sensor(
+        gpu_temperature, gpu_temperature_sensor = self._gpu_metric_and_sensor(
             readings,
-            "Gpu",
+            selected_gpu,
             "Temperature",
             self.config.gpu_temperature_sensor,
             "GPU temperature",
         )
+        gpu_vram_used, gpu_vram_total = _gpu_memory_metrics(selected_gpu)
+        gpu_power = _gpu_power_metric(selected_gpu)
         return SensorSnapshot(
             captured_at=captured,
             cpu_percent=cpu_percent,
@@ -164,16 +173,31 @@ class SystemSensorCollector:
             memory_available_gib=memory_available,
             cpu_model=self._cpu_model
             or sanitize_hardware_model(cpu_sensor.hardware if cpu_sensor else None),
-            gpu_model=sanitize_hardware_model(
-                gpu_load_sensor.hardware
-                if gpu_load_sensor is not None
-                else (
-                    gpu_temperature_sensor.hardware
-                    if gpu_temperature_sensor is not None
-                    else None
-                )
-            ),
+            gpu_model=sanitize_hardware_model(selected_gpu[0].hardware if selected_gpu else None),
             discovered=readings,
+            gpu_vram_used_gib=gpu_vram_used,
+            gpu_vram_total_gib=gpu_vram_total,
+            gpu_power_w=gpu_power,
+        )
+
+    def _gpu_metric_and_sensor(
+        self,
+        all_readings: tuple[SensorReading, ...],
+        selected_gpu: tuple[SensorReading, ...],
+        sensor_type: str,
+        configured_identifier: str | None,
+        label: str,
+    ) -> tuple[Metric, SensorReading | None]:
+        if configured_identifier and any(
+            reading.identifier == configured_identifier
+            and reading.kind.partition(":")[2] == sensor_type
+            and reading not in selected_gpu
+            for reading in all_readings
+        ):
+            unit = "°C" if sensor_type == "Temperature" else "%"
+            return Metric(None, unit, "configured sensor belongs to a different GPU"), None
+        return self._metric_and_sensor(
+            selected_gpu, "Gpu", sensor_type, configured_identifier, label
         )
 
     def _metric_and_sensor(
@@ -222,3 +246,102 @@ def _finite(value: object) -> float:
     if not math.isfinite(number):
         raise ValueError("sensor returned a non-finite value")
     return number
+
+
+def _select_gpu_readings(
+    readings: tuple[SensorReading, ...], config: SensorConfig
+) -> tuple[SensorReading, ...]:
+    groups: dict[str, list[SensorReading]] = {}
+    for reading in readings:
+        if "gpu" not in reading.kind.partition(":")[0].casefold():
+            continue
+        if _is_virtual_gpu_hardware(reading.hardware):
+            continue
+        groups.setdefault(gpu_device_key(reading), []).append(reading)
+    if not groups:
+        return ()
+    for identifier, sensor_type in (
+        (config.gpu_load_sensor, "Load"),
+        (config.gpu_temperature_sensor, "Temperature"),
+    ):
+        if identifier:
+            for group in groups.values():
+                if any(
+                    reading.identifier == identifier
+                    and reading.kind.partition(":")[2] == sensor_type
+                    for reading in group
+                ):
+                    return tuple(group)
+
+    def rank(item: tuple[str, list[SensorReading]]) -> tuple[int, int, int, int, str]:
+        key, group = item
+        has_total = any(
+            reading.name.casefold() == "gpu memory total"
+            and reading.kind.partition(":")[2] == "SmallData"
+            and reading.value is not None
+            and math.isfinite(reading.value)
+            and reading.value > 0
+            for reading in group
+        )
+        has_load = any(
+            reading.name.casefold() == "gpu core"
+            and reading.kind.partition(":")[2] == "Load"
+            and reading.value is not None
+            for reading in group
+        )
+        has_temperature = any(
+            reading.name.casefold() == "gpu core"
+            and reading.kind.partition(":")[2] == "Temperature"
+            and reading.value is not None
+            for reading in group
+        )
+        is_discrete_family = any(
+            reading.kind.partition(":")[0].casefold() in ("gpunvidia", "gpuamd")
+            for reading in group
+        )
+        return (-int(has_total), -int(has_load), -int(is_discrete_family), -int(has_temperature), key)
+
+    return tuple(min(groups.items(), key=rank)[1])
+
+
+def _gpu_memory_metrics(readings: tuple[SensorReading, ...]) -> tuple[Metric, Metric]:
+    for used_name, total_name in (
+        ("GPU Memory Used", "GPU Memory Total"),
+        ("D3D Dedicated Memory Used", "D3D Dedicated Memory Total"),
+    ):
+        matching = {
+            reading.name.casefold(): reading
+            for reading in readings
+            if reading.kind.partition(":")[2] == "SmallData"
+            and reading.unit == "MiB"
+            and reading.name.casefold() in (used_name.casefold(), total_name.casefold())
+        }
+        used = matching.get(used_name.casefold())
+        total = matching.get(total_name.casefold())
+        if used is None or total is None or used.value is None or total.value is None:
+            continue
+        if (
+            not math.isfinite(used.value)
+            or not math.isfinite(total.value)
+            or used.value < 0
+            or total.value <= 0
+            or used.value > total.value
+        ):
+            continue
+        return Metric(used.value / 1024.0, "GiB"), Metric(total.value / 1024.0, "GiB")
+    reason = "dedicated GPU memory used/total pair unavailable"
+    return Metric(None, "GiB", reason), Metric(None, "GiB", reason)
+
+
+def _gpu_power_metric(readings: tuple[SensorReading, ...]) -> Metric:
+    for reading in readings:
+        if (
+            reading.kind.partition(":")[2] == "Power"
+            and reading.name.casefold() == "gpu package"
+            and reading.unit == "W"
+            and reading.value is not None
+            and math.isfinite(reading.value)
+            and reading.value >= 0
+        ):
+            return Metric(reading.value, "W")
+    return Metric(None, "W", "GPU package power unavailable")

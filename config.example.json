@@ -15,6 +15,7 @@
   "ai": {
     "provider": "not_configured",
     "codex_local_consent": false,
+    "codex_cli_path": null,
     "usage_refresh_seconds": 60,
     "cost_refresh_seconds": 600,
     "daily_budget_usd": null,

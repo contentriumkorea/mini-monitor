@@ -59,6 +59,7 @@ class SensorConfig:
 class AIConfig:
     provider: str = AIProviderKind.NOT_CONFIGURED.value
     codex_local_consent: bool = False
+    codex_cli_path: str | None = None
     usage_refresh_seconds: int = 60
     cost_refresh_seconds: int = 600
     daily_budget_usd: float | None = None
@@ -128,6 +129,12 @@ class AppConfig:
             raise ValueError(f"ai.provider must be one of {sorted(allowed)}")
         if not isinstance(self.ai.codex_local_consent, bool):
             raise ValueError("ai.codex_local_consent must be true or false")
+        if self.ai.codex_cli_path is not None and (
+            not isinstance(self.ai.codex_cli_path, str)
+            or not self.ai.codex_cli_path.strip()
+            or "\x00" in self.ai.codex_cli_path
+        ):
+            raise ValueError("ai.codex_cli_path must be a non-empty path or null")
         for budget in (self.ai.daily_budget_usd, self.ai.monthly_budget_usd):
             if budget is not None and (
                 not _finite_number(budget)

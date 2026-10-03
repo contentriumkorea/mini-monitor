@@ -3,10 +3,37 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 
 import pytest
 
 from ai_mini_monitor.smoothing import TimeEma, clamp_percent
+from ai_mini_monitor.models import AIData, ConnectionData, Metric, SensorSnapshot
+from ai_mini_monitor.state import DisplayComposer, RuntimeValues
+
+
+def test_display_composer_keeps_gpu_capacity_and_power_exact() -> None:
+    sensor = SensorSnapshot(
+        captured_at=datetime.now(timezone.utc),
+        cpu_percent=Metric(20.0, "%"),
+        cpu_temperature=Metric(60.0, "°C"),
+        gpu_percent=Metric(50.0, "%"),
+        gpu_temperature=Metric(70.0, "°C"),
+        memory_percent=Metric(25.0, "%"),
+        memory_used_gib=Metric(4.0, "GiB"),
+        memory_total_gib=Metric(16.0, "GiB"),
+        memory_available_gib=Metric(12.0, "GiB"),
+        gpu_vram_used_gib=Metric(7.5, "GiB"),
+        gpu_vram_total_gib=Metric(16.0, "GiB"),
+        gpu_power_w=Metric(221.25, "W"),
+    )
+    display = DisplayComposer().compose(
+        RuntimeValues(sensor, AIData(), ConnectionData(), sensor_revision=1),
+        monotonic_now=1.0,
+    )
+    assert display.gpu_vram_used_gib == Metric(7.5, "GiB")
+    assert display.gpu_vram_total_gib == Metric(16.0, "GiB")
+    assert display.gpu_power_w == Metric(221.25, "W")
 
 
 def test_time_ema_is_independent_of_update_partitioning() -> None:

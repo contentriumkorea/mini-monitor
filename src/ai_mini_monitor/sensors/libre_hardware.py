@@ -131,6 +131,7 @@ class LibreHardwareCollector:
                         if value is not None
                         else "sensor returned no finite value"
                     ),
+                    hardware_identifier=str(hardware.Identifier),
                 )
             )
         for sub_hardware in list(hardware.SubHardware):
@@ -220,6 +221,15 @@ def _is_allowed_sensor(
         return kind == "temperature"
     if "gpu" not in hardware:
         return False
+    if kind == "smalldata":
+        return name in (
+            "gpu memory used",
+            "gpu memory total",
+            "d3d dedicated memory used",
+            "d3d dedicated memory total",
+        )
+    if kind == "power":
+        return name == "gpu package"
     if any(token in name for token in ("memory", "vram")):
         return False
     if kind == "temperature":
@@ -238,3 +248,15 @@ def _is_allowed_sensor(
         "optical",
     )
     return not any(token in name for token in forbidden_load_names)
+
+
+def gpu_device_key(reading: SensorReading) -> str:
+    """Stable adapter identity, with a fallback for legacy test/diagnostic records."""
+
+    if reading.hardware_identifier:
+        return reading.hardware_identifier.casefold()
+    parts = reading.identifier.casefold().split("/")
+    for index, part in enumerate(parts):
+        if part in {"load", "temperature", "smalldata", "power", "clock", "fan"}:
+            return "/".join(parts[:index]) or reading.hardware.casefold()
+    return reading.identifier.casefold().rsplit("/", 1)[0] or reading.hardware.casefold()

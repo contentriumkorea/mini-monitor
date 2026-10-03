@@ -13,6 +13,7 @@ class ConnectionStatus(str, Enum):
 
 
 class AIProviderKind(str, Enum):
+    CODEX_ACCOUNT = "codex_account"
     CODEX_LOCAL = "codex_local"
     OPENAI_API = "openai_api"
     CHATGPT_ACTIVITY = "chatgpt_activity"
@@ -79,6 +80,9 @@ class DisplaySnapshot:
     memory_history: tuple[float | None, ...] = ()
     ai: AIData = field(default_factory=AIData)
     connection: ConnectionData = field(default_factory=ConnectionData)
+    gpu_vram_used_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
+    gpu_vram_total_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
+    gpu_power_w: Metric = field(default_factory=lambda: Metric(None, "W", "sensor unavailable"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +94,7 @@ class SensorReading:
     value: float | None
     unit: str
     reason: str | None = None
+    hardware_identifier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +111,9 @@ class SensorSnapshot:
     cpu_model: str | None = None
     gpu_model: str | None = None
     discovered: tuple[SensorReading, ...] = ()
+    gpu_vram_used_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
+    gpu_vram_total_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
+    gpu_power_w: Metric = field(default_factory=lambda: Metric(None, "W", "sensor unavailable"))
 
 
 @dataclass(frozen=True, slots=True)

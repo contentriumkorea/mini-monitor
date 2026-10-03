@@ -88,6 +88,8 @@ def test_defaults_and_all_documented_boundaries_validate() -> None:
         ("ai", "provider", "scrape_chatgpt", "provider"),
         ("ai", "codex_local_consent", 1, "codex_local_consent"),
         ("ai", "codex_local_consent", "true", "codex_local_consent"),
+        ("ai", "codex_cli_path", "", "codex_cli_path"),
+        ("ai", "codex_cli_path", 42, "codex_cli_path"),
         ("ai", "daily_budget_usd", 0, "budgets"),
         ("ai", "monthly_budget_usd", -1, "budgets"),
         ("ai", "daily_budget_usd", float("nan"), "budgets"),
@@ -161,6 +163,21 @@ def test_atomic_save_and_load_round_trip(tmp_path) -> None:
 def test_missing_file_returns_valid_defaults(tmp_path) -> None:
     config = load_config(tmp_path / "missing.json")
     assert config == AppConfig()
+
+
+def test_codex_account_contract_preserves_legacy_configuration(tmp_path) -> None:
+    path = tmp_path / "legacy.json"
+    path.write_text('{"ai": {"provider": "codex_local"}}', encoding="utf-8")
+    legacy = load_config(path)
+    assert legacy.ai.codex_cli_path is None
+    assert legacy.ai.provider == AIProviderKind.CODEX_LOCAL.value
+
+    legacy.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
+    legacy.ai.codex_cli_path = r"C:\Program Files\Codex\codex.exe"
+    save_config(legacy, path)
+    loaded = load_config(path)
+    assert loaded.ai.provider == "codex_account"
+    assert loaded.ai.codex_cli_path == r"C:\Program Files\Codex\codex.exe"
 
 
 def test_missing_rotation_uses_landscape_and_legacy_names_migrate_one_way(

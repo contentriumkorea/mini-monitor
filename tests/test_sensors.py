@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from ai_mini_monitor.config import SensorConfig
-from ai_mini_monitor.models import AIData, ConnectionData, SensorReading
+from ai_mini_monitor.models import AIData, ConnectionData, DisplaySnapshot, SensorReading
 from ai_mini_monitor.sensors.collector import (
     GIB,
     MODEL_NAME_MAX_LENGTH,
@@ -24,6 +24,14 @@ from ai_mini_monitor.sensors.libre_hardware import (
     choose_sensor,
 )
 from ai_mini_monitor.state import DisplayComposer, RuntimeValues
+
+
+def test_new_gpu_metrics_default_to_unknown() -> None:
+    snapshot = DisplaySnapshot()
+    assert snapshot.gpu_vram_used_gib.value is None
+    assert snapshot.gpu_vram_total_gib.value is None
+    assert snapshot.gpu_power_w.value is None
+    assert SensorReading("/gpu/0/load/0", "GPU", "GPU Core", "GpuNvidia:Load", 1.0, "%").hardware_identifier is None
 
 
 class MissingLhm:
@@ -209,6 +217,102 @@ def test_models_use_cached_cpu_identity_and_selected_physical_gpu(monkeypatch) -
     assert first.gpu_percent.value == second.gpu_percent.value == 61.0
 
 
+def test_identical_gpu_names_do_not_merge_adapters(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    name = "NVIDIA GeForce RTX"
+    readings = (
+        SensorReading("/gpu/0/load/0", name, "GPU Core", "GpuNvidia:Load", 61.0, "%", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/temperature/0", name, "GPU Core", "GpuNvidia:Temperature", 67.0, "°C", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/1", name, "GPU Memory Used", "GpuNvidia:SmallData", 8192.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/2", name, "GPU Memory Total", "GpuNvidia:SmallData", 16384.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/power/0", name, "GPU Package", "GpuNvidia:Power", 235.0, "W", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/1/temperature/0", name, "GPU Core", "GpuNvidia:Temperature", 74.0, "°C", hardware_identifier="/gpu/1"),
+        SensorReading("/gpu/1/smalldata/1", name, "GPU Memory Used", "GpuNvidia:SmallData", 12288.0, "MiB", hardware_identifier="/gpu/1"),
+        SensorReading("/gpu/1/smalldata/2", name, "GPU Memory Total", "GpuNvidia:SmallData", 24576.0, "MiB", hardware_identifier="/gpu/1"),
+    )
+    result = SystemSensorCollector(
+        SensorConfig(gpu_load_sensor="/gpu/0/load/0", gpu_temperature_sensor="/gpu/1/temperature/0"),
+        lhm=SnapshotLhm(readings),
+    ).sample()
+
+    assert result.gpu_model == name
+    assert result.gpu_percent.value == 61.0
+    assert result.gpu_temperature.value is None
+    assert "different GPU" in (result.gpu_temperature.reason or "")
+    assert result.gpu_vram_used_gib.value == 8.0
+    assert result.gpu_vram_total_gib.value == 16.0
+    assert result.gpu_power_w.value == 235.0
+
+
+def test_gpu_memory_uses_only_complete_same_source_pair(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu/0/load/0", "AMD Radeon", "GPU Core", "GpuAmd:Load", 30.0, "%", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/0", "AMD Radeon", "GPU Memory Used", "GpuAmd:SmallData", 2048.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/1", "AMD Radeon", "D3D Dedicated Memory Used", "GpuAmd:SmallData", 3072.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/2", "AMD Radeon", "D3D Dedicated Memory Total", "GpuAmd:SmallData", 8192.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/3", "AMD Radeon", "D3D Shared Memory Total", "GpuAmd:SmallData", 16384.0, "MiB", hardware_identifier="/gpu/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_vram_used_gib.value == 3.0
+    assert result.gpu_vram_total_gib.value == 8.0
+
+
+@pytest.mark.parametrize("total", [None, 0.0, -1.0, float("nan")])
+def test_gpu_memory_invalid_total_is_unavailable_not_zero(monkeypatch, total: float | None) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu/0/load/0", "Intel Arc", "GPU Core", "GpuIntel:Load", 30.0, "%", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/1", "Intel Arc", "GPU Memory Used", "GpuIntel:SmallData", 1024.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/2", "Intel Arc", "GPU Memory Total", "GpuIntel:SmallData", total, "MiB", hardware_identifier="/gpu/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_vram_used_gib.value is None
+    assert result.gpu_vram_total_gib.value is None
+    assert result.gpu_power_w.value is None
+
+
+def test_virtual_gpu_memory_cannot_be_selected(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu/0/load/0", "Parsec Virtual Display Adapter", "GPU Core", "GpuGeneric:Load", 100.0, "%", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/0", "Parsec Virtual Display Adapter", "GPU Memory Used", "GpuGeneric:SmallData", 4096.0, "MiB", hardware_identifier="/gpu/0"),
+        SensorReading("/gpu/0/smalldata/1", "Parsec Virtual Display Adapter", "GPU Memory Total", "GpuGeneric:SmallData", 8192.0, "MiB", hardware_identifier="/gpu/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_model is None
+    assert result.gpu_vram_used_gib.value is None
+
+
+def test_discrete_gpu_is_preferred_over_integrated_without_vram_total(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu-intel/0/load/0", "Intel Integrated Graphics", "GPU Core", "GpuIntel:Load", 70.0, "%", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-intel/0/smalldata/0", "Intel Integrated Graphics", "D3D Shared Memory Total", "GpuIntel:SmallData", 32768.0, "MiB", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-nvidia/0/load/0", "NVIDIA RTX", "GPU Core", "GpuNvidia:Load", 40.0, "%", hardware_identifier="/gpu-nvidia/0"),
+        SensorReading("/gpu-nvidia/0/smalldata/1", "NVIDIA RTX", "GPU Memory Used", "GpuNvidia:SmallData", 2048.0, "MiB", hardware_identifier="/gpu-nvidia/0"),
+        SensorReading("/gpu-nvidia/0/smalldata/2", "NVIDIA RTX", "GPU Memory Total", "GpuNvidia:SmallData", 16384.0, "MiB", hardware_identifier="/gpu-nvidia/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_model == "NVIDIA RTX"
+    assert result.gpu_percent.value == 40.0
+    assert result.gpu_vram_used_gib.value == 2.0
+    assert result.gpu_vram_total_gib.value == 16.0
+
+
+def test_integrated_gpu_shared_memory_is_not_called_dedicated_vram(monkeypatch) -> None:
+    patch_psutil(monkeypatch)
+    readings = (
+        SensorReading("/gpu-intel/0/load/0", "Intel Integrated Graphics", "GPU Core", "GpuIntel:Load", 20.0, "%", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-intel/0/smalldata/0", "Intel Integrated Graphics", "D3D Dedicated Memory Used", "GpuIntel:SmallData", 128.0, "MiB", hardware_identifier="/gpu-intel/0"),
+        SensorReading("/gpu-intel/0/smalldata/1", "Intel Integrated Graphics", "D3D Shared Memory Total", "GpuIntel:SmallData", 32768.0, "MiB", hardware_identifier="/gpu-intel/0"),
+    )
+    result = SystemSensorCollector(SensorConfig(), lhm=SnapshotLhm(readings)).sample()
+    assert result.gpu_model == "Intel Integrated Graphics"
+    assert result.gpu_vram_used_gib.value is None
+    assert result.gpu_vram_total_gib.value is None
+
+
 def test_display_composer_propagates_models_without_modification(monkeypatch) -> None:
     patch_psutil(monkeypatch)
     readings = (
@@ -251,11 +355,13 @@ class FakeHardware:
         hardware_type: str,
         sensors: list[FakeSensor],
         sub_hardware: list["FakeHardware"] | None = None,
+        identifier: str | None = None,
     ) -> None:
         self.Name = name
         self.HardwareType = hardware_type
         self.Sensors = sensors
         self.SubHardware = sub_hardware or []
+        self.Identifier = identifier or "/" + name.casefold().replace(" ", "-")
         self.update_calls = 0
 
     def Update(self) -> None:
@@ -316,6 +422,10 @@ def test_lhm_snapshot_collects_only_explicit_cpu_gpu_allowlist() -> None:
             FakeSensor("/gpu/vram-temp", "GPU Memory Junction", "Temperature", 75.0),
             FakeSensor("/gpu/fan", "GPU Fan", "Fan", 1200.0),
             FakeSensor("/gpu/data", "GPU Memory Used", "SmallData", 8.0),
+            FakeSensor("/gpu/total", "GPU Memory Total", "SmallData", 16.0),
+            FakeSensor("/gpu/power", "GPU Package", "Power", 210.0),
+            FakeSensor("/gpu/clock", "GPU Core", "Clock", 2500.0),
+            FakeSensor("/gpu/shared", "D3D Shared Memory Total", "SmallData", 32.0),
             FakeSensor("/gpu/voltage", "GPU Core", "Voltage", 0.9),
         ],
     )
@@ -329,12 +439,18 @@ def test_lhm_snapshot_collects_only_explicit_cpu_gpu_allowlist() -> None:
         "/cpu/temp",
         "/gpu/core-load",
         "/gpu/core-temp",
+        "/gpu/data",
+        "/gpu/total",
+        "/gpu/power",
     }
     assert {reading.kind for reading in readings} == {
         "Cpu:Temperature",
         "GpuNvidia:Load",
         "GpuNvidia:Temperature",
+        "GpuNvidia:SmallData",
+        "GpuNvidia:Power",
     }
+    assert all(reading.hardware_identifier for reading in readings)
 
 
 def test_sensor_selection_honors_explicit_identifier_and_skips_none() -> None:
