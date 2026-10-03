@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import time
 import zipfile
 from pathlib import Path
@@ -71,7 +73,7 @@ def test_duplicate_keys_and_noncanonical_json_are_rejected(signed_release) -> No
         verify_release_manifest(payload + b"\n", signature, public_key)
 
 
-@pytest.mark.parametrize("bad", ["../x", "C:/x", "Mini-Monitor/a:stream", "Mini-Monitor/CON", "Mini-Monitor/a./x", "Mini-Monitor/a\\x"])
+@pytest.mark.parametrize("bad", ["../x", "C:/x", "Mini-Monitor/a:stream", "Mini-Monitor/CON", "Mini-Monitor/a./x", "Mini-Monitor/a\\x", "Mini-Monitor/COM¹", "Mini-Monitor/com².txt", "Mini-Monitor/LPT³", "Mini-Monitor/lpt¹.log"])
 def test_release_manifest_rejects_windows_alias_paths(signed_release, bad: str) -> None:
     _payload, _signature, public = signed_release
     key = Ed25519PrivateKey.generate()
@@ -164,6 +166,24 @@ def test_stage_rejects_config_inside_install_tree(tmp_path, monkeypatch) -> None
     with pytest.raises(ValueError, match="config"):
         stage_update(manifest, install_root=root, config_path=root / "config.json")
     assert (root / "Mini-Monitor.exe").read_bytes() == b"old exe"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction fixture")
+def test_stage_rejects_install_through_parent_junction_before_resolution(tmp_path, monkeypatch) -> None:
+    import ai_mini_monitor.updater as updater
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    root = real_parent / "Mini-Monitor"
+    _old_install(root)
+    junction = tmp_path / "linked-parent"
+    subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(junction), str(real_parent)],
+                   check=True, capture_output=True, text=True)
+    archive_data, manifest = _new_archive(tmp_path / "new.zip")
+    monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_data))
+    with pytest.raises(ValueError, match="reparse|junction"):
+        stage_update(manifest, install_root=junction / "Mini-Monitor", config_path=None)
+    assert (root / "Mini-Monitor.exe").read_bytes() == b"old exe"
+    assert not list(real_parent.glob(".mini-monitor-update-*"))
 
 
 @pytest.mark.parametrize("member", ["Mini-Monitor/../evil", "Mini-Monitor/CON", "Mini-Monitor/a:stream"])

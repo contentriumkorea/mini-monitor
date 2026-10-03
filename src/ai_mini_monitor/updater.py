@@ -45,7 +45,7 @@ REQUEST_TIMEOUT = 15
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 _BAD_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.I)
+_DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|(?:COM|LPT)(?:[1-9]|[¹²³]))(?:\..*)?\Z", re.I)
 _REDIRECT_HOSTS = {"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 _CHECK_INTERVAL = 86_400.0
 
@@ -209,9 +209,22 @@ def _reparse(path: Path) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
 
 
+def _regular_unresolved_root(path: Path) -> Path:
+    """Validate each lexical component before resolving any junction target."""
+
+    if ".." in path.parts:
+        raise ValueError("install path contains a parent traversal")
+    raw = Path(os.path.abspath(path))
+    for component in (raw, *raw.parents):
+        if _reparse(component):
+            raise ValueError("install path contains a reparse point or junction")
+    if not raw.is_dir():
+        raise ValueError("install root is missing")
+    return raw
+
+
 def _install_inventory(root: Path) -> tuple[tuple[str, str], ...]:
-    if not root.is_dir() or _reparse(root) or _reparse(root.parent):
-        raise ValueError("install root is missing or reparse-linked")
+    root = _regular_unresolved_root(root)
     manifest_path = root / "SHA256SUMS.txt"
     if not manifest_path.is_file() or _reparse(manifest_path):
         raise ValueError("install inventory is missing")
@@ -357,8 +370,8 @@ def _restart_args(arguments: list[str]) -> list[str]:
 
 def stage_update(manifest: UpdateManifest, *, install_root: Path, config_path: Path | None) -> PreparedUpdate:
     _validate_manifest_instance(manifest)
-    root = install_root.resolve(strict=True)
-    if root.name != "Mini-Monitor" or _reparse(root) or _reparse(root.parent):
+    root = _regular_unresolved_root(install_root)
+    if root.name != "Mini-Monitor":
         raise ValueError("automatic update requires a regular Mini-Monitor install")
     if config_path is not None and _within(config_path, root):
         raise ValueError("custom config inside install tree requires manual update")

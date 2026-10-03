@@ -48,7 +48,7 @@ function Assert-Relative([string]$Relative) {
     }
     foreach ($piece in $Relative.Split('/')) {
         if (-not $piece -or $piece -eq '.' -or $piece -eq '..' -or $piece.EndsWith('.') -or $piece.EndsWith(' ') -or
-            $piece -match '[<>:"|?*~]' -or $piece -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+            $piece -match '[<>:"|?*~]' -or $piece -match '^(?i:CON|PRN|AUX|NUL|(?:COM|LPT)(?:[1-9]|\u00B9|\u00B2|\u00B3))(?:\..*)?$') {
             throw "Unsafe update path component: $piece"
         }
     }
@@ -116,6 +116,16 @@ function Show-UpdateNotice([string]$Detail, [string]$BackupPath) {
     } catch { }
 }
 
+function Restore-PreviousProgram([string]$InstallPath, [string]$BackupPath, [string]$ParentPath) {
+    if (-not (Test-Path -LiteralPath $BackupPath -PathType Container)) { return $false }
+    if (Test-Path -LiteralPath $InstallPath) {
+        $failed = Join-Path $ParentPath ('.mini-monitor-failed-' + [guid]::NewGuid().ToString('N'))
+        Move-Item -LiteralPath $InstallPath -Destination $failed -ErrorAction Stop
+    }
+    Move-Item -LiteralPath $BackupPath -Destination $InstallPath -ErrorAction Stop
+    return $true
+}
+
 $journal = Resolve-FullPath $JournalPath
 $stageDir = [IO.Path]::GetDirectoryName($journal)
 Assert-DirectChild $journal $stageDir
@@ -155,6 +165,45 @@ if ([string]$record.old_inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
 Assert-Tree $install $oldMap $true
 Assert-Tree $staged $newMap $false
 
+# Complete argument/config validation while the old app is still in place.
+$program = Join-Path $install 'Mini-Monitor.exe'
+Assert-Regular (Join-Path $staged 'Mini-Monitor.exe')
+$psi = [Diagnostics.ProcessStartInfo]::new()
+$psi.FileName = $program
+$psi.WorkingDirectory = $install
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $false
+$restart = @($record.restart_args)
+$safeArgs = [Collections.Generic.List[string]]::new()
+for ($index = 0; $index -lt $restart.Count; $index++) {
+    [string]$flag = $restart[$index]
+    if ($flag -eq '--minimized' -or $flag -eq '--no-serial') {
+        $safeArgs.Add($flag)
+    } elseif (($flag -eq '--desktop-smoke' -or $flag -eq '--headless-run') -and $index + 1 -lt $restart.Count) {
+        [double]$duration = 0
+        [string]$rawDuration = $restart[$index + 1]
+        if ($rawDuration -cnotmatch '^[0-9]+(?:\.[0-9]+)?$' -or
+            -not [double]::TryParse($rawDuration, [Globalization.NumberStyles]::AllowDecimalPoint,
+                                    [Globalization.CultureInfo]::InvariantCulture, [ref]$duration) -or
+            $duration -le 0 -or $duration -gt 3600) { throw 'Unsafe restart duration.' }
+        $safeArgs.Add($flag)
+        $safeArgs.Add($duration.ToString('0.################', [Globalization.CultureInfo]::InvariantCulture))
+        $index++
+    } else {
+        throw 'Unsupported restart option.'
+    }
+}
+$psi.Arguments = [string]::Join(' ', $safeArgs)
+$psi.EnvironmentVariables['MINI_MONITOR_UPDATE_ACK_PATH'] = $ack
+$psi.EnvironmentVariables['MINI_MONITOR_UPDATE_ACK_NONCE'] = [string]$record.nonce
+if ($record.config_path) {
+    $config = Resolve-FullPath $record.config_path
+    if ($config.StartsWith($install.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Custom config moved inside the install tree.'
+    }
+    $psi.EnvironmentVariables['MINI_MONITOR_UPDATE_CONFIG_PATH'] = $config
+}
+
 $ackTimeout = 60
 if ($record.PSObject.Properties.Name -contains 'ack_timeout_seconds') {
     $ackTimeout = [int]$record.ack_timeout_seconds
@@ -176,69 +225,40 @@ if ((Get-Sha256 (Join-Path $install 'SHA256SUMS.txt')) -cne [string]$record.old_
 Assert-Tree $install $oldMap $true
 Assert-Tree $staged $newMap $false
 
+$newProcess = $null
 try {
     Move-Item -LiteralPath $install -Destination $backup -ErrorAction Stop
     Save-Journal $record $journal 'old_backed_up'
     Move-Item -LiteralPath $staged -Destination $install -ErrorAction Stop
     Save-Journal $record $journal 'new_installed'
-} catch {
-    if (-not (Test-Path -LiteralPath $install) -and (Test-Path -LiteralPath $backup)) {
-        Move-Item -LiteralPath $backup -Destination $install -ErrorAction Stop
+    if ($env:PYTEST_CURRENT_TEST -and $env:MINI_MONITOR_UPDATE_TEST_FAIL_AFTER_SWAP -eq '1') {
+        throw 'Controlled test fault after both renames.'
     }
-    Save-Journal $record $journal 'swap_failed'
-    Show-UpdateNotice 'The update could not be swapped. Check the update journal and backup folder.' $backup
-    throw
-}
-
-$program = Join-Path $install 'Mini-Monitor.exe'
-Assert-Regular $program
-$psi = [Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = $program
-$psi.WorkingDirectory = $install
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $false
-$restart = @($record.restart_args)
-$safeArgs = [Collections.Generic.List[string]]::new()
-for ($index = 0; $index -lt $restart.Count; $index++) {
-    [string]$flag = $restart[$index]
-    if ($flag -eq '--minimized' -or $flag -eq '--no-serial') {
-        $safeArgs.Add($flag)
-    } elseif (($flag -eq '--desktop-smoke' -or $flag -eq '--headless-run') -and $index + 1 -lt $restart.Count) {
-        [double]$duration = 0
-        if ([string]$restart[$index + 1] -cnotmatch '^[0-9]+(?:\.[0-9]+)?$' -or
-            -not [double]::TryParse([string]$restart[$index + 1], [ref]$duration) -or
-            $duration -le 0 -or $duration -gt 3600) { throw 'Unsafe restart duration.' }
-        $safeArgs.Add($flag)
-        $safeArgs.Add([string]$restart[$index + 1])
-        $index++
-    } else {
-        throw 'Unsupported restart option.'
-    }
-}
-$psi.Arguments = [string]::Join(' ', $safeArgs)
-$psi.EnvironmentVariables['MINI_MONITOR_UPDATE_ACK_PATH'] = $ack
-$psi.EnvironmentVariables['MINI_MONITOR_UPDATE_ACK_NONCE'] = [string]$record.nonce
-if ($record.config_path) {
-    $config = Resolve-FullPath $record.config_path
-    if ($config.StartsWith($install.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Custom config moved inside the install tree.'
-    }
-    $psi.EnvironmentVariables['MINI_MONITOR_UPDATE_CONFIG_PATH'] = $config
-}
-try {
+    Assert-Regular $program
     $newProcess = [Diagnostics.Process]::Start($psi)
+    if ($null -eq $newProcess) { throw 'Replacement process did not start.' }
 } catch {
-    $newProcess = $null
-}
-if ($null -eq $newProcess) {
-    $failed = Join-Path $installParent ('.mini-monitor-failed-' + [guid]::NewGuid().ToString('N'))
-    Move-Item -LiteralPath $install -Destination $failed -ErrorAction Stop
-    Move-Item -LiteralPath $backup -Destination $install -ErrorAction Stop
-    Save-Journal $record $journal 'rolled_back_start_failed'
-    Show-UpdateNotice 'The replacement app could not start. The previous program was restored.' ''
+    if ($null -ne $newProcess) {
+        $alive = $true
+        try { $newProcess.Refresh(); $alive = -not $newProcess.HasExited } catch { }
+        if ($alive) {
+            try { Save-Journal $record $journal 'needs_manual_recovery_alive' } catch { }
+            Show-UpdateNotice 'The replacement app is still running after an update error. No files were rolled back.' $backup
+            exit 4
+        }
+    }
+    $restored = $false
+    try { $restored = Restore-PreviousProgram $install $backup $installParent } catch { }
+    try { Save-Journal $record $journal 'rolled_back_start_failed' } catch { }
+    if ($restored) {
+        Show-UpdateNotice 'The update failed before the replacement started. The previous program was restored.' ''
+    } else {
+        Show-UpdateNotice 'The update failed and needs manual recovery. Close Mini Monitor before restoring the saved backup.' $backup
+    }
     exit 3
 }
 
+try {
 $deadline = [DateTime]::UtcNow.AddSeconds($ackTimeout)
 $healthy = $false
 while ([DateTime]::UtcNow -lt $deadline) {
@@ -271,9 +291,27 @@ if (-not $newProcess.HasExited) {
     Show-UpdateNotice 'The replacement app did not confirm a healthy start. It is still running, so no files were deleted or rolled back.' $backup
     exit 4
 }
-$failed = Join-Path $installParent ('.mini-monitor-failed-' + [guid]::NewGuid().ToString('N'))
-Move-Item -LiteralPath $install -Destination $failed -ErrorAction Stop
-Move-Item -LiteralPath $backup -Destination $install -ErrorAction Stop
+$restored = Restore-PreviousProgram $install $backup $installParent
+if (-not $restored) { throw 'Previous program backup is missing.' }
 Save-Journal $record $journal 'rolled_back_no_ack'
 Show-UpdateNotice 'The replacement app exited without confirming a healthy start. The previous program was restored.' ''
 exit 5
+} catch {
+    $alive = $true
+    try { $newProcess.Refresh(); $alive = -not $newProcess.HasExited } catch { }
+    if ($alive) {
+        try { Save-Journal $record $journal 'needs_manual_recovery_alive' } catch { }
+        Show-UpdateNotice 'The replacement app is still running after an update error. Backup was preserved for manual recovery.' $backup
+        exit 4
+    }
+    $restored = $false
+    try { $restored = Restore-PreviousProgram $install $backup $installParent } catch { }
+    if ($restored) {
+        try { Save-Journal $record $journal 'rolled_back_no_ack' } catch { }
+        Show-UpdateNotice 'The replacement app failed. The previous program was restored.' ''
+    } else {
+        try { Save-Journal $record $journal 'needs_manual_recovery' } catch { }
+        Show-UpdateNotice 'The update failed and needs manual recovery. Close Mini Monitor before restoring the backup.' $backup
+    }
+    exit 5
+}
