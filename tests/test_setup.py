@@ -180,6 +180,79 @@ def test_account_and_update_controls_fit_short_negative_monitor_at_high_dpi(
         interpreter.call("tk", "scaling", original_scaling)
 
 
+@pytest.mark.parametrize("size", [(480, 320), (320, 480)])
+def test_preview_fits_right_pane_on_short_high_dpi_monitor(
+    size: tuple[int, int], monkeypatch: pytest.MonkeyPatch, _shared_tk_interpreter,
+) -> None:
+    interpreter = _shared_tk_interpreter.tk
+    original_scaling = float(interpreter.call("tk", "scaling"))
+    interpreter.call("tk", "scaling", 2.0)
+    monkeypatch.setattr(
+        setup_ui_module,
+        "_window_bounds",
+        lambda _window: setup_ui_module.WindowBounds(0, 0, 1024, 720, 16, 39),
+    )
+    window = make_window()
+    try:
+        window.set_provider(AIProviderKind.CODEX_ACCOUNT.value)
+        window.update_codex_account(SimpleNamespace(
+            state="delayed",
+            email="synthetic.long.account.name@example.invalid",
+            plan_type="ChatGPT Plus synthetic",
+            login_pending=False,
+            windows=(),
+            updated_at=None,
+            error_detail="long synthetic status",
+        ))
+        fixed_banner_height = window._update_banner.winfo_reqheight()
+        for message in (
+            "합성 수동 설치 안내: 아주 긴 설명이 들어와도 배너 높이와 하단 조작 위치는 그대로 유지되어야 합니다.",
+            "W" * 70,
+            "가" * 70,
+        ):
+            window.update_update_status(SimpleNamespace(
+                state="manual_required",
+                version="2026.10.4",
+                message=message,
+                prepared=None,
+                release_url="https://example.invalid/synthetic",
+            ))
+            window.window.update_idletasks()
+            assert window._update_banner.winfo_reqheight() == fixed_banner_height
+            for control in (window._update_release_button, window._update_dismiss_button):
+                assert control.winfo_y() + control.winfo_height() <= window._update_banner.winfo_height()
+                assert control.winfo_x() + control.winfo_width() <= window._update_banner.winfo_width()
+        window.update_image(Image.new("RGB", size, "black"))
+        window.show()
+        window.window.update()
+        right = window._preview_detail.master
+        preview_border = window._preview_label.master
+        assert preview_border.winfo_x() >= 0
+        assert preview_border.winfo_x() + preview_border.winfo_width() <= right.winfo_width()
+        assert (
+            preview_border.winfo_rootx() + preview_border.winfo_width()
+            <= window.window.winfo_rootx() + window.window.winfo_width() - 24
+        )
+        assert window._photo.width() <= 480
+        assert window._photo.width() <= preview_border.winfo_width() - 2
+        assert window._photo.height() <= 320
+        assert window._photo.width() / window._photo.height() == pytest.approx(size[0] / size[1], rel=0.01)
+        assert window._right_scrollbar_visible
+        window._right_canvas.yview_moveto(1.0)
+        window.window.update()
+        assert window._reconnect_button.winfo_rooty() >= window._right_canvas.winfo_rooty()
+        assert (
+            window._reconnect_button.winfo_rooty() + window._reconnect_button.winfo_height()
+            <= window._right_canvas.winfo_rooty() + window._right_canvas.winfo_height()
+        )
+        previous_photo = window._photo
+        window.update_image(Image.new("RGB", size, "white"))
+        assert window._photo is not previous_photo
+    finally:
+        window.close()
+        interpreter.call("tk", "scaling", original_scaling)
+
+
 def test_overlay_options_are_modal_live_and_keep_physical_monitor_controls_separate() -> None:
     submitted: list[OverlaySettings] = []
     resets: list[bool] = []

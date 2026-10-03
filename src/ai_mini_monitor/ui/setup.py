@@ -418,6 +418,8 @@ class SetupWindow:
         self._window.withdraw()
         self._closed = False
         self._photo: ImageTk.PhotoImage | None = None
+        self._preview_source: Image.Image | None = None
+        self._preview_available_width: int | None = None
         self._on_detect_device = on_detect_device
         self._on_check_usage = on_check_usage
         self._on_start = on_start
@@ -658,6 +660,7 @@ class SetupWindow:
         self._cancel_overlay_schedule()
         self._closed = True
         self._photo = None
+        self._preview_source = None
         self._admin_key.set("")
         if self._openai_dialog is not None:
             self._openai_dialog.destroy()
@@ -680,15 +683,39 @@ class SetupWindow:
         rgb = image.convert("RGB")
         if rgb.size not in {(480, 320), (320, 480)}:
             raise ValueError("setup preview must be exactly 480x320 or 320x480")
-        fitted = ImageOps.contain(rgb, (480, 320), Image.Resampling.LANCZOS)
-        self._photo = ImageTk.PhotoImage(fitted, master=self._window)
-        self._preview_label.configure(image=self._photo)
+        self._preview_source = rgb
+        self._preview_available_width = None
+        self._render_preview()
         self._preview_detail.configure(
             text=(
                 f"선택한 {rgb.width}×{rgb.height} 화면입니다. "
                 "설정창에서는 비율을 유지해 축소하며, PC 상태창도 같은 내용을 표시합니다."
             )
         )
+
+    def _render_preview(self) -> None:
+        if self._preview_source is None:
+            return
+        # The physical framebuffer stays 480x320 or 320x480; only this
+        # settings-window copy shrinks when its right pane is narrower.
+        pane_width = self._preview_detail.master.winfo_width()
+        available_width = min(480, max(1, pane_width - 30)) if pane_width > 1 else 480
+        if available_width == self._preview_available_width and self._photo is not None:
+            return
+        self._preview_available_width = available_width
+        fitted = ImageOps.contain(
+            self._preview_source,
+            (available_width, 320),
+            Image.Resampling.LANCZOS,
+        )
+        self._photo = ImageTk.PhotoImage(fitted, master=self._window)
+        self._preview_label.configure(image=self._photo)
+
+    def _resize_preview_pane(self, _event: tk.Event) -> None:
+        pane_width = self._preview_detail.master.winfo_width()
+        if pane_width > 1:
+            self._preview_detail.configure(wraplength=max(1, pane_width - 28))
+        self._render_preview()
 
     def set_device_result(self, result: ActionResult) -> None:
         require_main_thread()
@@ -1158,8 +1185,34 @@ class SetupWindow:
         )
         self._build_controls(left)
 
-        right = ttk.Frame(root, style="Card.TFrame", padding=14)
-        right.grid(row=1, column=1, sticky="nsew")
+        right_shell = ttk.Frame(root, style="Card.TFrame")
+        right_shell.grid(row=1, column=1, sticky="nsew")
+        right_shell.columnconfigure(0, weight=1)
+        right_shell.rowconfigure(0, weight=1)
+        self._right_canvas = tk.Canvas(
+            right_shell,
+            background=CARD,
+            borderwidth=0,
+            highlightthickness=0,
+            height=1,
+        )
+        self._right_canvas.grid(row=0, column=0, sticky="nsew")
+        self._right_scrollbar = ttk.Scrollbar(
+            right_shell,
+            orient="vertical",
+            command=self._right_canvas.yview,
+            takefocus=True,
+            style="Dark.Vertical.TScrollbar",
+        )
+        self._right_canvas.configure(yscrollcommand=self._right_scrollbar.set)
+        self._right_scrollbar_visible = False
+        right = ttk.Frame(self._right_canvas, style="Card.TFrame", padding=14)
+        self._right_scroll_content = right
+        self._right_scroll_window = self._right_canvas.create_window(
+            (0, 0), anchor="nw", window=right,
+        )
+        right.bind("<Configure>", self._sync_right_scroll_region, add="+")
+        self._right_canvas.bind("<Configure>", self._resize_right_viewport, add="+")
         right.columnconfigure(0, weight=1)
         ttk.Label(right, text="미니 모니터 화면", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
         self._preview_detail = ttk.Label(
@@ -1174,6 +1227,7 @@ class SetupWindow:
         preview_border.grid(row=2, column=0, sticky="n", pady=(0, 12))
         self._preview_label = tk.Label(preview_border, background="#070A0F", borderwidth=0, highlightthickness=0)
         self._preview_label.pack()
+        right.bind("<Configure>", self._resize_preview_pane, add="+")
         preview_actions = ttk.Frame(right, style="Card.TFrame")
         preview_actions.grid(row=3, column=0, sticky="ew")
         preview_actions.columnconfigure(0, weight=1)
@@ -1232,6 +1286,8 @@ class SetupWindow:
         )
         self._reconnect_button = ttk.Button(preview_actions, text="장치 다시 연결", style="Secondary.TButton", command=self._reconnect)
         self._reconnect_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self._bind_right_viewport_interactions(right)
+        self._right_canvas.bind("<MouseWheel>", self._scroll_right_mousewheel, add="+")
         self._create_overlay_dialog()
         self._sync_overlay_quick_button()
 
@@ -1365,27 +1421,42 @@ class SetupWindow:
         self._update_banner = banner
         banner.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         banner.grid_propagate(False)
-        banner.configure(height=84)
         banner.columnconfigure(0, weight=1)
-        ttk.Label(banner, text="업데이트", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
-        self._update_message = ttk.Label(banner, text="최신 버전 확인 전", style="CardText.TLabel", wraplength=170)
-        self._update_message.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        banner.columnconfigure(1, weight=1)
+        title = ttk.Label(banner, text="업데이트", style="CardTitle.TLabel")
+        title.grid(row=0, column=0, columnspan=2, sticky="w")
+        self._update_message = ttk.Label(
+            banner, text="최신 버전 확인 전", style="CardText.TLabel",
+            wraplength=400, justify="left",
+        )
+        self._update_message.grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
         self._update_check_button = ttk.Button(banner, text="업데이트 확인", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_check, "업데이트를 확인하지 못했습니다"))
-        self._update_check_button.grid(row=0, column=1, rowspan=2, padx=(8, 0))
+        self._update_check_button.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self._update_apply_button = ttk.Button(banner, text="업데이트 후 다시 시작", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_apply, "업데이트를 준비하지 못했습니다"))
-        self._update_apply_button.grid(row=0, column=2, rowspan=2, padx=(8, 0))
+        self._update_apply_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         self._update_dismiss_button = ttk.Button(banner, text="나중에", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_dismiss, "알림을 닫지 못했습니다"))
-        self._update_dismiss_button.grid(row=2, column=2, sticky="e")
+        self._update_dismiss_button.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(6, 0))
         self._update_dismiss_button.state(["disabled"])
         self._update_release_button = ttk.Button(banner, text="릴리스 보기", style="Secondary.TButton", command=lambda: self._update_action(self._on_update_open_release, "릴리스를 열지 못했습니다"))
-        self._update_release_button.grid(row=2, column=1, sticky="e")
+        self._update_release_button.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         self._update_release_button.state(["disabled"])
         self._update_apply_button.state(["disabled"])
         if self._on_update_check is None:
             self._update_check_button.state(["disabled"])
+        # Reserve room for the longest displayed message before any status
+        # arrives, so long release text never shifts the fixed footer.
+        message_probe = ttk.Label(
+            banner, text="가" * 81, style="CardText.TLabel", wraplength=400,
+        )
         banner.update_idletasks()
-        _x, _y, _width, content_height = banner.grid_bbox(0, 0, 2, 2)
-        banner.configure(height=max(104, content_height + 16))
+        reserved_height = (
+            title.winfo_reqheight() + message_probe.winfo_reqheight()
+            + self._update_check_button.winfo_reqheight()
+            + self._update_release_button.winfo_reqheight()
+            + 8 + 3 + 8 + 6 + 8
+        )
+        message_probe.destroy()
+        banner.configure(height=max(184, reserved_height))
 
     def _build_usage_card(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -1623,6 +1694,88 @@ class SetupWindow:
             return None
         units = -3 if delta > 0 else 3
         self._left_canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _sync_right_scroll_region(self, _event: tk.Event | None = None) -> None:
+        if self._closed:
+            return
+        bounds = self._right_canvas.bbox("all")
+        if bounds is not None:
+            self._right_canvas.configure(scrollregion=bounds)
+        self._window.after_idle(self._update_right_scrollbar)
+
+    def _resize_right_viewport(self, event: tk.Event) -> None:
+        if self._closed:
+            return
+        self._right_canvas.itemconfigure(
+            self._right_scroll_window,
+            width=max(1, int(event.width)),
+        )
+        self._window.after_idle(self._update_right_scrollbar)
+
+    def _update_right_scrollbar(self) -> None:
+        if self._closed:
+            return
+        overflow = (
+            self._right_scroll_content.winfo_reqheight()
+            > self._right_canvas.winfo_height() + 1
+        )
+        if overflow and not self._right_scrollbar_visible:
+            self._right_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+            self._right_scrollbar_visible = True
+        elif not overflow and self._right_scrollbar_visible:
+            self._right_scrollbar.grid_remove()
+            self._right_canvas.yview_moveto(0.0)
+            self._right_scrollbar_visible = False
+
+    def _bind_right_viewport_interactions(self, widget: tk.Misc) -> None:
+        widget.bind("<FocusIn>", self._reveal_right_focus, add="+")
+        widget.bind("<MouseWheel>", self._scroll_right_mousewheel, add="+")
+        for child in widget.winfo_children():
+            self._bind_right_viewport_interactions(child)
+
+    def _reveal_right_focus(self, event: tk.Event) -> None:
+        if self._closed:
+            return
+        self._scroll_right_widget_into_view(event.widget)
+        self._window.after_idle(
+            lambda: self._scroll_right_widget_into_view(event.widget)
+        )
+
+    def _scroll_right_widget_into_view(self, widget: tk.Misc) -> None:
+        if self._closed or not self._right_scrollbar_visible:
+            return
+        try:
+            self._window.update_idletasks()
+            viewport_height = self._right_canvas.winfo_height()
+            content_height = self._right_scroll_content.winfo_height()
+            if viewport_height <= 1 or content_height <= viewport_height:
+                return
+            view_top = float(self._right_canvas.canvasy(0))
+            view_bottom = view_top + viewport_height
+            widget_top = widget.winfo_rooty() - self._right_canvas.winfo_rooty() + view_top
+            widget_bottom = widget_top + widget.winfo_height()
+            margin = 4
+            if widget_top - margin < view_top:
+                target = max(0.0, widget_top - margin)
+            elif widget_bottom + margin > view_bottom:
+                target = min(
+                    float(content_height - viewport_height),
+                    widget_bottom + margin - viewport_height,
+                )
+            else:
+                return
+            self._right_canvas.yview_moveto(target / float(content_height))
+        except tk.TclError:
+            return
+
+    def _scroll_right_mousewheel(self, event: tk.Event) -> str | None:
+        if self._closed or not self._right_scrollbar_visible:
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta == 0:
+            return None
+        self._right_canvas.yview_scroll(-3 if delta > 0 else 3, "units")
         return "break"
 
     def _brightness_changed(self, raw_value: str) -> None:
