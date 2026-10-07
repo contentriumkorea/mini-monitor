@@ -294,7 +294,6 @@ def test_background_alpha_changes_but_information_core_stays_opaque(
     frame = renderer.render(
         DisplaySnapshot(
             cpu_percent=Metric(78, "%"),
-            cpu_history=(0, 30, 70, 100),
         )
     )
     composed = compose_overlay_rgba(frame, opacity)
@@ -322,15 +321,12 @@ def test_background_alpha_changes_but_information_core_stays_opaque(
     assert foreground.getpixel(track_point)[3] == 255
     assert composed.getpixel(track_point)[3] == 255
 
-    spark = renderer.last_sparklines["cpu"]
-    spark_core = [
-        (x, y)
-        for y in range(spark.y, spark.bottom)
-        for x in range(spark.x, spark.right)
-        if foreground.getpixel((x, y))[3] == 255
-    ]
-    assert spark_core
-    assert composed.getpixel(spark_core[0])[3] == 255
+    fill = renderer.last_gauges["cpu"].fill
+    assert fill is not None
+    fill_point = (fill.x + fill.width // 2, fill.y + fill.height // 2)
+    assert foreground.getpixel(fill_point)[3] == 255
+    assert composed.getpixel(fill_point)[3] == 255
+    assert renderer.last_sparklines == {}
 
 
 @pytest.mark.parametrize("portrait", [False, True])

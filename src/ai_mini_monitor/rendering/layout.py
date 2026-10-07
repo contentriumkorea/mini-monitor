@@ -59,6 +59,7 @@ class DashboardLayout:
     cpu: Rect
     gpu: Rect
     memory: Rect
+    vram: Rect
     ai: Rect
 
     @property
@@ -70,8 +71,9 @@ class DashboardLayout:
         return {
             "connection": self.connection,
             "cpu": self.cpu,
-            "gpu": self.gpu,
             "memory": self.memory,
+            "gpu": self.gpu,
+            "vram": self.vram,
             "ai": self.ai,
         }
 
@@ -80,10 +82,11 @@ LANDSCAPE_LAYOUT = DashboardLayout(
     width=SCREEN_WIDTH,
     height=SCREEN_HEIGHT,
     connection=Rect(8, 8, 464, 20),
-    cpu=Rect(8, 36, 228, 134),
-    gpu=Rect(244, 36, 228, 134),
-    memory=Rect(8, 178, 228, 134),
-    ai=Rect(244, 178, 228, 134),
+    cpu=Rect(8, 36, 228, 88),
+    memory=Rect(244, 36, 228, 88),
+    gpu=Rect(8, 132, 228, 88),
+    vram=Rect(244, 132, 228, 88),
+    ai=Rect(8, 228, 464, 84),
 )
 
 # A genuine portrait dashboard: every card is rendered in a 320x480 logical
@@ -93,10 +96,11 @@ PORTRAIT_LAYOUT = DashboardLayout(
     width=PORTRAIT_WIDTH,
     height=PORTRAIT_HEIGHT,
     connection=Rect(8, 8, 304, 20),
-    cpu=Rect(8, 36, 304, 103),
-    gpu=Rect(8, 147, 304, 103),
-    memory=Rect(8, 258, 304, 103),
-    ai=Rect(8, 369, 304, 103),
+    cpu=Rect(8, 36, 304, 81),
+    memory=Rect(8, 125, 304, 81),
+    gpu=Rect(8, 214, 304, 81),
+    vram=Rect(8, 303, 304, 81),
+    ai=Rect(8, 392, 304, 80),
 )
 
 
@@ -113,6 +117,7 @@ CONNECTION = LANDSCAPE_LAYOUT.connection
 CPU = LANDSCAPE_LAYOUT.cpu
 GPU = LANDSCAPE_LAYOUT.gpu
 MEMORY = LANDSCAPE_LAYOUT.memory
+VRAM = LANDSCAPE_LAYOUT.vram
 AI = LANDSCAPE_LAYOUT.ai
 CARD_RECTS = LANDSCAPE_LAYOUT.card_rects
 
@@ -130,12 +135,8 @@ def validate_layout(layout: DashboardLayout = LANDSCAPE_LAYOUT) -> list[str]:
     if layout.connection.width != layout.width - 16 or layout.connection.height != 20:
         errors.append("connection dimensions changed")
     if layout is LANDSCAPE_LAYOUT:
-        expected = {
-            "cpu": (228, 134),
-            "gpu": (228, 134),
-            "memory": (228, 134),
-            "ai": (228, 134),
-        }
+        expected = {"cpu": (228, 88), "memory": (228, 88), "gpu": (228, 88),
+                    "vram": (228, 88), "ai": (464, 84)}
         for name, dimensions in expected.items():
             rect = layout.card_rects[name]
             if (rect.width, rect.height) != dimensions:

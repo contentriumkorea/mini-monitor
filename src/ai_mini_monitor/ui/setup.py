@@ -9,6 +9,7 @@ import itertools
 import sys
 from ctypes import wintypes
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 import tkinter as tk
@@ -20,11 +21,13 @@ from ..config import (
     DEFAULT_BRIGHTNESS,
     DEFAULT_OVERLAY_OPACITY,
     DEFAULT_OVERLAY_SCALE_PERCENT,
+    DEFAULT_TASKBAR_ITEMS,
     MAX_OVERLAY_OPACITY,
     MAX_OVERLAY_SCALE_PERCENT,
     MIN_OVERLAY_OPACITY,
     MIN_OVERLAY_SCALE_PERCENT,
     validate_brightness,
+    validate_taskbar_options,
 )
 from ..models import AIData, AIProviderKind, ConnectionData, ConnectionStatus, SyncStatus
 from ..orientation import (
@@ -34,21 +37,22 @@ from ..orientation import (
     orientation_spec,
 )
 from .preview import require_main_thread
+from .app_icon import set_window_icon
 
 if TYPE_CHECKING:
     from ..ai.codex_account import CodexAccountSnapshot
     from ..updater import UpdateSnapshot
 
 
-BG = "#05070D"
-CARD = "#0B111C"
-CARD_RAISED = "#101928"
-BORDER = "#202C3D"
-TEXT = "#F4F7FB"
-SECONDARY = "#9AA8BC"
-DIM = "#6F7D91"
-CYAN = "#42E8E0"
-GREEN = "#3DDC97"
+BG = "#0B0B0B"
+CARD = "#171717"
+CARD_RAISED = "#242424"
+BORDER = "#3B3B3B"
+TEXT = "#F4F4F4"
+SECONDARY = "#AEAEAE"
+DIM = "#797979"
+CYAN = "#D6D6D6"
+GREEN = "#D6D6D6"
 AMBER = "#FFB454"
 RED = "#FF6B7A"
 
@@ -345,6 +349,12 @@ SelectionAction = Callable[[SetupSelection], ActionResult]
 ToggleAction = Callable[[bool], ActionResult]
 BrightnessAction = Callable[[int], ActionResult]
 OverlayAction = Callable[[OverlaySettings], ActionResult]
+TaskbarOptionsAction = Callable[[tuple[str, ...], str], ActionResult]
+TaskbarPositionGetter = Callable[[], tuple[float, int] | None]
+TaskbarPositionAction = Callable[[str, float], ActionResult]
+
+_TASKBAR_STYLE_LABELS = {"icon": "아이콘", "text": "텍스트", "both": "아이콘+텍스트"}
+_TASKBAR_LABEL_STYLES = {label: style for style, label in _TASKBAR_STYLE_LABELS.items()}
 
 
 class SetupWindow:
@@ -380,6 +390,13 @@ class SetupWindow:
         overlay_scale_percent: int = DEFAULT_OVERLAY_SCALE_PERCENT,
         on_overlay_change: OverlayAction | None = None,
         on_overlay_reset_position: Action | None = None,
+        taskbar_enabled: bool = False,
+        on_taskbar_change: ToggleAction | None = None,
+        taskbar_items: tuple[str, ...] | list[str] = DEFAULT_TASKBAR_ITEMS,
+        taskbar_style: str = "icon",
+        on_taskbar_options: TaskbarOptionsAction | None = None,
+        get_taskbar_position: TaskbarPositionGetter | None = None,
+        on_taskbar_position: TaskbarPositionAction | None = None,
         on_codex_login: Action | None = None,
         on_codex_cancel: Action | None = None,
         on_codex_logout: Action | None = None,
@@ -394,6 +411,7 @@ class SetupWindow:
         require_main_thread()
         initial_brightness = validate_brightness(brightness)
         display_orientation = orientation_spec(rotation)
+        selected_taskbar_items = validate_taskbar_options(taskbar_items, taskbar_style)
         if not isinstance(overlay_enabled, bool):
             raise ValueError("overlay_enabled must be true or false")
         if (
@@ -416,10 +434,11 @@ class SetupWindow:
         # Hide immediately so --minimized and startup registration never flash
         # an unconfigured root window before the caller chooses to show it.
         self._window.withdraw()
+        set_window_icon(self._window)
         self._closed = False
         self._photo: ImageTk.PhotoImage | None = None
         self._preview_source: Image.Image | None = None
-        self._preview_available_width: int | None = None
+        self._preview_available_size: tuple[int, int] | None = None
         self._on_detect_device = on_detect_device
         self._on_check_usage = on_check_usage
         self._on_start = on_start
@@ -430,6 +449,14 @@ class SetupWindow:
         self._on_autostart_change = on_autostart_change
         self._on_overlay_change = on_overlay_change
         self._on_overlay_reset_position = on_overlay_reset_position
+        self._taskbar_enabled = bool(taskbar_enabled)
+        self._on_taskbar_change = on_taskbar_change
+        self._taskbar_committed_items = selected_taskbar_items
+        self._taskbar_committed_style = taskbar_style
+        self._on_taskbar_options = on_taskbar_options
+        self._get_taskbar_position = get_taskbar_position
+        self._on_taskbar_position = on_taskbar_position
+        self._taskbar_position_syncing = False
         self._on_codex_login = on_codex_login
         self._on_codex_cancel = on_codex_cancel
         self._on_codex_logout = on_codex_logout
@@ -444,31 +471,20 @@ class SetupWindow:
         self._enable_serial = enable_serial
         self._openai_key_configured = bool(openai_key_configured)
         self._openai_dialog: tk.Toplevel | None = None
-        self._openai_dialog_size = (480, 420)
         self._overlay_dialog: tk.Toplevel | None = None
         self._overlay_dialog_size = (480, 390)
+        self._taskbar_options_dialog: tk.Toplevel | None = None
         checkmark_prefix = f"AIMiniMonitorCheck{next(_CHECKMARK_STYLE_IDS)}"
         self._checkbutton_style = f"{checkmark_prefix}.TCheckbutton"
         self._checkmark_element = f"{checkmark_prefix}.indicator"
         self._checkmark_images: dict[str, ImageTk.PhotoImage] = {}
         self._checkmark_bitmaps: dict[str, Image.Image] = {}
-        self._provider_buttons: list[ttk.Radiobutton] = []
-        self._option_entries: list[ttk.Entry] = []
 
-        selected = provider if provider in {item.value for item in AIProviderKind} else AIProviderKind.NOT_CONFIGURED.value
+        # Legacy providers remain in persisted config for migration, but are
+        # not selectable from this account-only setup window.
+        selected = AIProviderKind.CODEX_ACCOUNT.value
         self._provider = tk.StringVar(self._window, selected)
-        self._codex_consent = tk.BooleanVar(self._window, codex_local_consent)
         self._admin_key = tk.StringVar(self._window, "")
-        self._usage_refresh = tk.StringVar(self._window, str(usage_refresh_seconds))
-        self._cost_refresh = tk.StringVar(self._window, str(cost_refresh_seconds))
-        self._daily_budget = tk.StringVar(
-            self._window,
-            "" if daily_budget_usd is None else _format_number(daily_budget_usd),
-        )
-        self._monthly_budget = tk.StringVar(
-            self._window,
-            "" if monthly_budget_usd is None else _format_number(monthly_budget_usd),
-        )
         self._orientation_view = tk.StringVar(
             self._window, _VIEW_KEY_TO_LABEL[display_orientation.view]
         )
@@ -547,24 +563,12 @@ class SetupWindow:
         provider = self._provider.get()
         return SetupSelection(
             provider=provider,
-            codex_local_consent=bool(self._codex_consent.get()),
-            openai_admin_key=(
-                self._admin_key.get().strip()
-                if provider == AIProviderKind.OPENAI_API.value
-                else ""
-            ),
-            usage_refresh_seconds=_required_interval(
-                self._usage_refresh.get(),
-                minimum=60,
-                label="Usage 조회 주기",
-            ),
-            cost_refresh_seconds=_required_interval(
-                self._cost_refresh.get(),
-                minimum=600,
-                label="Costs 조회 주기",
-            ),
-            daily_budget_usd=_optional_budget(self._daily_budget.get(), "일 예산"),
-            monthly_budget_usd=_optional_budget(self._monthly_budget.get(), "월 예산"),
+            codex_local_consent=False,
+            openai_admin_key="",
+            usage_refresh_seconds=self._last_valid_usage_refresh,
+            cost_refresh_seconds=self._last_valid_cost_refresh,
+            daily_budget_usd=self._last_valid_daily_budget,
+            monthly_budget_usd=self._last_valid_monthly_budget,
             rotation=self._selected_rotation(),
             brightness=validate_brightness(self._brightness.get()),
         )
@@ -586,7 +590,7 @@ class SetupWindow:
 
         require_main_thread()
         self._ensure_open()
-        if provider not in {item.value for item in AIProviderKind}:
+        if provider != AIProviderKind.CODEX_ACCOUNT.value:
             raise ValueError("invalid provider")
         self._provider.set(provider)
 
@@ -614,6 +618,13 @@ class SetupWindow:
         self._overlay_scale_percent.set(settings.scale_percent)
         if hasattr(self, "_overlay_quick_button"):
             self._sync_overlay_quick_button()
+            self._overlay_mode_status.configure(
+                text="켜짐" if settings.enabled else "꺼짐"
+            )
+        if hasattr(self, "_overlay_dialog_visibility"):
+            self._overlay_dialog_visibility.configure(
+                text="표시 중" if settings.enabled else "숨김"
+            )
         if hasattr(self, "_overlay_opacity_value"):
             self._overlay_opacity_value.configure(
                 text=f"{round(settings.opacity * 100)}%"
@@ -621,6 +632,40 @@ class SetupWindow:
             self._overlay_scale_value.configure(
                 text=f"{settings.scale_percent}%"
             )
+
+    def set_taskbar_enabled(self, enabled: bool) -> None:
+        """Reflect an externally committed compact-bar visibility state."""
+
+        require_main_thread()
+        self._ensure_open()
+        self._taskbar_enabled = bool(enabled)
+        self._taskbar_button.configure(
+            text="작업 표시줄 바 끄기" if self._taskbar_enabled else "작업 표시줄 바 켜기"
+        )
+        self._taskbar_mode_status.configure(
+            text="켜짐" if self._taskbar_enabled else "꺼짐"
+        )
+
+    @property
+    def taskbar_options(self) -> tuple[tuple[str, ...], str]:
+        """The last committed subset and display style."""
+
+        return self._taskbar_committed_items, self._taskbar_committed_style
+
+    def set_taskbar_options(self, items: tuple[str, ...] | list[str], style: str) -> None:
+        """Reflect options saved by the app or restored on startup."""
+
+        require_main_thread()
+        self._ensure_open()
+        self._taskbar_committed_items = validate_taskbar_options(items, style)
+        self._taskbar_committed_style = style
+        if hasattr(self, "_taskbar_hint"):
+            self._sync_taskbar_hint()
+        if self._taskbar_options_dialog is not None:
+            for name, variable in self._taskbar_item_vars.items():
+                variable.set(name in self._taskbar_committed_items)
+            self._taskbar_style_var.set(_TASKBAR_STYLE_LABELS[style])
+            self._update_taskbar_selection_count()
 
     def show_overlay_recovery(self) -> None:
         """Explain an automatic fail-closed hide in the reserved feedback lane."""
@@ -662,9 +707,6 @@ class SetupWindow:
         self._photo = None
         self._preview_source = None
         self._admin_key.set("")
-        if self._openai_dialog is not None:
-            self._openai_dialog.destroy()
-            self._openai_dialog = None
         if self._overlay_dialog is not None:
             try:
                 if self._overlay_dialog.grab_current() is self._overlay_dialog:
@@ -673,6 +715,16 @@ class SetupWindow:
                 pass
             self._overlay_dialog.destroy()
             self._overlay_dialog = None
+        if self._taskbar_options_dialog is not None:
+            try:
+                if self._taskbar_options_dialog.grab_current() is self._taskbar_options_dialog:
+                    self._taskbar_options_dialog.grab_release()
+            except tk.TclError:
+                pass
+            self._taskbar_options_dialog.destroy()
+            self._taskbar_options_dialog = None
+        if hasattr(self, "_update_dialog"):
+            self._update_dialog.destroy()
         self._window.destroy()
 
     def update_image(self, image: Image.Image) -> None:
@@ -684,7 +736,7 @@ class SetupWindow:
         if rgb.size not in {(480, 320), (320, 480)}:
             raise ValueError("setup preview must be exactly 480x320 or 320x480")
         self._preview_source = rgb
-        self._preview_available_width = None
+        self._preview_available_size = None
         self._render_preview()
         self._preview_detail.configure(
             text=(
@@ -697,15 +749,26 @@ class SetupWindow:
         if self._preview_source is None:
             return
         # The physical framebuffer stays 480x320 or 320x480; only this
-        # settings-window copy shrinks when its right pane is narrower.
+        # settings-window copy shrinks to leave the detail controls visible.
         pane_width = self._preview_detail.master.winfo_width()
         available_width = min(480, max(1, pane_width - 30)) if pane_width > 1 else 480
-        if available_width == self._preview_available_width and self._photo is not None:
+        viewport_height = self._right_canvas.winfo_height()
+        if viewport_height > 1:
+            preview_border = self._preview_label.master
+            fixed_height = max(
+                0,
+                self._right_scroll_content.winfo_reqheight() - preview_border.winfo_reqheight(),
+            )
+            available_height = min(320, max(80, viewport_height - fixed_height - 4))
+        else:
+            available_height = 320
+        available_size = (available_width, available_height)
+        if available_size == self._preview_available_size and self._photo is not None:
             return
-        self._preview_available_width = available_width
+        self._preview_available_size = available_size
         fitted = ImageOps.contain(
             self._preview_source,
-            (available_width, 320),
+            available_size,
             Image.Resampling.LANCZOS,
         )
         self._photo = ImageTk.PhotoImage(fitted, master=self._window)
@@ -734,6 +797,9 @@ class SetupWindow:
         color = GREEN if result.ok else AMBER
         self._usage_status.configure(text=result.title, foreground=color)
         self._usage_detail.configure(text=result.detail or " ")
+        self._set_codex_feedback(
+            result.title + (f" · {result.detail}" if result.detail else ""), color,
+        )
 
     def complete_usage(self, result: ActionResult) -> None:
         require_main_thread()
@@ -774,16 +840,9 @@ class SetupWindow:
         self._admin_key.set("")
 
     def set_openai_key_configured(self, configured: bool) -> None:
+        """Accept legacy app notifications without exposing an API key form."""
         require_main_thread()
         self._openai_key_configured = bool(configured)
-        self._key_status.configure(
-            text=(
-                "저장된 Admin Key 있음 · 새 키를 입력하면 교체"
-                if self._openai_key_configured
-                else "저장된 Admin Key 없음 · 입력값은 Windows DPAPI로 보호"
-            )
-        )
-        self._resize_openai_dialog()
 
     def complete_stop(
         self,
@@ -872,6 +931,7 @@ class SetupWindow:
         require_main_thread()
         self._blocked = False
         self._running = bool(running)
+        self._monitor_mode_status.configure(text="실행 중" if running else "중지됨")
         if running:
             self._run_status.configure(text="실행 중", foreground=GREEN)
             self._set_dot(self._run_dot, GREEN)
@@ -912,7 +972,11 @@ class SetupWindow:
             ConnectionStatus.RECONNECTING: AMBER,
             ConnectionStatus.DISCONNECTED: RED,
         }[connection.status]
-        connection_text = connection.status.value
+        connection_text = {
+            ConnectionStatus.ONLINE: "연결됨",
+            ConnectionStatus.RECONNECTING: "다시 연결 중",
+            ConnectionStatus.DISCONNECTED: "연결 끊김",
+        }[connection.status]
         if connection.port:
             connection_text = f"{connection_text} · {connection.port}"
         connection_detail = connection.detail or "정확한 USB 장치 식별 후 전송 중"
@@ -943,12 +1007,20 @@ class SetupWindow:
             foreground=ai_color,
         )
         detail = " · ".join(f"{label} {value}" for label, value in ai.fields[:2])
-        self._usage_detail.configure(text=detail or ai.status.value)
+        status_copy = {
+            SyncStatus.OK: "정상",
+            SyncStatus.DELAYED: "갱신 지연",
+            SyncStatus.AUTH_ERROR: "로그인 필요",
+            SyncStatus.RATE_LIMITED: "요청 제한",
+            SyncStatus.NETWORK_ERROR: "네트워크 오류",
+            SyncStatus.SETUP_REQUIRED: "계정 연결 필요",
+        }[ai.status]
+        self._usage_detail.configure(text=detail or status_copy)
 
     def _configure_window(self) -> None:
         self._window.title("Mini Monitor 설정")
         self._window.configure(background=BG)
-        self._window.geometry("960x640")
+        self._window.geometry("960x700")
         self._window.minsize(920, 600)
         self._window.protocol("WM_DELETE_WINDOW", self.hide)
         self._window.option_add("*Font", "{Malgun Gothic} 10")
@@ -964,13 +1036,7 @@ class SetupWindow:
         max_width = max(1, bounds.width - bounds.frame_width)
         max_height = max(1, bounds.height - bounds.frame_height)
         width = max(960, self._window.winfo_reqwidth())
-        natural_left_height = (
-            self._header.winfo_reqheight()
-            + self._left_scroll_content.winfo_reqheight()
-            + self._controls.winfo_reqheight()
-            + 62
-        )
-        height = max(640, self._window.winfo_reqheight(), natural_left_height)
+        height = 720
         width = min(width, max_width)
         height = min(height, max_height)
         self._window.minsize(min(920, max_width), min(600, max_height))
@@ -995,10 +1061,10 @@ class SetupWindow:
         style.configure("CardTitle.TLabel", background=CARD, foreground=TEXT, font=("Malgun Gothic", 12, "bold"))
         style.configure("CardText.TLabel", background=CARD, foreground=SECONDARY, font=("Malgun Gothic", 9))
         style.configure("Status.TLabel", background=CARD, foreground=SECONDARY, font=("Malgun Gothic", 10, "bold"))
-        style.configure("Primary.TButton", background=CYAN, foreground="#041314", bordercolor=CYAN, padding=(18, 11), font=("Malgun Gothic", 11, "bold"))
-        style.map("Primary.TButton", background=[("active", "#78F4EE"), ("disabled", BORDER)], foreground=[("disabled", DIM)])
-        style.configure("Secondary.TButton", background=CARD_RAISED, foreground=TEXT, bordercolor=BORDER, padding=(13, 9), font=("Malgun Gothic", 9, "bold"))
-        style.map("Secondary.TButton", background=[("active", "#172438"), ("disabled", CARD)], foreground=[("disabled", DIM)])
+        style.configure("Primary.TButton", background=CYAN, foreground=BG, bordercolor=CYAN, padding=(12, 6), font=("Malgun Gothic", 10, "bold"))
+        style.map("Primary.TButton", background=[("active", "#F0F0F0"), ("disabled", BORDER)], foreground=[("disabled", DIM)])
+        style.configure("Secondary.TButton", background=CARD_RAISED, foreground=TEXT, bordercolor=BORDER, padding=(9, 5), font=("Malgun Gothic", 9, "bold"))
+        style.map("Secondary.TButton", background=[("active", "#333333"), ("disabled", CARD)], foreground=[("disabled", DIM)])
         style.configure(
             "Dark.Vertical.TScrollbar",
             background=CARD_RAISED,
@@ -1013,8 +1079,6 @@ class SetupWindow:
             background=[("active", BORDER), ("pressed", CYAN)],
             arrowcolor=[("active", TEXT), ("disabled", DIM)],
         )
-        style.configure("Provider.TRadiobutton", background=CARD, foreground=TEXT, indicatorcolor=BG, padding=(3, 4), font=("Malgun Gothic", 10, "bold"))
-        style.map("Provider.TRadiobutton", background=[("active", CARD)], indicatorcolor=[("selected", CYAN)], foreground=[("disabled", DIM)])
         style.configure(
             "Brightness.Horizontal.TScale",
             background=CARD,
@@ -1029,7 +1093,6 @@ class SetupWindow:
             troughcolor=[("disabled", CARD_RAISED)],
         )
         self._configure_checkmark_style(style)
-        style.configure("Secret.TEntry", fieldbackground=BG, foreground=TEXT, insertcolor=TEXT, bordercolor=BORDER, padding=(9, 7))
 
     def _configure_checkmark_style(self, style: ttk.Style) -> None:
         scale = float(self._window.tk.call("tk", "scaling")) / (96.0 / 72.0)
@@ -1108,15 +1171,15 @@ class SetupWindow:
         )
 
     def _build(self) -> None:
-        root = ttk.Frame(self._window, style="App.TFrame", padding=(24, 20, 24, 20))
+        root = ttk.Frame(self._window, style="App.TFrame", padding=(20, 14, 20, 14))
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=0, minsize=360)
         root.columnconfigure(1, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
 
         header = ttk.Frame(root, style="App.TFrame")
         self._header = header
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="Mini Monitor", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="USB 디스플레이 설정 및 실시간 상태", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
@@ -1127,8 +1190,10 @@ class SetupWindow:
         self._run_status = ttk.Label(run_box, text="설정 대기", style="App.TLabel", font=("Malgun Gothic", 10, "bold"))
         self._run_status.pack(side="left")
 
+        self._build_display_controls(root)
+
         left = ttk.Frame(root, style="App.TFrame")
-        left.grid(row=1, column=0, sticky="nsew", padx=(0, 18))
+        left.grid(row=2, column=0, sticky="nsew", padx=(0, 18))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
 
@@ -1175,8 +1240,8 @@ class SetupWindow:
         )
         self._build_device_card(self._left_scroll_content)
         self._build_codex_account_card(self._left_scroll_content)
-        self._build_usage_card(self._left_scroll_content)
-        self._build_update_banner(self._left_scroll_content)
+        self._build_usage_card(self._codex_account_card)
+        self._build_update_banner()
         self._bind_left_viewport_interactions(self._left_scroll_content)
         self._left_canvas.bind(
             "<MouseWheel>",
@@ -1186,7 +1251,7 @@ class SetupWindow:
         self._build_controls(left)
 
         right_shell = ttk.Frame(root, style="Card.TFrame")
-        right_shell.grid(row=1, column=1, sticky="nsew")
+        right_shell.grid(row=2, column=1, sticky="nsew")
         right_shell.columnconfigure(0, weight=1)
         right_shell.rowconfigure(0, weight=1)
         self._right_canvas = tk.Canvas(
@@ -1225,53 +1290,12 @@ class SetupWindow:
         self._preview_detail.grid(row=1, column=0, sticky="w", pady=(3, 12))
         preview_border = tk.Frame(right, background=BORDER, padx=1, pady=1)
         preview_border.grid(row=2, column=0, sticky="n", pady=(0, 12))
-        self._preview_label = tk.Label(preview_border, background="#070A0F", borderwidth=0, highlightthickness=0)
+        self._preview_label = tk.Label(preview_border, background=BG, borderwidth=0, highlightthickness=0)
         self._preview_label.pack()
         right.bind("<Configure>", self._resize_preview_pane, add="+")
         preview_actions = ttk.Frame(right, style="Card.TFrame")
         preview_actions.grid(row=3, column=0, sticky="ew")
         preview_actions.columnconfigure(0, weight=1)
-        self._overlay_quick_button = ttk.Button(
-            preview_actions,
-            style="Primary.TButton",
-            command=self._toggle_overlay_from_main,
-            takefocus=True,
-        )
-        self._overlay_quick_button.grid(row=0, column=0, sticky="ew")
-        self._overlay_quick_status = ttk.Label(
-            preview_actions,
-            text="",
-            style="CardText.TLabel",
-            foreground=RED,
-            wraplength=260,
-            justify="left",
-        )
-        self._overlay_quick_status.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            pady=(6, 0),
-        )
-        # Reserve the error-feedback lane up front.  Showing a retry message
-        # must never push the settings/reconnect actions below a short or
-        # high-DPI work area.
-        quick_status_probe = ttk.Label(
-            preview_actions,
-            text="status line one\nstatus line two",
-            style="CardText.TLabel",
-        )
-        self._window.update_idletasks()
-        preview_actions.rowconfigure(
-            1,
-            minsize=quick_status_probe.winfo_reqheight() + 6,
-        )
-        quick_status_probe.destroy()
-        self._overlay_quick_status.configure(text=" ")
-        preview_actions.bind(
-            "<Configure>",
-            self._resize_overlay_quick_feedback,
-            add="+",
-        )
         self._overlay_options_button = ttk.Button(
             preview_actions,
             text="PC 상태창 설정",
@@ -1279,11 +1303,28 @@ class SetupWindow:
             command=self._show_overlay_options,
         )
         self._overlay_options_button.grid(
-            row=2,
+            row=0,
             column=0,
             sticky="ew",
-            pady=(8, 0),
         )
+        self._taskbar_options_button = ttk.Button(
+            preview_actions,
+            text="작업표시줄 바 설정",
+            style="Secondary.TButton",
+            command=self._show_taskbar_options,
+        )
+        self._taskbar_options_button.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        if self._on_taskbar_options is None:
+            self._taskbar_options_button.state(["disabled"])
+        self._taskbar_hint = ttk.Label(
+            preview_actions,
+            text="",
+            style="CardText.TLabel",
+            wraplength=260,
+            justify="left",
+        )
+        self._taskbar_hint.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self._sync_taskbar_hint()
         self._reconnect_button = ttk.Button(preview_actions, text="장치 다시 연결", style="Secondary.TButton", command=self._reconnect)
         self._reconnect_button.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         self._bind_right_viewport_interactions(right)
@@ -1291,15 +1332,71 @@ class SetupWindow:
         self._create_overlay_dialog()
         self._sync_overlay_quick_button()
 
+    def _build_display_controls(self, parent: ttk.Frame) -> None:
+        controls = ttk.Frame(parent, style="App.TFrame")
+        self._display_controls = controls
+        controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        for column in range(3):
+            controls.columnconfigure(column, weight=1, uniform="display_modes")
+
+        groups: list[ttk.Frame] = []
+        for column, title in enumerate(("미니 모니터", "PC 오버레이", "작업표시줄 바")):
+            group = ttk.Frame(controls, style="Card.TFrame", padding=(8, 6))
+            group.grid(row=0, column=column, sticky="nsew", padx=5)
+            group.columnconfigure(0, weight=1)
+            ttk.Label(group, text=title, style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+            groups.append(group)
+        self._monitor_control_group, self._overlay_control_group, self._taskbar_control_group = groups
+        groups[0].columnconfigure(1, weight=1)
+
+        self._monitor_mode_status = ttk.Label(groups[0], text="중지됨", style="Status.TLabel")
+        self._monitor_mode_status.grid(row=1, column=0, sticky="w", pady=(2, 3))
+        self._start_button = ttk.Button(groups[0], text="모니터 시작", style="Primary.TButton", command=self._start)
+        self._start_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
+        self._stop_button = ttk.Button(groups[0], text="모니터 중지", style="Secondary.TButton", command=self._stop)
+        self._stop_button.grid(row=2, column=1, sticky="ew", padx=(3, 0))
+
+        self._overlay_mode_status = ttk.Label(
+            groups[1],
+            text="켜짐" if self._overlay_committed.enabled else "꺼짐",
+            style="Status.TLabel",
+        )
+        self._overlay_mode_status.grid(row=1, column=0, sticky="w", pady=(2, 3))
+        self._overlay_quick_button = ttk.Button(
+            groups[1], style="Primary.TButton", command=self._toggle_overlay_from_main, takefocus=True,
+        )
+        self._overlay_quick_button.grid(row=2, column=0, sticky="ew")
+
+        self._taskbar_mode_status = ttk.Label(groups[2], text="꺼짐", style="Status.TLabel")
+        self._taskbar_mode_status.grid(row=1, column=0, sticky="w", pady=(2, 3))
+        self._taskbar_button = ttk.Button(
+            groups[2], style="Secondary.TButton", command=self._toggle_taskbar_from_main, takefocus=True,
+        )
+        self._taskbar_button.grid(row=2, column=0, sticky="ew")
+        self.set_taskbar_enabled(self._taskbar_enabled)
+        if self._on_taskbar_change is None:
+            self._taskbar_button.state(["disabled"])
+
+        self._overlay_quick_status = ttk.Label(
+            controls, text=" ", style="App.TLabel", foreground=RED,
+            wraplength=800, justify="left",
+        )
+        self._overlay_quick_status.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        probe = ttk.Label(controls, text="status line one\nstatus line two", style="App.TLabel")
+        self._window.update_idletasks()
+        controls.rowconfigure(1, minsize=probe.winfo_reqheight() + 4)
+        probe.destroy()
+        controls.bind("<Configure>", self._resize_overlay_quick_feedback, add="+")
+
     def _build_device_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=10)
+        card.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         card.columnconfigure(1, weight=1)
         ttk.Label(card, text="1. 미니 모니터 연결", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         self._device_dot = tk.Canvas(card, width=12, height=12, background=CARD, highlightthickness=0)
-        self._device_dot.grid(row=1, column=0, sticky="w", pady=(12, 0))
+        self._device_dot.grid(row=1, column=0, sticky="w", pady=(6, 0))
         self._device_title = ttk.Label(card, text="장치 확인 전", style="Status.TLabel")
-        self._device_title.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        self._device_title.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
         self._device_detail = ttk.Label(
             card,
             text="VID 1A86 · PID 5722 · USB35INCHIPSV2",
@@ -1309,7 +1406,7 @@ class SetupWindow:
         )
         self._device_detail.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(2, 0))
         self._device_button = ttk.Button(card, text="장치 찾기", style="Secondary.TButton", command=self._detect_device)
-        self._device_button.grid(row=1, column=2, rowspan=2, sticky="e", padx=(10, 0), pady=(8, 0))
+        self._device_button.grid(row=1, column=2, rowspan=2, sticky="e", padx=(10, 0), pady=(5, 0))
 
         orientation = ttk.Frame(card, style="Card.TFrame")
         orientation.grid(
@@ -1317,7 +1414,7 @@ class SetupWindow:
             column=0,
             columnspan=3,
             sticky="ew",
-            pady=(12, 0),
+            pady=(6, 0),
         )
         orientation.columnconfigure(1, weight=1)
         ttk.Label(
@@ -1345,7 +1442,7 @@ class SetupWindow:
             orientation,
             text="화면 밝기",
             style="CardText.TLabel",
-        ).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
+        ).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
         self._brightness_value = ttk.Label(
             orientation,
             text=f"{self._brightness.get()}%",
@@ -1367,48 +1464,65 @@ class SetupWindow:
             row=1,
             column=1,
             sticky="ew",
-            pady=(12, 0),
+            pady=(6, 0),
         )
         self._brightness_value.grid(
             row=1,
             column=2,
             sticky="e",
             padx=(12, 0),
-            pady=(12, 0),
+            pady=(6, 0),
         )
 
     def _build_codex_account_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=10)
+        self._codex_account_card = card
+        card.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         card.columnconfigure(0, weight=1)
         ttk.Label(card, text="Codex 계정", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
         self._codex_identity = ttk.Label(card, text="연결된 계정 없음", style="Status.TLabel", wraplength=310)
-        self._codex_identity.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self._codex_identity.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._codex_limits = ttk.Label(card, text="한도 정보 없음", style="CardText.TLabel", wraplength=310)
-        self._codex_limits.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._codex_limits.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self._codex_credits = ttk.Label(card, text="크레딧 확인 불가", style="CardText.TLabel", wraplength=310)
+        self._codex_credits.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         self._codex_feedback = ttk.Label(card, text=" ", style="CardText.TLabel", wraplength=310)
-        self._codex_feedback.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._codex_feedback.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self._codex_feedback.grid_remove()
         actions = ttk.Frame(card, style="Card.TFrame")
-        actions.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        actions.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         for column in range(2):
             actions.columnconfigure(column, weight=1)
         self._codex_login_button = ttk.Button(actions, text="ChatGPT로 로그인", style="Primary.TButton", command=lambda: self._account_action(self._on_codex_login, "로그인을 시작하지 못했습니다"))
         self._codex_login_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self._codex_cancel_button = ttk.Button(actions, text="로그인 취소", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_cancel, "로그인을 취소하지 못했습니다"))
-        self._codex_cancel_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._codex_cancel_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self._codex_refresh_button = ttk.Button(actions, text="새로고침", style="Secondary.TButton", command=self._refresh_codex_account)
-        self._codex_refresh_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(7, 0))
-        self._codex_disconnect_button = ttk.Button(actions, text="연결 해제", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_disconnect, "연결을 해제하지 못했습니다"))
-        self._codex_disconnect_button.grid(row=1, column=1, sticky="ew", padx=(4, 0), pady=(7, 0))
+        self._codex_refresh_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._codex_logout_button = ttk.Button(actions, text="로그아웃", style="Secondary.TButton", command=self._confirm_codex_logout)
-        self._codex_logout_button.grid(row=2, column=1, sticky="ew", padx=(4, 0), pady=(7, 0))
-        self._codex_cli_button = ttk.Button(actions, text="설치된 CLI 찾기", style="Secondary.TButton", command=self._select_codex_cli)
-        self._codex_cli_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(7, 0))
-        self._codex_guide_button = ttk.Button(actions, text="Codex CLI 설치 안내", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_install_guide, "설치 안내를 열지 못했습니다"))
-        self._codex_guide_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(7, 0))
+        self._codex_logout_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._codex_cancel_button.grid_remove()
+        self._codex_logout_button.grid_remove()
+        self._codex_help_button = ttk.Button(
+            card, text="연결 문제 해결 ▾", style="Secondary.TButton", command=self._toggle_codex_help,
+        )
+        self._codex_help_button.grid(row=8, column=0, sticky="ew", pady=(4, 0))
+        self._update_open_button = ttk.Button(
+            card, text="업데이트", style="Secondary.TButton", command=self._show_update_dialog,
+        )
+        self._update_open_button.grid(row=8, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
+        help_frame = ttk.Frame(card, style="Card.TFrame")
+        self._codex_help_frame = help_frame
+        help_frame.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        help_frame.columnconfigure(0, weight=1)
+        help_frame.columnconfigure(1, weight=1)
+        self._codex_cli_button = ttk.Button(help_frame, text="설치된 CLI 찾기", style="Secondary.TButton", command=self._select_codex_cli)
+        self._codex_cli_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._codex_guide_button = ttk.Button(help_frame, text="Codex CLI 설치 안내", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_install_guide, "설치 안내를 열지 못했습니다"))
+        self._codex_guide_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        help_frame.grid_remove()
         self._codex_cancel_button.state(["disabled"])
         self._codex_logout_button.state(["disabled"])
-        self._codex_disconnect_button.state(["disabled"])
         if self._on_codex_login is None:
             self._codex_login_button.state(["disabled"])
         if self._on_codex_cli_selected is None:
@@ -1416,10 +1530,40 @@ class SetupWindow:
         if self._on_codex_install_guide is None:
             self._codex_guide_button.state(["disabled"])
 
-    def _build_update_banner(self, parent: ttk.Frame) -> None:
-        banner = ttk.Frame(parent, style="Card.TFrame", padding=(14, 8))
+    def _toggle_codex_help(self) -> None:
+        if self._codex_help_frame.winfo_manager():
+            self._codex_help_frame.grid_remove()
+            self._codex_help_button.configure(text="연결 문제 해결 ▾")
+        else:
+            self._codex_help_frame.grid()
+            self._codex_help_button.configure(text="연결 문제 해결 ▴")
+
+    def _show_update_dialog(self) -> None:
+        dialog = self._update_dialog
+        dialog.deiconify()
+        dialog.update_idletasks()
+        bounds = _window_bounds(self._window)
+        width = min(max(420, dialog.winfo_reqwidth()), max(1, bounds.width - bounds.frame_width))
+        height = min(max(240, dialog.winfo_reqheight()), max(1, bounds.height - bounds.frame_height))
+        x = max(bounds.left, min(self._window.winfo_rootx() + (self._window.winfo_width() - width) // 2, bounds.right - width - bounds.frame_width))
+        y = max(bounds.top, min(self._window.winfo_rooty() + (self._window.winfo_height() - height) // 2, bounds.bottom - height - bounds.frame_height))
+        dialog.lift()
+        dialog.focus_set()
+        _set_window_geometry(dialog, width, height, x, y)
+
+    def _build_update_banner(self) -> None:
+        dialog = tk.Toplevel(self._window, class_="AIMiniMonitorUpdates")
+        dialog.withdraw()
+        dialog.title("업데이트")
+        dialog.configure(background=BG)
+        dialog.resizable(False, False)
+        dialog.transient(self._window)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.withdraw)
+        dialog.bind("<Escape>", lambda _event: dialog.withdraw())
+        self._update_dialog = dialog
+        banner = ttk.Frame(dialog, style="Card.TFrame", padding=(14, 8))
         self._update_banner = banner
-        banner.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        banner.pack(fill="both", expand=True, padx=12, pady=12)
         banner.grid_propagate(False)
         banner.columnconfigure(0, weight=1)
         banner.columnconfigure(1, weight=1)
@@ -1459,58 +1603,8 @@ class SetupWindow:
         banner.configure(height=max(184, reserved_height))
 
     def _build_usage_card(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=14)
-        card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        card.columnconfigure(0, weight=1)
-        ttk.Label(card, text="고급 · 다른 데이터 원본", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(card, text="아래 항목은 ChatGPT 구독 한도와 별개입니다.", style="CardText.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
-
-        choices = (
-            ("Codex 계정 · 공식 로그인", AIProviderKind.CODEX_ACCOUNT.value),
-            ("Codex 로컬 기록 · 실시간 아님", AIProviderKind.CODEX_LOCAL.value),
-            ("OpenAI API 조직 사용량", AIProviderKind.OPENAI_API.value),
-            ("ChatGPT/Codex 앱 활동 시간", AIProviderKind.CHATGPT_ACTIVITY.value),
-            ("사용 안 함", AIProviderKind.NOT_CONFIGURED.value),
-        )
-        for index, (label, value) in enumerate(choices):
-            if index < 3:
-                row, column, span = 2 + index, 0, 2
-            else:
-                row, column, span = 5, index - 3, 1
-            button = ttk.Radiobutton(
-                card,
-                text=label,
-                value=value,
-                variable=self._provider,
-                style="Provider.TRadiobutton",
-            )
-            button.grid(row=row, column=column, columnspan=span, sticky="w", padx=(0, 8 if column == 0 else 0))
-            self._provider_buttons.append(button)
-
-        self._provider_detail = ttk.Label(card, text="", style="CardText.TLabel", wraplength=316, justify="left")
-        self._provider_detail.grid(row=6, column=0, columnspan=2, sticky="w", pady=(5, 2))
-        self._consent = ttk.Checkbutton(
-            card,
-            text="Codex 한도 숫자만 로컬에서 읽는 데 동의합니다.",
-            variable=self._codex_consent,
-            style=self._checkbutton_style,
-        )
-        self._consent.grid(row=7, column=0, columnspan=2, sticky="w")
-        self._key_frame = ttk.Frame(card, style="Card.TFrame")
-        self._key_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self._key_frame.columnconfigure(0, weight=1)
-        self._openai_options_button = ttk.Button(
-            self._key_frame,
-            text="Admin Key · 예산 · 조회 주기 설정",
-            style="Secondary.TButton",
-            command=self._show_openai_options,
-        )
-        self._openai_options_button.grid(row=0, column=0, sticky="ew")
-        self._create_openai_dialog()
-        self.set_openai_key_configured(self._openai_key_configured)
-
-        usage_bottom = ttk.Frame(card, style="Card.TFrame")
-        usage_bottom.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(9, 0))
+        usage_bottom = ttk.Frame(parent, style="Card.TFrame")
+        usage_bottom.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         usage_bottom.columnconfigure(0, weight=1)
         self._usage_status = ttk.Label(usage_bottom, text="확인 전", style="Status.TLabel")
         self._usage_status.grid(row=0, column=0, sticky="nw")
@@ -1529,24 +1623,13 @@ class SetupWindow:
             columnspan=2,
             sticky="ew",
         )
-        status_probe = ttk.Label(
-            usage_bottom,
-            text="status line one\nstatus line two",
-            style="Status.TLabel",
-        )
-        detail_probe = ttk.Label(
-            usage_bottom,
-            text="detail line one\ndetail line two",
-            style="CardText.TLabel",
-        )
+        # The account card already shows limits and credits. Keep these labels
+        # for the existing runtime/status API, but avoid a second visible
+        # usage summary in the compact main view.
+        self._usage_status.grid_remove()
+        self._usage_detail.grid_remove()
         self._window.update_idletasks()
-        feedback_height = max(
-            self._usage_button.winfo_reqheight(),
-            status_probe.winfo_reqheight(),
-        ) + detail_probe.winfo_reqheight()
-        status_probe.destroy()
-        detail_probe.destroy()
-        usage_bottom.configure(height=feedback_height)
+        usage_bottom.configure(height=self._usage_button.winfo_reqheight())
         usage_bottom.grid_propagate(False)
         usage_bottom.bind("<Configure>", self._resize_usage_feedback, add="+")
 
@@ -1590,10 +1673,6 @@ class SetupWindow:
         if self._on_autostart_change is None:
             self._autostart_toggle.state(["disabled"])
 
-        self._start_button = ttk.Button(controls, text="모니터 시작", style="Primary.TButton", command=self._start)
-        self._start_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
-        self._stop_button = ttk.Button(controls, text="모니터 중지", style="Secondary.TButton", command=self._stop)
-        self._stop_button.grid(row=1, column=1, sticky="ew", padx=4, pady=(8, 0))
         self._exit_button = ttk.Button(
             controls,
             text="프로그램 종료",
@@ -1602,9 +1681,9 @@ class SetupWindow:
         )
         self._exit_button.grid(
             row=1,
-            column=2,
+            column=0,
+            columnspan=3,
             sticky="ew",
-            padx=(4, 0),
             pady=(8, 0),
         )
 
@@ -1711,6 +1790,7 @@ class SetupWindow:
             self._right_scroll_window,
             width=max(1, int(event.width)),
         )
+        self._render_preview()
         self._window.after_idle(self._update_right_scrollbar)
 
     def _update_right_scrollbar(self) -> None:
@@ -1936,30 +2016,231 @@ class SetupWindow:
             justify="left",
         )
 
-    def _build_openai_field(
-        self,
-        parent: ttk.Frame,
-        *,
-        row: int,
-        column: int,
-        label: str,
-        variable: tk.StringVar,
-    ) -> None:
-        field = ttk.Frame(parent, style="Card.TFrame")
-        field.grid(
-            row=row,
-            column=column,
-            sticky="ew",
-            padx=(0, 5) if column == 0 else (5, 0),
-            pady=(0, 5) if row == 0 else (0, 0),
+    def _sync_taskbar_hint(self) -> None:
+        names = " · ".join(name.upper() for name in self._taskbar_committed_items)
+        style = _TASKBAR_STYLE_LABELS[self._taskbar_committed_style]
+        self._taskbar_hint.configure(
+            text=f"{names} / 투명 배경 · {style} + % / 드래그로 이동"
         )
-        ttk.Label(field, text=label, style="CardText.TLabel").pack(anchor="w")
-        entry = ttk.Entry(field, textvariable=variable, style="Secret.TEntry", width=12)
-        entry.pack(
-            fill="x",
-            pady=(2, 0),
+
+    def _create_taskbar_options_dialog(self) -> None:
+        if self._taskbar_options_dialog is not None:
+            return
+        dialog = tk.Toplevel(self._window, class_="AIMiniMonitorTaskbarOptions")
+        dialog.withdraw()
+        dialog.title("작업표시줄 바 설정")
+        dialog.configure(background=BG)
+        dialog.resizable(False, False)
+        dialog.transient(self._window)
+        dialog.protocol("WM_DELETE_WINDOW", self._hide_taskbar_options)
+        dialog.bind("<Escape>", lambda _event: self._hide_taskbar_options())
+        self._taskbar_options_dialog = dialog
+
+        root = ttk.Frame(dialog, style="App.TFrame", padding=14)
+        root.pack(fill="both", expand=True)
+        root.columnconfigure(0, weight=1)
+        ttk.Label(root, text="작업표시줄 바 설정", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            root, text="표시할 항목을 개별 선택하세요.", style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 8))
+
+        card = ttk.Frame(root, style="Card.TFrame", padding=(12, 8))
+        card.grid(row=2, column=0, sticky="ew")
+        for column in range(3):
+            card.columnconfigure(column, weight=1)
+        self._taskbar_item_vars: dict[str, tk.BooleanVar] = {}
+        self._taskbar_item_checks: dict[str, ttk.Checkbutton] = {}
+        for index, name in enumerate(DEFAULT_TASKBAR_ITEMS):
+            variable = tk.BooleanVar(dialog, name in self._taskbar_committed_items)
+            check = ttk.Checkbutton(
+                card, text=name.upper(), variable=variable,
+                style=self._checkbutton_style, command=self._update_taskbar_selection_count,
+                takefocus=True,
+            )
+            check.grid(row=index // 3, column=index % 3, sticky="w", pady=2)
+            self._taskbar_item_vars[name] = variable
+            self._taskbar_item_checks[name] = check
+
+        ttk.Label(card, text="표시 방식", style="CardText.TLabel").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(8, 3),
         )
-        self._option_entries.append(entry)
+        self._taskbar_style_var = tk.StringVar(dialog, _TASKBAR_STYLE_LABELS[self._taskbar_committed_style])
+        self._taskbar_style_combo = ttk.Combobox(
+            card, textvariable=self._taskbar_style_var,
+            values=tuple(_TASKBAR_LABEL_STYLES), state="readonly", takefocus=True,
+        )
+        self._taskbar_style_combo.grid(row=3, column=0, columnspan=3, sticky="ew")
+
+        ttk.Separator(card, orient="horizontal").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(10, 6),
+        )
+        ttk.Label(card, text="위치 (0~100%)", style="CardText.TLabel").grid(
+            row=5, column=0, sticky="w",
+        )
+        self._taskbar_position_reset = ttk.Button(
+            card, text="기본 가로 위치", style="Secondary.TButton",
+            command=lambda: self._request_taskbar_position("reset", 0.0),
+        )
+        self._taskbar_position_reset.grid(row=5, column=1, sticky="ew", padx=4)
+        self._taskbar_position_x = ttk.Label(card, text="X --px", style="Status.TLabel", anchor="e")
+        self._taskbar_position_x.grid(row=5, column=2, sticky="e")
+        self._taskbar_nudge_left = ttk.Button(
+            card, text="◀ 1px", style="Secondary.TButton",
+            command=lambda: self._request_taskbar_position("nudge", -1.0),
+        )
+        self._taskbar_nudge_left.grid(row=6, column=0, sticky="ew", pady=(6, 0), padx=(0, 4))
+        self._taskbar_position_percent = tk.DoubleVar(dialog, 0.0)
+        self._taskbar_position_scale = ttk.Scale(
+            card, from_=0, to=100, variable=self._taskbar_position_percent,
+            command=self._taskbar_position_changed, style="Brightness.Horizontal.TScale",
+            takefocus=True,
+        )
+        self._taskbar_position_scale.grid(row=6, column=1, sticky="ew", pady=(6, 0))
+        self._taskbar_nudge_right = ttk.Button(
+            card, text="1px ▶", style="Secondary.TButton",
+            command=lambda: self._request_taskbar_position("nudge", 1.0),
+        )
+        self._taskbar_nudge_right.grid(row=6, column=2, sticky="ew", pady=(6, 0), padx=(4, 0))
+        self._taskbar_position_status = ttk.Label(
+            card, text="위치는 즉시 저장됩니다", style="CardText.TLabel",
+            foreground=SECONDARY,
+        )
+        self._taskbar_position_status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        self._taskbar_selection_count = ttk.Label(root, style="App.TLabel")
+        self._taskbar_selection_count.grid(row=3, column=0, sticky="w", pady=(5, 0))
+        self._update_taskbar_selection_count()
+        self._taskbar_options_status = ttk.Label(
+            root, text=" ", style="App.TLabel", foreground=RED,
+            wraplength=380, justify="left",
+        )
+        self._taskbar_options_status.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        actions = ttk.Frame(root, style="App.TFrame")
+        actions.grid(row=5, column=0, sticky="ew", pady=(7, 0))
+        actions.columnconfigure(0, weight=1, uniform="taskbar_actions")
+        actions.columnconfigure(1, weight=1, uniform="taskbar_actions")
+        ttk.Button(
+            actions, text="취소", style="Secondary.TButton",
+            command=self._hide_taskbar_options,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self._taskbar_apply_button = ttk.Button(
+            actions, text="적용", style="Primary.TButton",
+            command=self._apply_taskbar_options,
+        )
+        self._taskbar_apply_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    def _update_taskbar_selection_count(self) -> None:
+        count = sum(variable.get() for variable in self._taskbar_item_vars.values())
+        self._taskbar_selection_count.configure(text=f"선택한 {count}개")
+
+    def _refresh_taskbar_position(self) -> bool:
+        getter = self._get_taskbar_position
+        try:
+            position = getter() if getter is not None else None
+            if position is None:
+                raise ValueError("position unavailable")
+            percent, x = position
+            percent = float(percent)
+            if not 0.0 <= percent <= 100.0 or isinstance(x, bool) or not isinstance(x, int):
+                raise ValueError("invalid position")
+        except Exception:
+            self._taskbar_position_x.configure(text="X --px")
+            self._taskbar_position_status.configure(text="위치를 읽지 못했습니다", foreground=RED)
+            enabled = False
+        else:
+            self._taskbar_position_syncing = True
+            try:
+                self._taskbar_position_percent.set(percent)
+            finally:
+                self._taskbar_position_syncing = False
+            self._taskbar_position_x.configure(text=f"X {x}px")
+            enabled = self._on_taskbar_position is not None
+        for widget in (
+            self._taskbar_position_scale, self._taskbar_nudge_left,
+            self._taskbar_nudge_right, self._taskbar_position_reset,
+        ):
+            widget.state(["!disabled" if enabled else "disabled"])
+        return enabled
+
+    def _taskbar_position_changed(self, value: str) -> None:
+        if self._taskbar_position_syncing:
+            return
+        try:
+            percent = max(0.0, min(100.0, float(value)))
+        except ValueError:
+            return
+        self._request_taskbar_position("percent", percent)
+
+    def _request_taskbar_position(self, action: str, value: float) -> None:
+        callback = self._on_taskbar_position
+        if callback is None or self._taskbar_position_syncing:
+            return
+        result = self._invoke(lambda: callback(action, value), "위치 저장 실패")
+        refreshed = self._refresh_taskbar_position()
+        if result.ok and refreshed:
+            self._taskbar_position_status.configure(text="위치는 즉시 저장됩니다", foreground=SECONDARY)
+        elif not result.ok:
+            self._taskbar_position_status.configure(text=result.detail or result.title, foreground=RED)
+
+    def _show_taskbar_options(self) -> None:
+        require_main_thread()
+        self._ensure_open()
+        self._create_taskbar_options_dialog()
+        assert self._taskbar_options_dialog is not None
+        dialog = self._taskbar_options_dialog
+        for name, variable in self._taskbar_item_vars.items():
+            variable.set(name in self._taskbar_committed_items)
+        self._taskbar_style_var.set(_TASKBAR_STYLE_LABELS[self._taskbar_committed_style])
+        self._update_taskbar_selection_count()
+        self._taskbar_options_status.configure(text=" ")
+        self._taskbar_position_status.configure(text="위치는 즉시 저장됩니다", foreground=SECONDARY)
+        self._refresh_taskbar_position()
+        dialog.update_idletasks()
+        bounds = _window_bounds(self._window)
+        width = min(max(420, dialog.winfo_reqwidth()), max(1, bounds.width - bounds.frame_width))
+        height = min(max(360, dialog.winfo_reqheight()), max(1, bounds.height - bounds.frame_height))
+        dialog.deiconify()
+        dialog.update_idletasks()
+        self._window.update_idletasks()
+        x = self._window.winfo_rootx() + (self._window.winfo_width() - width) // 2
+        y = self._window.winfo_rooty() + (self._window.winfo_height() - height) // 2
+        x = max(bounds.left, min(x, bounds.right - width - bounds.frame_width))
+        y = max(bounds.top, min(y, bounds.bottom - height - bounds.frame_height))
+        _set_window_geometry(dialog, width, height, x, y)
+        dialog.lift()
+        dialog.grab_set()
+        self._taskbar_item_checks[DEFAULT_TASKBAR_ITEMS[0]].focus_set()
+
+    def _hide_taskbar_options(self) -> None:
+        dialog = self._taskbar_options_dialog
+        if dialog is None:
+            return
+        try:
+            if dialog.grab_current() is dialog:
+                dialog.grab_release()
+        except tk.TclError:
+            pass
+        dialog.withdraw()
+
+    def _apply_taskbar_options(self) -> None:
+        require_main_thread()
+        self._ensure_open()
+        items = tuple(name for name in DEFAULT_TASKBAR_ITEMS if self._taskbar_item_vars[name].get())
+        style = _TASKBAR_LABEL_STYLES.get(self._taskbar_style_var.get())
+        try:
+            items = validate_taskbar_options(items, style)
+        except ValueError:
+            self._taskbar_options_status.configure(text="표시할 항목을 하나 이상 선택하고 표시 방식을 확인하세요.")
+            return
+        callback = self._on_taskbar_options
+        if callback is None:
+            self._taskbar_options_status.configure(text="설정 변경을 사용할 수 없습니다.")
+            return
+        result = self._invoke(lambda: callback(items, style), "작업표시줄 바 설정 실패")
+        if result.ok:
+            self.set_taskbar_options(items, style)
+            self._hide_taskbar_options()
+        else:
+            self._taskbar_options_status.configure(text=result.detail or result.title)
 
     def _create_overlay_dialog(self) -> None:
         if self._overlay_dialog is not None:
@@ -1994,14 +2275,12 @@ class SetupWindow:
         card = ttk.Frame(root, style="Card.TFrame", padding=14)
         card.grid(row=2, column=0, sticky="ew")
         card.columnconfigure(0, weight=1)
-        self._overlay_toggle = ttk.Checkbutton(
+        self._overlay_dialog_visibility = ttk.Label(
             card,
-            text="상태창을 화면 가장 위에 표시",
-            variable=self._overlay_enabled,
-            style=self._checkbutton_style,
-            command=self._overlay_toggle_changed,
+            text="표시 중" if self._overlay_committed.enabled else "숨김",
+            style="Status.TLabel",
         )
-        self._overlay_toggle.grid(row=0, column=0, columnspan=2, sticky="w")
+        self._overlay_dialog_visibility.grid(row=0, column=0, columnspan=2, sticky="w")
 
         ttk.Label(card, text="상태창 크기", style="CardText.TLabel").grid(
             row=1, column=0, sticky="w", pady=(16, 4)
@@ -2084,7 +2363,6 @@ class SetupWindow:
             command=self._hide_overlay_options,
         ).grid(row=0, column=1, sticky="ew")
         if self._on_overlay_change is None:
-            self._overlay_toggle.state(["disabled"])
             self._overlay_scale.state(["disabled"])
             self._overlay_opacity_scale.state(["disabled"])
         if self._on_overlay_reset_position is None:
@@ -2127,7 +2405,7 @@ class SetupWindow:
             pass
         dialog.lift()
         dialog.grab_set()
-        self._overlay_toggle.focus_set()
+        self._overlay_scale.focus_set()
 
     def _hide_overlay_options(self) -> None:
         dialog = self._overlay_dialog
@@ -2179,7 +2457,6 @@ class SetupWindow:
         )
         state = "!disabled" if enabled else "disabled"
         for name in (
-            "_overlay_toggle",
             "_overlay_scale",
             "_overlay_opacity_scale",
         ):
@@ -2234,9 +2511,23 @@ class SetupWindow:
                 foreground=RED,
             )
 
-    def _overlay_toggle_changed(self) -> None:
-        self._cancel_overlay_schedule()
-        self._commit_overlay_settings()
+    def _toggle_taskbar_from_main(self) -> None:
+        require_main_thread()
+        if self._on_taskbar_change is None:
+            return
+        target = not self._taskbar_enabled
+        result = self._invoke(
+            lambda: self._on_taskbar_change(target),
+            "작업 표시줄 바 변경 실패",
+        )
+        if result.ok:
+            self.set_taskbar_enabled(target)
+            self._overlay_quick_status.configure(text=" ")
+        else:
+            self._overlay_quick_status.configure(
+                text="작업 표시줄 바 변경 실패\n설정 확인 후 다시 시도",
+                foreground=RED,
+            )
 
     def _overlay_scale_changed(self, value: str) -> None:
         rounded = max(
@@ -2338,204 +2629,20 @@ class SetupWindow:
             foreground=GREEN if result.ok else RED,
         )
 
-    def _create_openai_dialog(self) -> None:
-        if self._openai_dialog is not None:
-            return
-
-        dialog = tk.Toplevel(self._window, class_="AIMiniMonitorOpenAIOptions")
-        dialog.withdraw()
-        dialog.title("OpenAI API 인증 및 사용량 설정")
-        dialog.configure(background=BG)
-        dialog.resizable(False, False)
-        dialog.transient(self._window)
-        dialog.protocol("WM_DELETE_WINDOW", self._hide_openai_options)
-        dialog.bind("<Escape>", lambda _event: self._hide_openai_options())
-        self._openai_dialog = dialog
-
-        root = ttk.Frame(dialog, style="App.TFrame", padding=20)
-        root.pack(fill="both", expand=True)
-        ttk.Label(root, text="OPENAI API 설정", style="Title.TLabel").grid(
-            row=0,
-            column=0,
-            columnspan=2,
-            sticky="w",
-        )
-        ttk.Label(
-            root,
-            text="ChatGPT 구독 한도가 아닌 조직 Usage·Costs API 설정입니다. Key는 읽어 오지 않으며 새 입력만 DPAPI로 저장합니다.",
-            style="Subtitle.TLabel",
-            wraplength=430,
-            justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 14))
-        root.columnconfigure(0, weight=1)
-        root.columnconfigure(1, weight=1)
-        ttk.Label(root, text="OpenAI Admin Key", style="Subtitle.TLabel").grid(
-            row=2,
-            column=0,
-            columnspan=2,
-            sticky="w",
-        )
-        self._key_entry = ttk.Entry(
-            root,
-            textvariable=self._admin_key,
-            show="•",
-            style="Secret.TEntry",
-        )
-        self._key_entry.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 0))
-        self._key_status = ttk.Label(root, text="", style="Subtitle.TLabel")
-        self._key_status.grid(row=4, column=0, columnspan=2, sticky="w", pady=(3, 12))
-        self._build_openai_field(
-            root,
-            row=5,
-            column=0,
-            label="일 예산 USD · 선택",
-            variable=self._daily_budget,
-        )
-        self._build_openai_field(
-            root,
-            row=5,
-            column=1,
-            label="월 예산 USD · 선택",
-            variable=self._monthly_budget,
-        )
-        self._build_openai_field(
-            root,
-            row=6,
-            column=0,
-            label="Usage 주기 · 60초 이상",
-            variable=self._usage_refresh,
-        )
-        self._build_openai_field(
-            root,
-            row=6,
-            column=1,
-            label="Costs 주기 · 600초 이상",
-            variable=self._cost_refresh,
-        )
-        ttk.Button(
-            root,
-            text="설정창으로 돌아가기",
-            style="Primary.TButton",
-            command=self._hide_openai_options,
-        ).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(18, 0))
-        self._resize_openai_dialog()
-
-    def _resize_openai_dialog(self) -> None:
-        dialog = self._openai_dialog
-        if dialog is None:
-            return
-        dialog.update_idletasks()
-        width = max(480, dialog.winfo_reqwidth())
-        height = max(420, dialog.winfo_reqheight())
-        self._openai_dialog_size = (width, height)
-        dialog.geometry(f"{width}x{height}")
-
-    def _show_openai_options(self) -> None:
-        require_main_thread()
-        self._create_openai_dialog()
-        assert self._openai_dialog is not None
-        dialog = self._openai_dialog
-        self._resize_openai_dialog()
-        width, height = self._openai_dialog_size
-        dialog.deiconify()
-        dialog.update_idletasks()
-        self._window.update_idletasks()
-        x = self._window.winfo_rootx() + (self._window.winfo_width() - width) // 2
-        y = self._window.winfo_rooty() + (self._window.winfo_height() - height) // 2
-        x = max(0, min(x, dialog.winfo_screenwidth() - width))
-        y = max(0, min(y, dialog.winfo_screenheight() - height))
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
-        dialog.lift()
-        dialog.grab_set()
-        self._key_entry.focus_set()
-
-    def _hide_openai_options(self) -> None:
-        dialog = self._openai_dialog
-        if dialog is None:
-            return
-        try:
-            if dialog.grab_current() is dialog:
-                dialog.grab_release()
-        except tk.TclError:
-            pass
-        dialog.withdraw()
-
     def _set_settings_enabled(self, enabled: bool) -> None:
         state = "!disabled" if enabled else "disabled"
         widgets: list[ttk.Widget] = [
-            *self._provider_buttons,
-            self._consent,
-            self._key_entry,
-            self._openai_options_button,
             self._orientation_combo,
             self._orientation_flip,
         ]
-        live_entries: list[ttk.Entry] = []
-        for entry in self._option_entries:
-            try:
-                if entry.winfo_exists():
-                    live_entries.append(entry)
-            except tk.TclError:
-                continue
-        self._option_entries = live_entries
-        widgets.extend(live_entries)
         for widget in widgets:
             try:
                 widget.state([state])
             except tk.TclError:
                 continue
 
-    def _preserve_or_restore_openai_options(self) -> None:
-        try:
-            self._last_valid_usage_refresh = _required_interval(
-                self._usage_refresh.get(), minimum=60, label="Usage 조회 주기"
-            )
-        except ValueError:
-            self._usage_refresh.set(str(self._last_valid_usage_refresh))
-        try:
-            self._last_valid_cost_refresh = _required_interval(
-                self._cost_refresh.get(), minimum=600, label="Costs 조회 주기"
-            )
-        except ValueError:
-            self._cost_refresh.set(str(self._last_valid_cost_refresh))
-
-        for variable, attribute, label in (
-            (self._daily_budget, "_last_valid_daily_budget", "일 예산"),
-            (self._monthly_budget, "_last_valid_monthly_budget", "월 예산"),
-        ):
-            try:
-                setattr(self, attribute, _optional_budget(variable.get(), label))
-            except ValueError:
-                previous = getattr(self, attribute)
-                variable.set("" if previous is None else _format_number(previous))
-
     def _provider_changed(self, *_args: object) -> None:
-        provider = self._provider.get()
-        if provider != AIProviderKind.OPENAI_API.value:
-            self._admin_key.set("")
-            self._preserve_or_restore_openai_options()
-            self._hide_openai_options()
-        if provider == AIProviderKind.CODEX_ACCOUNT.value:
-            self._provider_detail.configure(text="공식 Codex CLI로 격리된 계정을 연결합니다. 로그인과 갱신은 모니터 시작과 별개입니다.")
-            self._consent.grid_remove()
-            self._key_frame.grid_remove()
-        elif provider == AIProviderKind.CODEX_LOCAL.value:
-            self._provider_detail.configure(text="이 PC의 Codex 세션 파일에서 5시간·7일 사용률만 추출합니다. 프롬프트와 답변은 수집하거나 전송하지 않습니다.")
-            self._consent.grid()
-            self._key_frame.grid_remove()
-        elif provider == AIProviderKind.OPENAI_API.value:
-            self._provider_detail.configure(text="ChatGPT 구독 한도가 아니라 OpenAI API 조직의 요청·토큰·비용을 표시합니다. Admin Key는 선택한 경우에만 저장합니다.")
-            self._consent.grid_remove()
-            self._key_frame.grid()
-        elif provider == AIProviderKind.CHATGPT_ACTIVITY.value:
-            self._provider_detail.configure(text="ChatGPT.exe와 Codex.exe가 활성 창이었던 시간을 이 PC에서만 집계합니다.")
-            self._consent.grid_remove()
-            self._key_frame.grid_remove()
-        else:
-            self._provider_detail.configure(text="하드웨어 사용량만 표시하고 AI 사용량 카드는 설정 안내 상태로 둡니다.")
-            self._consent.grid_remove()
-            self._key_frame.grid_remove()
-        self._window.after_idle(self._fit_main_window)
+        self._admin_key.set("")
 
     def _selected_rotation(self) -> str:
         view = _VIEW_LABEL_TO_KEY.get(self._orientation_view.get())
@@ -2586,14 +2693,38 @@ class SetupWindow:
             reset_text = reset.astimezone().strftime("%m-%d %H:%M") if reset is not None else "초기화 미상"
             limit_lines.append(f"{label} 남음 {remaining:.0f}% · {reset_text}" if remaining is not None else f"{label} 한도 미상 · {reset_text}")
         self._codex_limits.configure(text=" / ".join(limit_lines) if limit_lines else "한도 정보 없음")
+        balance = getattr(snapshot, "credit_balance", None)
+        unlimited = bool(getattr(snapshot, "credits_unlimited", False))
+        if unlimited:
+            credits_text = "크레딧 무제한"
+        else:
+            try:
+                credit_value = Decimal(str(balance)) if balance is not None and str(balance).strip() else None
+                if credit_value is None or not credit_value.is_finite() or credit_value < 0:
+                    raise InvalidOperation
+                credit_display = f"{credit_value:,.2f}".rstrip("0").rstrip(".")
+                credits_text = f"크레딧 {credit_display}"
+            except (InvalidOperation, ValueError):
+                credits_text = "크레딧 확인 불가"
+        self._codex_credits.configure(text=credits_text)
         refreshed = getattr(snapshot, "updated_at", None)
         detail = "지연 · 마지막 확인 " + refreshed.astimezone().strftime("%H:%M") if state == "delayed" and refreshed is not None else getattr(snapshot, "error_detail", None) or " "
-        self._codex_feedback.configure(text=detail[:80])
+        if detail.strip():
+            self._set_codex_feedback(
+                detail, RED if state in {"auth_error", "unavailable", "error"} else SECONDARY,
+            )
         self._codex_login_button.state(["disabled"] if pending or self._on_codex_login is None else ["!disabled"])
         self._codex_cancel_button.state(["!disabled"] if pending and self._on_codex_cancel is not None else ["disabled"])
         connected = state in {"ready", "delayed", "no_data"}
-        self._codex_disconnect_button.state(["!disabled"] if connected and self._on_codex_disconnect is not None else ["disabled"])
         self._codex_logout_button.state(["!disabled"] if connected and self._on_codex_logout is not None else ["disabled"])
+        for button in (self._codex_login_button, self._codex_cancel_button, self._codex_logout_button):
+            button.grid_remove()
+        if pending and self._on_codex_cancel is not None:
+            self._codex_cancel_button.grid()
+        elif connected and self._on_codex_logout is not None:
+            self._codex_logout_button.grid()
+        else:
+            self._codex_login_button.grid()
 
     def update_update_status(self, snapshot: UpdateSnapshot) -> None:
         """Refresh fixed-size update feedback without moving setup controls."""
@@ -2603,16 +2734,30 @@ class SetupWindow:
         state = str(getattr(snapshot, "state", "idle"))
         message = str(getattr(snapshot, "message", ""))
         version = getattr(snapshot, "version", None)
+        self._update_open_button.configure(
+            text="업데이트 · 새 버전" if state in {"available", "ready", "manual_required"} else "업데이트"
+        )
         self._update_message.configure(text=(f"{version} · {message}" if version else message)[:70] or "최신 버전 확인 전")
         self._update_apply_button.state(["!disabled"] if state in {"available", "ready"} and self._on_update_apply is not None else ["disabled"])
         self._update_dismiss_button.state(["!disabled"] if state in {"available", "manual_required"} and self._on_update_dismiss is not None else ["disabled"])
         self._update_release_button.state(["!disabled"] if state == "manual_required" and self._on_update_open_release is not None else ["disabled"])
 
+    def _set_codex_feedback(self, text: str, color: str = SECONDARY) -> None:
+        message = text.strip()[:80]
+        self._codex_feedback.configure(text=message or " ", foreground=color)
+        if message:
+            self._codex_feedback.grid()
+        else:
+            self._codex_feedback.grid_remove()
+
     def _account_action(self, action: Action | None, fallback: str) -> None:
         if action is None:
             return
         result = self._invoke(action, fallback)
-        self._codex_feedback.configure(text=(result.title + (f" · {result.detail}" if result.detail else ""))[:80])
+        self._set_codex_feedback(
+            result.title + (f" · {result.detail}" if result.detail else ""),
+            SECONDARY if result.ok else RED,
+        )
 
     def _confirm_codex_logout(self) -> None:
         if self._on_codex_logout is not None and messagebox.askyesno(
@@ -2625,7 +2770,10 @@ class SetupWindow:
     def _refresh_codex_account(self) -> None:
         selection = SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False)
         result = self._invoke(lambda: self._on_check_usage(selection), "한도를 확인하지 못했습니다")
-        self._codex_feedback.configure(text=(result.title + (f" · {result.detail}" if result.detail else ""))[:80])
+        self._set_codex_feedback(
+            result.title + (f" · {result.detail}" if result.detail else ""),
+            SECONDARY if result.ok else RED,
+        )
 
     def _select_codex_cli(self) -> None:
         if self._on_codex_cli_selected is None:
@@ -2633,7 +2781,7 @@ class SetupWindow:
         path = filedialog.askopenfilename(parent=self._window, title="Codex CLI 선택", filetypes=(("실행 파일", "*.exe"),))
         if path:
             result = self._invoke(lambda: self._on_codex_cli_selected(Path(path)), "CLI를 확인하지 못했습니다")
-            self._codex_feedback.configure(text=result.title[:80])
+            self._set_codex_feedback(result.title, SECONDARY if result.ok else RED)
 
     def _update_action(self, action: Action | None, fallback: str) -> None:
         if action is None:
@@ -2648,11 +2796,15 @@ class SetupWindow:
         self._set_settings_enabled(False)
         self._update_brightness_enabled()
         self._usage_status.configure(text="확인 중…", foreground=CYAN)
+        self._set_codex_feedback("사용량 확인 중…", CYAN)
         self._window.update_idletasks()
         result = self._invoke(lambda: self._on_check_usage(self.selection), "사용량을 확인하지 못했습니다")
         if result.pending:
             self._usage_status.configure(text=result.title, foreground=CYAN)
             self._usage_detail.configure(text=result.detail or " ")
+            self._set_codex_feedback(
+                result.title + (f" · {result.detail}" if result.detail else ""), CYAN,
+            )
         else:
             self.complete_usage(result)
 
@@ -2724,30 +2876,3 @@ class SetupWindow:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("setup window is closed")
-
-
-def _required_interval(value: str, *, minimum: int, label: str) -> int:
-    try:
-        parsed = int(value.strip())
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{label} must be an integer") from error
-    if parsed < minimum:
-        raise ValueError(f"{label} must be at least {minimum}")
-    return parsed
-
-
-def _optional_budget(value: str, label: str) -> float | None:
-    stripped = value.strip()
-    if not stripped:
-        return None
-    try:
-        parsed = float(stripped)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{label} must be numeric") from error
-    if parsed <= 0 or parsed == float("inf") or parsed == float("-inf") or parsed != parsed:
-        raise ValueError(f"{label} must be finite and positive")
-    return parsed
-
-
-def _format_number(value: float) -> str:
-    return format(float(value), "g")

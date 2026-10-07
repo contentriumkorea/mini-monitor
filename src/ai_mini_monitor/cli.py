@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import logging
 import math
@@ -17,11 +16,10 @@ from .config import AppConfig, load_config, save_config
 from .controller import MonitorController
 from .diagnostics import collect_diagnostics
 from .logging_setup import setup_logging, shutdown_logging
-from .models import AIProviderKind
 from .orientation import orientation_spec
 from .preview import PREVIEW_STATES, render_all_previews, render_preview
 from .resources import user_data_dir
-from .security.dpapi import DPAPISecretStore
+from .ui.app_icon import set_process_app_id
 from .ui.preview import PreviewWindow
 from .updater import resolve_update_config
 
@@ -41,8 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-window", action="store_true", help="do not open the preview window")
     parser.add_argument("--render-previews", type=Path, metavar="DIR", help="render all required native-size preview states")
     parser.add_argument("--diagnose", nargs="?", const="-", metavar="JSON", help="read-only device/sensor diagnostic; '-' prints JSON")
-    parser.add_argument("--set-openai-key", action="store_true", help="securely prompt and store an OpenAI Admin Key with user-scope DPAPI")
-    parser.add_argument("--clear-openai-key", action="store_true", help="delete the DPAPI-protected OpenAI Admin Key")
     parser.add_argument("--enable-autostart", action="store_true", help="explicitly enable current-user startup")
     parser.add_argument("--disable-autostart", action="store_true", help="disable current-user startup")
     parser.add_argument("--minimized", action="store_true", help="start the saved monitor configuration in the tray without showing the setup window")
@@ -68,12 +64,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     logger = setup_logging(config.app.log_level)
     try:
-        if args.set_openai_key:
-            return _set_openai_key(config, args.config)
-        if args.clear_openai_key:
-            removed = DPAPISecretStore().delete()
-            print("OpenAI Admin Key removed." if removed else "No stored OpenAI Admin Key was found.")
-            return 0
         if args.enable_autostart:
             command = enable_autostart()
             print(f"Autostart enabled for the current user: {command}")
@@ -97,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.headless_run is not None:
             return _headless(config, args.headless_run, no_serial=args.no_serial)
+        set_process_app_id()
         return run_desktop(
             config,
             minimized=args.minimized,
@@ -112,22 +103,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         shutdown_logging(logger)
-
-
-def _set_openai_key(config: AppConfig, config_path: Path | None) -> int:
-    first = getpass.getpass("OpenAI Admin Key (input hidden): ").strip()
-    if not first:
-        print("Empty key was not saved.", file=sys.stderr)
-        return 2
-    second = getpass.getpass("Confirm OpenAI Admin Key: ").strip()
-    if first != second:
-        print("Keys did not match; nothing was saved.", file=sys.stderr)
-        return 2
-    DPAPISecretStore().set(first)
-    config.ai.provider = AIProviderKind.OPENAI_API.value
-    save_config(config, config_path)
-    print("OpenAI Admin Key was protected with Windows user-scope DPAPI. The key was not printed or logged.")
-    return 0
 
 
 def _diagnose(config: AppConfig, destination: str) -> int:

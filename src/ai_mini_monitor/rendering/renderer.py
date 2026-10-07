@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timezone
+from decimal import Decimal
 from math import isfinite
 import re
-from typing import Iterable
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -14,7 +13,6 @@ from ..models import (
     ConnectionStatus,
     DisplaySnapshot,
     Metric,
-    SyncStatus,
 )
 from .fonts import inter, metric_mono, mono
 from .layout import (
@@ -161,8 +159,7 @@ def get_overlay_layers(image: Image.Image) -> OverlayLayers:
 
 
 def _metric_gauge(rect: Rect) -> Rect:
-    portrait = rect.width > 228
-    return Rect(rect.x + 11, rect.bottom - (22 if portrait else 27), rect.width - 22, 8 if portrait else 10)
+    return Rect(rect.right - 22, rect.bottom - 50, 10, 40)
 
 
 def _memory_gauge(rect: Rect) -> Rect:
@@ -186,14 +183,12 @@ def _metric_temperature(metric: Metric) -> str:
     return "-- °C" if metric.value is None else f"{round(metric.value):d} °C"
 
 
-def _short_number(value: float | int) -> str:
-    number = float(value)
-    absolute = abs(number)
-    if absolute >= 1_000_000:
-        return f"{number / 1_000_000:.1f}M"
-    if absolute >= 1_000:
-        return f"{number / 1_000:.1f}K"
-    return f"{number:.0f}"
+def _format_credit_balance(value: str) -> str:
+    if value == "UNLIMITED":
+        return "UNLTD"
+    if re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,32})?", value) is None:
+        return "--"
+    return f"{int(Decimal(value)):,}"
 
 
 class DashboardRenderer:
@@ -207,6 +202,8 @@ class DashboardRenderer:
         self.cpu_gauge = _metric_gauge(layout.cpu)
         self.gpu_gauge = _metric_gauge(layout.gpu)
         self.memory_gauge = _memory_gauge(layout.memory)
+        self.vram_gauge = _metric_gauge(layout.vram)
+        self.ai_gauge = _metric_gauge(layout.ai)
         (
             self._static_background,
             self._static_foreground,
@@ -244,10 +241,10 @@ class DashboardRenderer:
             )
         foreground = Image.new("RGBA", self.layout.size, (0, 0, 0, 0))
         foreground_draw = ImageDraw.Draw(foreground)
-        for track in (self.cpu_gauge, self.gpu_gauge, self.memory_gauge):
+        for track in (self.cpu_gauge, self.memory_gauge, self.gpu_gauge, self.vram_gauge, self.ai_gauge):
             foreground_draw.rounded_rectangle(
                 (track.x, track.y, track.right - 1, track.bottom - 1),
-                radius=3,
+                radius=4,
                 fill=self.theme.grid,
                 outline=self.theme.border,
                 width=1,
@@ -273,7 +270,6 @@ class DashboardRenderer:
             "CPU",
             snapshot.cpu_percent,
             snapshot.cpu_temperature,
-            snapshot.cpu_history,
             "cpu",
             snapshot.cpu_model,
         )
@@ -283,12 +279,12 @@ class DashboardRenderer:
             "GPU",
             snapshot.gpu_percent,
             snapshot.gpu_temperature,
-            snapshot.gpu_history,
             "gpu",
             snapshot.gpu_model,
             snapshot=snapshot,
         )
         self._draw_memory(draw, snapshot)
+        self._draw_vram(draw, snapshot)
         self._draw_ai(draw, snapshot.ai)
         image = Image.alpha_composite(
             self._static_background.convert("RGBA"),
@@ -463,7 +459,6 @@ class DashboardRenderer:
         center_y = rect.y + rect.height // 2
         draw.ellipse((rect.x + 9, center_y - 3, rect.x + 15, center_y + 3), fill=color)
         self._text(draw, "connection_label", (rect.x + 22, center_y), "MINI MONITOR", inter(11, "Bold"), self.theme.primary_text, rect, anchor="lm")
-        self._text(draw, "connection_status", (rect.x + (129 if portrait else 148), center_y), connection.status.value, mono(10), color, rect, anchor="lm")
         detail = "DEMO" if snapshot.ai.demo else (connection.port or connection.detail or "NO DEVICE")
         detail_limit = 9 if portrait else 20
         self._text(
@@ -477,6 +472,81 @@ class DashboardRenderer:
             anchor="rm",
         )
 
+    def _draw_card_value(
+        self, draw: ImageDraw.ImageDraw, key: str, rect: Rect, track: Rect,
+        value: str, color: str,
+    ) -> TextPlacement:
+        size = self._fit_large_value_size(
+            draw, value, 50, 24, min(112, track.x - rect.x - 30),
+        )
+        self._draw_large_percent(
+            draw, key, (track.x - 6, rect.bottom - 10), value,
+            size, color, rect, anchor="rs",
+        )
+        return self.last_placements[key]
+
+    @staticmethod
+    def _wrap_words(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+        lines: list[str] = []
+        current = ""
+        for word in text.split():
+            candidate = f"{current} {word}" if current else word
+            if font.getlength(candidate) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            if font.getlength(word) <= max_width:
+                current = word
+                continue
+            chunk = ""
+            for char in word:
+                if chunk and font.getlength(chunk + char) > max_width:
+                    lines.append(chunk)
+                    chunk = ""
+                chunk += char
+            current = chunk
+        if current:
+            lines.append(current)
+        return lines
+
+    def _draw_wrapped_detail(
+        self, draw: ImageDraw.ImageDraw, key: str, rect: Rect, text: str,
+        x: int, y: int, max_width: int, font: ImageFont.FreeTypeFont,
+        *, line_step: int = 11, max_bottom: int | None = None,
+    ) -> int:
+        """Draw complete words in the detail lane and expose one group placement."""
+
+        limit = rect.bottom - 3 if max_bottom is None else max_bottom
+        placements: list[TextPlacement] = []
+        lines = self._wrap_words(text, font, max_width)
+        for index, line in enumerate(lines):
+            line_y = y + index * line_step
+            bbox = draw.textbbox((x, line_y), line, font=font, anchor="la")
+            if bbox[3] > limit:
+                break
+            placements.append(self._text(
+                draw, f"{key}_line_{index}", (x, line_y), line,
+                font, self.theme.secondary_text, rect,
+            ))
+        if placements:
+            bbox = (
+                min(item.bbox[0] for item in placements),
+                min(item.bbox[1] for item in placements),
+                max(item.bbox[2] for item in placements),
+                max(item.bbox[3] for item in placements),
+            )
+        else:
+            bbox = (x, y, x, y)
+        if len(placements) < len(lines):
+            bbox = (bbox[0], bbox[1], bbox[2], rect.bottom + 1)
+        self.last_placements[key] = TextPlacement(
+            key, (x, y), bbox, rect, text, "la", font.size,
+            font.getname(), drawn=False,
+        )
+        return y + len(placements) * line_step
+
     def _draw_metric_card(
         self,
         draw: ImageDraw.ImageDraw,
@@ -484,7 +554,6 @@ class DashboardRenderer:
         label: str,
         percent: Metric,
         temperature: Metric,
-        history: tuple[float | None, ...],
         key_prefix: str,
         model: str | None,
         snapshot: DisplaySnapshot | None = None,
@@ -498,120 +567,98 @@ class DashboardRenderer:
         self._draw_percent_gauge(
             draw,
             key_prefix,
-            rect,
             gauge,
             percent,
             accent,
-            (rect.right - 11, gauge.y - 3),
-            "rs",
         )
-        portrait = self.layout.height > self.layout.width
-        temperature_font = mono(12)
-        temperature_text = _metric_temperature(temperature)
-        info_x = rect.x + (130 if portrait else 123)
+        value_placement = self._draw_card_value(
+            draw, f"{key_prefix}_value", rect, gauge,
+            _metric_percent(percent), value_color,
+        )
+        info_x = rect.x + 12
+        info_width = max(1, value_placement.bbox[0] - info_x - 6)
+        next_y = rect.y + 30
         if model:
-            model_font, model_text = self._fit_model_name(
-                model,
-                rect.width - 145 if portrait else rect.width - (62 if key_prefix == "gpu" and snapshot is not None and snapshot.gpu_power_w.value is not None else 30),
+            next_y = self._draw_wrapped_detail(
+                draw, f"{key_prefix}_model", rect, model,
+                info_x, next_y, info_width, inter(10, "Bold"),
             )
-            self._text(
-                draw,
-                f"{key_prefix}_model",
-                (info_x if portrait else rect.x + 13, rect.y + (29 if portrait else 32)),
-                model_text,
-                model_font,
-                self.theme.secondary_text,
-                rect,
-                anchor="la",
-            )
-        self._draw_large_percent(
-            draw,
-            f"{key_prefix}_value",
-            (rect.x + 112, rect.y + (73 if portrait else 80)),
-            _metric_percent(percent),
-            40 if portrait else 42,
-            value_color,
-            rect,
-            anchor="rs",
-        )
         temp_color = self.theme.error if temperature.value is not None and temperature.value >= 90 else self.theme.secondary_text
-        self._text(
-            draw,
-            f"{key_prefix}_temperature",
-            (info_x, rect.y + (52 if portrait else 65)),
-            temperature_text,
-            temperature_font,
-            temp_color,
-            rect,
-            anchor="la",
-        )
-        if key_prefix == "gpu" and snapshot is not None:
-            used = snapshot.gpu_vram_used_gib.value
-            total = snapshot.gpu_vram_total_gib.value
-            valid = (
-                used is not None and total is not None
-                and isfinite(float(used)) and isfinite(float(total))
-                and 0 <= used <= total and total > 0
+        temp_text = _metric_temperature(temperature)
+        temp_font = mono(10)
+        if (next_y + 10 <= rect.bottom - 2 and temp_font.getlength(temp_text) <= info_width):
+            self._text(
+                draw, f"{key_prefix}_temperature", (info_x, next_y),
+                temp_text, temp_font, temp_color, rect,
             )
-            vram = f"VRAM {used:.1f} / {total:.1f} GiB" if valid else "VRAM -- / -- GiB"
-            self._text(draw, "gpu_vram", (info_x if portrait else rect.x + 12, rect.y + (64 if portrait else 84)), vram, mono(10), self.theme.secondary_text, rect)
+            next_y += 11
+        if key_prefix == "gpu" and snapshot is not None:
             power = snapshot.gpu_power_w.value
             if power is not None and isfinite(float(power)) and power >= 0:
-                self._text(draw, "gpu_power", (rect.right - 11, rect.y + (51 if portrait else 31)), f"{power:.0f} W", mono(10), self.theme.secondary_text, rect, anchor="ra")
-        chart_width = rect.width - 22
-        chart = Rect(
-            rect.x + 11,
-            rect.bottom - (10 if portrait else 13),
-            chart_width,
-            7 if portrait else 9,
-        )
-        self._draw_sparkline(draw, chart, history, accent, key=key_prefix)
+                power_text = f"{power:.0f} W"
+                if next_y + 9 <= rect.bottom - 2 and mono(9).getlength(power_text) <= info_width:
+                    self._text(draw, "gpu_power", (info_x, next_y), power_text, mono(9), self.theme.secondary_text, rect)
 
     def _draw_memory(self, draw: ImageDraw.ImageDraw, snapshot: DisplaySnapshot) -> None:
         rect = self.layout.memory
-        portrait = self.layout.height > self.layout.width
         accent = self.theme.memory_accent
         self._draw_card_heading(draw, "memory_label", rect, "RAM", accent)
-        self._draw_large_percent(
-            draw,
-            "memory_value",
-            (rect.x + 112, rect.y + (73 if portrait else 80)),
-            _metric_percent(snapshot.memory_percent),
-            40 if portrait else 42,
-            self.theme.primary_text,
-            rect,
-            anchor="rs",
+        value = self._draw_card_value(
+            draw, "memory_value", rect, self.memory_gauge,
+            _metric_percent(snapshot.memory_percent), self.theme.primary_text,
         )
         if snapshot.memory_used_gib.value is None or snapshot.memory_total_gib.value is None:
             used_total = "-- / -- GiB"
         else:
             used_total = f"{snapshot.memory_used_gib.value:.1f} / {snapshot.memory_total_gib.value:.1f} GiB"
-        self._text(draw, "memory_used", (rect.x + (130 if portrait else 121), rect.y + (40 if portrait else 48)), used_total, mono(11 if portrait else 10), self.theme.secondary_text, rect)
+        info_x = rect.x + 12
+        info_width = max(1, value.bbox[0] - info_x - 6)
+        next_y = self._draw_wrapped_detail(
+            draw, "memory_used", rect, used_total,
+            info_x, rect.y + 31, info_width, mono(9),
+        )
         available = "-- GiB FREE" if snapshot.memory_available_gib.value is None else f"{snapshot.memory_available_gib.value:.1f} GiB FREE"
-        self._text(draw, "memory_available", (rect.x + (130 if portrait else 121), rect.y + (62 if portrait else 69)), available, mono(11), self.theme.secondary_text, rect)
-        chart = Rect(rect.x + 11, rect.bottom - (10 if portrait else 13), rect.width - 22, 7 if portrait else 9)
-        self._draw_sparkline(draw, chart, snapshot.memory_history, accent, key="memory")
+        self._draw_wrapped_detail(
+            draw, "memory_available", rect, available,
+            info_x, next_y + 2, info_width, mono(9),
+        )
         self._draw_percent_gauge(
             draw,
             "memory",
-            rect,
             self.memory_gauge,
             snapshot.memory_percent,
             accent,
-            (self.memory_gauge.right, self.memory_gauge.y - 3),
-            "rs",
         )
+
+    def _draw_vram(self, draw: ImageDraw.ImageDraw, snapshot: DisplaySnapshot) -> None:
+        rect = self.layout.vram
+        used = snapshot.gpu_vram_used_gib.value
+        total = snapshot.gpu_vram_total_gib.value
+        valid = (used is not None and total is not None and isfinite(float(used))
+                 and isfinite(float(total)) and 0 <= used <= total and total > 0)
+        percent = Metric(used / total * 100 if valid else None, "%")
+        self._draw_card_heading(draw, "vram_label", rect, "VRAM", self.theme.gpu_accent)
+        value = self._draw_card_value(
+            draw, "vram_value", rect, self.vram_gauge,
+            _metric_percent(percent), self.theme.primary_text,
+        )
+        capacity = f"{used:.1f} / {total:.1f} GiB" if valid else "-- / -- GiB"
+        info_x = rect.x + 12
+        self._draw_wrapped_detail(
+            draw, "vram_used", rect, capacity,
+            info_x, rect.y + 36, max(1, value.bbox[0] - info_x - 6), mono(9),
+        )
+        self._draw_percent_gauge(draw, "vram", self.vram_gauge, percent, self.theme.gpu_accent)
 
     def _draw_percent_gauge(
         self,
         draw: ImageDraw.ImageDraw,
         key: str,
-        card: Rect,
         track: Rect,
         metric: Metric,
         accent: str,
-        status_xy: tuple[int, int],
-        status_anchor: str,
+        *,
+        remaining: bool = False,
     ) -> None:
         value: float | None
         if metric.value is None or not isfinite(float(metric.value)):
@@ -622,10 +669,11 @@ class DashboardRenderer:
         else:
             value = min(100.0, max(0.0, float(metric.value)))
             ratio = value / 100.0
-            if value >= 95.0:
+            severity_value = 100.0 - value if remaining else value
+            if severity_value >= 95.0:
                 state = "WARNING"
                 state_color = self.theme.error
-            elif value >= 80.0:
+            elif severity_value >= 80.0:
                 state = "CAUTION"
                 state_color = self.theme.warning
             else:
@@ -642,145 +690,66 @@ class DashboardRenderer:
                     width=1,
                 )
         elif ratio > 0.0:
-            fill_width = min(inner.width, max(1, round(inner.width * ratio)))
-            fill = Rect(inner.x, inner.y, fill_width, inner.height)
+            fill_height = min(inner.height, max(1, round(inner.height * ratio)))
+            fill = Rect(inner.x, inner.bottom - fill_height, inner.width, fill_height)
             fill_color = accent if state == "NORMAL" else state_color
             draw.rounded_rectangle(
                 (fill.x, fill.y, fill.right - 1, fill.bottom - 1),
-                radius=min(2, fill.width // 2),
+                radius=min(2, fill.height // 2),
                 fill=fill_color,
             )
 
         self.last_gauges[key] = GaugePlacement(key, track, fill, ratio, state)
-        if state != "NORMAL":
-            self._text(draw, f"{key}_gauge_status", status_xy, state, mono(8), state_color, card, anchor=status_anchor)
 
     def _draw_ai(self, draw: ImageDraw.ImageDraw, ai: AIData) -> None:
         rect = self.layout.ai
-        portrait = self.layout.height > self.layout.width
-        title_y = rect.y + 10
-        status_color = {
-            SyncStatus.OK: self.theme.success,
-            SyncStatus.DELAYED: self.theme.warning,
-            SyncStatus.AUTH_ERROR: self.theme.error,
-            SyncStatus.RATE_LIMITED: self.theme.warning,
-            SyncStatus.NETWORK_ERROR: self.theme.error,
-            SyncStatus.SETUP_REQUIRED: self.theme.warning,
-        }[ai.status]
-        badge = ("DEMO" if ai.status is SyncStatus.OK else f"DEMO {ai.status.value}") if ai.demo else ai.status.value
-        status_font = mono(9)
-        status_xy = (rect.right - 11, title_y)
-        status_bbox = draw.textbbox(status_xy, badge, font=status_font, anchor="ra")
+        fields = tuple((label, value) for label, value in ai.fields if "RESET" not in label.upper()) if ai.provider is AIProviderKind.CODEX_ACCOUNT else ai.fields
+        fields = fields[:2]
         self._draw_card_heading(
             draw,
             "ai_title",
             rect,
             ai.title,
             self.theme.ai_accent,
-            max_right=status_bbox[0] - 8,
-            underline=not portrait,
+            max_right=rect.right - 11,
+            underline=False,
         )
-        self._text(draw, "ai_status", status_xy, badge, status_font, status_color, rect, anchor="ra")
-        primary_is_percent = _PERCENT_VALUE.fullmatch(ai.primary_value) is not None
-        codex_quota_value = (
-            ai.provider in (AIProviderKind.CODEX_LOCAL, AIProviderKind.CODEX_ACCOUNT)
-            and (primary_is_percent or ai.primary_value == "--")
+        value = self._draw_card_value(
+            draw, "ai_primary", rect, self.ai_gauge,
+            ai.primary_value, self.theme.primary_text,
         )
-        if portrait:
-            primary_size = (
-                40
-                if codex_quota_value
-                else (34 if primary_is_percent else (28 if len(ai.primary_value) <= 7 else 24))
-            )
-            primary_xy = (
-                (rect.x + 112, rect.y + 73)
-                if codex_quota_value
-                else (rect.x + 11, rect.y + 52)
-            )
-            primary_label_xy = (
-                (rect.right - 11, rect.y + 65)
-                if codex_quota_value
-                else (rect.right - 11, rect.y + 49)
-            )
-            primary_label_font = inter(10)
-        else:
-            primary_size = (
-                42
-                if codex_quota_value
-                else (40 if primary_is_percent else (34 if len(ai.primary_value) <= 7 else 28))
-            )
-            primary_xy = (
-                (rect.x + 112, rect.y + 80)
-                if codex_quota_value
-                else (rect.x + 11, rect.y + 72)
-            )
-            primary_label_xy = (
-                (rect.right - 11, rect.y + 79)
-                if codex_quota_value
-                else (rect.right - 11, rect.y + 68)
-            )
-            primary_label_font = inter(11)
-        primary_anchor = "rs" if codex_quota_value else "ls"
-        primary_label_bbox = draw.textbbox(
-            primary_label_xy,
-            ai.primary_label,
-            font=primary_label_font,
-            anchor="rs",
-        )
-        primary_available_width = (
-            primary_xy[0] - (rect.x + 11)
-            if codex_quota_value
-            else primary_label_bbox[0] - 8 - primary_xy[0]
-        )
-        primary_size = self._fit_large_value_size(
-            draw,
-            ai.primary_value,
-            primary_size,
-            max(24, primary_size - 10) if primary_is_percent else 18,
-            max(1, primary_available_width),
-        )
-        self._draw_large_percent(
-            draw,
-            "ai_primary",
-            primary_xy,
-            ai.primary_value,
-            primary_size,
-            self.theme.primary_text,
-            rect,
-            anchor=primary_anchor,
-        )
+        info_x = rect.x + 12
+        info_right = value.bbox[0] - 6
+        primary_label_font = inter(10)
         self._text(
             draw,
             "ai_primary_label",
-            primary_label_xy,
+            (info_x, rect.y + 30),
             ai.primary_label,
             primary_label_font,
             self.theme.secondary_text,
             rect,
-            anchor="rs",
         )
-        fields = tuple((label, value) for label, value in ai.fields if "RESET" not in label.upper()) if ai.provider is AIProviderKind.CODEX_ACCOUNT else ai.fields
-        fields = fields[:1] if portrait or ai.budget_ratio is not None else fields[:2]
         for index, (label, value) in enumerate(fields):
-            top = rect.y + (68 if portrait else 84) + index * 16
-            left = rect.x + (130 if portrait else 121)
-            self._text(draw, f"ai_field_{index}_label", (left, top), label.upper()[:10], inter(10), self.theme.secondary_text, rect)
-            self._text(draw, f"ai_field_{index}_value", (rect.right - 11, top), value[:8], mono(10), self.theme.ai_accent, rect, anchor="ra")
-        if ai.budget_ratio is not None:
-            ratio = min(1.0, max(0.0, ai.budget_ratio))
-            bar = _metric_gauge(rect)
-            self.last_budget_bar = bar
-            draw.rounded_rectangle((bar.x, bar.y, bar.right - 1, bar.bottom - 1), radius=3, fill=self.theme.border)
-            if ratio > 0:
-                color = self.theme.error if ratio >= 1.0 else self.theme.ai_accent
-                draw.rounded_rectangle((bar.x, bar.y, bar.x + max(3, round(bar.width * ratio)) - 1, bar.bottom - 1), radius=3, fill=color)
-        if ai.last_sync is None:
-            sync_text = "LAST SYNC --"
+            top = rect.y + 46 + index * 17
+            label_placement = self._text(draw, f"ai_field_{index}_label", (info_x, top), label.upper()[:10], inter(10), self.theme.secondary_text, rect)
+            display_value = _format_credit_balance(value) if label.upper() == "CREDITS" else value[:8]
+            value_right = min(info_right, info_x + 130)
+            available_width = value_right - label_placement.bbox[2] - 6
+            value_font = mono(10)
+            for size in range(10, 5, -1):
+                value_font = mono(size)
+                if value_font.getlength(display_value) <= available_width:
+                    break
+            self._text(draw, f"ai_field_{index}_value", (value_right, top), display_value, value_font, self.theme.ai_accent, rect, anchor="ra")
+        if ai.provider in (AIProviderKind.CODEX_LOCAL, AIProviderKind.CODEX_ACCOUNT):
+            match = _PERCENT_VALUE.fullmatch(ai.primary_value)
+            gauge_percent = float(match.group(1)) if match else None
         else:
-            local_time = ai.last_sync.astimezone().strftime("%H:%M:%S")
-            sync_text = f"LAST SYNC {local_time}"
-        sync_y = rect.bottom - 5
-        self._text(draw, "ai_last_sync", (rect.x + 11, sync_y), sync_text, mono(8), self.theme.secondary_text, rect, anchor="ls")
+            gauge_percent = ai.budget_ratio * 100 if ai.budget_ratio is not None else None
+        self._draw_percent_gauge(draw, "ai", self.ai_gauge,
+                                 Metric(gauge_percent, "%"), self.theme.ai_accent,
+                                 remaining=ai.provider in (AIProviderKind.CODEX_LOCAL, AIProviderKind.CODEX_ACCOUNT))
 
     def _draw_card_heading(
         self,
@@ -892,34 +861,3 @@ class DashboardRenderer:
             if width <= max_width:
                 return size
         return minimum
-
-    def _draw_sparkline(
-        self,
-        draw: ImageDraw.ImageDraw,
-        rect: Rect,
-        values: Iterable[float | None],
-        color: str,
-        *,
-        key: str | None = None,
-    ) -> None:
-        if key is not None:
-            self.last_sparklines[key] = rect
-        draw.line((rect.x, rect.bottom - 1, rect.right - 1, rect.bottom - 1), fill=self.theme.border, width=1)
-        draw.line((rect.x, rect.y + rect.height // 2, rect.right - 1, rect.y + rect.height // 2), fill=self.theme.grid, width=1)
-        samples = list(values)
-        if len(samples) < 2:
-            return
-        count = len(samples)
-        segment: list[tuple[int, int]] = []
-        for index, raw in enumerate(samples):
-            if raw is None or not isfinite(float(raw)):
-                if len(segment) >= 2:
-                    draw.line(segment, fill=color, width=2, joint="curve")
-                segment = []
-                continue
-            value = min(100.0, max(0.0, float(raw)))
-            x = rect.x + round(index * (rect.width - 1) / (count - 1))
-            y = rect.bottom - 1 - round(value * (rect.height - 2) / 100.0)
-            segment.append((x, y))
-        if len(segment) >= 2:
-            draw.line(segment, fill=color, width=2, joint="curve")

@@ -24,6 +24,22 @@ MIN_OVERLAY_SCALE_PERCENT = 50
 MAX_OVERLAY_SCALE_PERCENT = 200
 MIN_OVERLAY_COORDINATE = -(2**31)
 MAX_OVERLAY_COORDINATE = (2**31) - 1
+DEFAULT_TASKBAR_ITEMS = ("cpu", "ram", "gpu", "vram", "codex")
+TASKBAR_STYLES = ("icon", "text", "both")
+
+
+def validate_taskbar_options(items: object, style: object) -> tuple[str, ...]:
+    """Validate and return the five-item display order, filtered to selections."""
+
+    if not isinstance(items, (list, tuple)) or not items:
+        raise ValueError("overlay.taskbar_items must select at least one item")
+    if any(not isinstance(item, str) or item not in DEFAULT_TASKBAR_ITEMS for item in items):
+        raise ValueError("overlay.taskbar_items contains an unknown item")
+    if len(set(items)) != len(items):
+        raise ValueError("overlay.taskbar_items cannot contain duplicates")
+    if not isinstance(style, str) or style not in TASKBAR_STYLES:
+        raise ValueError("overlay.taskbar_style must be icon, text, or both")
+    return tuple(item for item in DEFAULT_TASKBAR_ITEMS if item in items)
 
 
 def validate_brightness(value: object) -> int:
@@ -57,7 +73,7 @@ class SensorConfig:
 
 @dataclass(slots=True)
 class AIConfig:
-    provider: str = AIProviderKind.NOT_CONFIGURED.value
+    provider: str = AIProviderKind.CODEX_ACCOUNT.value
     codex_local_consent: bool = False
     codex_cli_path: str | None = None
     usage_refresh_seconds: int = 60
@@ -74,6 +90,11 @@ class OverlayConfig:
     scale_percent: int = DEFAULT_OVERLAY_SCALE_PERCENT
     x: int | None = None
     y: int | None = None
+    taskbar_enabled: bool = False
+    taskbar_x: int | None = None
+    taskbar_y: int | None = None
+    taskbar_items: list[str] = field(default_factory=lambda: list(DEFAULT_TASKBAR_ITEMS))
+    taskbar_style: str = "icon"
 
 
 @dataclass(slots=True)
@@ -124,9 +145,8 @@ class AppConfig:
             raise ValueError("ai.cost_refresh_seconds must be at least 600")
         if not _finite_number(self.app.render_fps) or not 10.0 <= self.app.render_fps <= 15.0:
             raise ValueError("app.render_fps must be between 10 and 15")
-        allowed = {provider.value for provider in AIProviderKind}
-        if self.ai.provider not in allowed:
-            raise ValueError(f"ai.provider must be one of {sorted(allowed)}")
+        if self.ai.provider != AIProviderKind.CODEX_ACCOUNT.value:
+            raise ValueError("ai.provider must be codex_account")
         if not isinstance(self.ai.codex_local_consent, bool):
             raise ValueError("ai.codex_local_consent must be true or false")
         if self.ai.codex_cli_path is not None and (
@@ -143,6 +163,9 @@ class AppConfig:
                 raise ValueError("budgets must be positive when configured")
         if not isinstance(self.overlay.enabled, bool):
             raise ValueError("overlay.enabled must be true or false")
+        if not isinstance(self.overlay.taskbar_enabled, bool):
+            raise ValueError("overlay.taskbar_enabled must be true or false")
+        self.overlay.taskbar_items = list(validate_taskbar_options(self.overlay.taskbar_items, self.overlay.taskbar_style))
         if (
             not _finite_number(self.overlay.opacity)
             or not MIN_OVERLAY_OPACITY
@@ -164,7 +187,9 @@ class AppConfig:
                 "overlay.scale_percent must be an integer between "
                 f"{MIN_OVERLAY_SCALE_PERCENT} and {MAX_OVERLAY_SCALE_PERCENT}"
             )
-        for name, coordinate in (("x", self.overlay.x), ("y", self.overlay.y)):
+        for name, coordinate in (("x", self.overlay.x), ("y", self.overlay.y),
+                                 ("taskbar_x", self.overlay.taskbar_x),
+                                 ("taskbar_y", self.overlay.taskbar_y)):
             if coordinate is not None and (
                 isinstance(coordinate, bool)
                 or not isinstance(coordinate, int)
@@ -177,6 +202,8 @@ class AppConfig:
                 )
         if (self.overlay.x is None) != (self.overlay.y is None):
             raise ValueError("overlay.x and overlay.y must both be set or both be null")
+        if (self.overlay.taskbar_x is None) != (self.overlay.taskbar_y is None):
+            raise ValueError("taskbar coordinates must both be set or both be null")
 
 
 def default_config_path() -> Path:
@@ -193,10 +220,18 @@ def load_config(path: Path | None = None) -> AppConfig:
     device_payload = dict(_section(payload, "device"))
     if "rotation" in device_payload:
         device_payload["rotation"] = migrate_rotation(device_payload["rotation"])
+    ai_payload = dict(_section(payload, "ai"))
+    if ai_payload.get("provider") in {
+        AIProviderKind.CODEX_LOCAL.value,
+        AIProviderKind.OPENAI_API.value,
+        AIProviderKind.CHATGPT_ACTIVITY.value,
+        AIProviderKind.NOT_CONFIGURED.value,
+    }:
+        ai_payload["provider"] = AIProviderKind.CODEX_ACCOUNT.value
     config = AppConfig(
         device=DeviceConfig(**device_payload),
         sensors=SensorConfig(**_section(payload, "sensors")),
-        ai=AIConfig(**_section(payload, "ai")),
+        ai=AIConfig(**ai_payload),
         overlay=OverlayConfig(**_section(payload, "overlay")),
         app=AppOptions(**_section(payload, "app")),
     )

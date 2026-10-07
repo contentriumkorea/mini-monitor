@@ -69,6 +69,71 @@ def make_window(**overrides) -> SetupWindow:
     )
 
 
+def test_setup_uses_only_codex_account_without_legacy_choices_or_api_form() -> None:
+    window = make_window()
+    try:
+        assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
+        assert window.selection.provider == AIProviderKind.CODEX_ACCOUNT.value
+        assert window.selection.codex_local_consent is False
+        assert window.selection.openai_admin_key == ""
+        assert window._openai_dialog is None
+        labels = [
+            str(widget.cget("text"))
+            for widget in window.window.winfo_children()
+            for widget in _descendants(widget)
+            if "text" in widget.keys()
+        ]
+        visible_copy = " ".join(labels)
+        for removed in ("다른 데이터 원본", "Codex 로컬 기록", "OpenAI API", "앱 활동 시간", "사용 안 함", "Admin Key", "로컬에서 읽는 데 동의", "연결 해제"):
+            assert removed not in visible_copy
+        with pytest.raises(ValueError, match="provider"):
+            window.set_provider(AIProviderKind.OPENAI_API.value)
+        with pytest.raises(ValueError, match="provider"):
+            window.set_provider(AIProviderKind.NOT_CONFIGURED.value)
+        assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
+    finally:
+        window.close()
+
+
+def _descendants(widget: tk.Widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _descendants(child)
+
+
+@pytest.mark.parametrize(
+    ("balance", "unlimited", "expected"),
+    [("12.50", False, "크레딧 12.5"), ("60519.1234567890", False, "크레딧 60,519.12"), ("0", False, "크레딧 0"), (None, True, "크레딧 무제한"), (None, False, "크레딧 확인 불가"), ("", False, "크레딧 확인 불가")],
+)
+def test_account_status_reports_credits_without_guessing(balance, unlimited, expected) -> None:
+    window = make_window()
+    try:
+        window.update_codex_account(SimpleNamespace(
+            state="ready", email="demo@example.invalid", plan_type="plus",
+            login_pending=False, windows=(), updated_at=None, error_detail=None,
+            credit_balance=balance, credits_unlimited=unlimited,
+        ))
+        assert window._codex_credits.cget("text") == expected
+    finally:
+        window.close()
+
+
+def test_settings_palette_is_neutral_and_errors_keep_semantic_color() -> None:
+    window = make_window()
+    try:
+        style = setup_ui_module.ttk.Style(window.window)
+        for color in (setup_ui_module.BG, setup_ui_module.CARD, setup_ui_module.CARD_RAISED, setup_ui_module.BORDER, setup_ui_module.CYAN, setup_ui_module.GREEN):
+            rgb = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+            assert max(rgb) - min(rgb) <= 4
+        primary = style.lookup("Primary.TButton", "background")
+        rgb = tuple(int(primary[index:index + 2], 16) for index in (1, 3, 5))
+        assert max(rgb) - min(rgb) <= 4
+        window.complete_device(ActionResult(False, "연결 실패"))
+        assert str(window._device_title.cget("foreground")) == setup_ui_module.RED
+    finally:
+        window.close()
+
+
 def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner() -> None:
     called: list[str] = []
     window = make_window(
@@ -92,7 +157,6 @@ def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner
         window._codex_cancel_button.invoke()
         account = SimpleNamespace(state="ready", email="demo@example.invalid", plan_type="plus", login_pending=False, windows=(), updated_at=None, error_detail=None)
         window.update_codex_account(account)
-        window._codex_disconnect_button.invoke()
         window._codex_guide_button.invoke()
         banner_height = window._update_banner.winfo_reqheight()
         window.update_update_status(SimpleNamespace(state="available", version="2.0.0", message="업데이트가 있습니다", prepared=None, release_url="https://example.invalid"))
@@ -106,7 +170,7 @@ def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner
         window.window.update()
         assert window._update_dismiss_button.winfo_y() + window._update_dismiss_button.winfo_height() <= window._update_banner.winfo_height()
         assert window._update_apply_button.winfo_x() + window._update_apply_button.winfo_width() <= window._update_banner.winfo_width()
-        assert called == ["login", "cancel", "disconnect", "guide", "check", "apply", "dismiss", "release"]
+        assert called == ["login", "cancel", "guide", "check", "apply", "dismiss", "release"]
         assert "demo@example.invalid" in window._codex_identity.cget("text")
     finally:
         window.close()
@@ -149,6 +213,8 @@ def test_public_provider_switch_accepts_official_account_and_rejects_unknown() -
         assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
         assert window.selection.provider == AIProviderKind.CODEX_ACCOUNT.value
         with pytest.raises(ValueError, match="provider"):
+            window.set_provider(AIProviderKind.NOT_CONFIGURED.value)
+        with pytest.raises(ValueError, match="provider"):
             window.set_provider("invalid-provider")
         assert window.selected_provider == AIProviderKind.CODEX_ACCOUNT.value
     finally:
@@ -169,12 +235,21 @@ def test_account_and_update_controls_fit_short_negative_monitor_at_high_dpi(
         window.window.update()
         assert -1600 <= window.window.winfo_x()
         assert window.window.winfo_x() + window.window.winfo_width() + 16 <= -576
-        for control in (window._codex_login_button, window._codex_cli_button, window._update_check_button, window._update_dismiss_button):
+        window._codex_help_button.invoke()
+        for control in (window._codex_login_button, window._codex_cli_button):
             control.focus_force()
             window.window.update()
             assert control.winfo_x() + control.winfo_width() <= control.master.winfo_width()
             assert control.winfo_rooty() >= window._left_canvas.winfo_rooty()
             assert control.winfo_rooty() + control.winfo_height() <= window._left_canvas.winfo_rooty() + window._left_canvas.winfo_height()
+        window._update_open_button.invoke()
+        window.window.update()
+        assert window._update_dialog.winfo_rootx() >= -1600
+        assert window._update_dialog.winfo_rootx() + window._update_dialog.winfo_width() + 16 <= -576
+        for control in (window._update_check_button, window._update_dismiss_button):
+            assert control.winfo_ismapped()
+            assert control.winfo_rooty() >= window._update_dialog.winfo_rooty()
+            assert control.winfo_rooty() + control.winfo_height() <= window._update_dialog.winfo_rooty() + window._update_dialog.winfo_height()
     finally:
         window.close()
         interpreter.call("tk", "scaling", original_scaling)
@@ -285,13 +360,13 @@ def test_overlay_options_are_modal_live_and_keep_physical_monitor_controls_separ
         assert "0~100%" in opacity_copy
         assert "글자·숫자·게이지·그래프는 선명하게 유지" in opacity_copy
 
+        window._overlay_quick_button.invoke()
+        assert submitted[-1] == OverlaySettings(True, 0.85, 100)
         window._show_overlay_options()
         window.window.update_idletasks()
         assert dialog.grab_current() is dialog
-        assert bool(window._overlay_toggle.cget("takefocus"))
-
-        window._overlay_toggle.invoke()
-        assert submitted[-1] == OverlaySettings(True, 0.85, 100)
+        assert window._overlay_scale.winfo_manager() == "grid"
+        assert "표시 중" in window._overlay_dialog_visibility.cget("text")
         window._overlay_scale_changed("150")
         window._overlay_opacity_changed("60")
         window._cancel_overlay_schedule()
@@ -302,7 +377,7 @@ def test_overlay_options_are_modal_live_and_keep_physical_monitor_controls_separ
         assert resets == [True]
         window.set_running(True)
         assert "disabled" not in window._overlay_options_button.state()
-        assert "disabled" not in window._overlay_toggle.state()
+        assert "disabled" not in window._overlay_scale.state()
     finally:
         window.close()
 
@@ -359,6 +434,397 @@ def test_main_pc_status_button_restores_label_and_shows_recovery_on_failure() ->
         assert "다시 시도" in window._overlay_quick_status.cget("text")
     finally:
         window.close()
+
+
+def test_taskbar_toggle_changes_only_after_success_and_external_sync_updates_label() -> None:
+    requested: list[bool] = []
+    window = make_window(
+        taskbar_enabled=False,
+        on_taskbar_change=lambda enabled: (
+            requested.append(enabled) or ActionResult(True, "작업 표시줄 바 표시")
+        ),
+    )
+    try:
+        assert window._taskbar_button.cget("text") == "작업 표시줄 바 켜기"
+        assert "CPU · RAM · GPU · VRAM · CODEX" in window._taskbar_hint.cget("text")
+        window._taskbar_button.invoke()
+        assert requested == [True]
+        assert window._taskbar_button.cget("text") == "작업 표시줄 바 끄기"
+        window.set_taskbar_enabled(False)
+        assert window._taskbar_button.cget("text") == "작업 표시줄 바 켜기"
+    finally:
+        window.close()
+
+
+def test_taskbar_toggle_failure_keeps_old_state_and_shows_feedback() -> None:
+    window = make_window(
+        taskbar_enabled=True,
+        on_taskbar_change=lambda _enabled: ActionResult(False, "작업 표시줄 바 변경 실패"),
+    )
+    try:
+        window._taskbar_button.invoke()
+        assert window._taskbar_button.cget("text") == "작업 표시줄 바 끄기"
+        assert "변경 실패" in window._overlay_quick_status.cget("text")
+    finally:
+        window.close()
+
+
+def test_taskbar_options_open_with_five_independent_checks_and_saved_style() -> None:
+    window = make_window(
+        taskbar_items=("ram", "codex"),
+        taskbar_style="text",
+        on_taskbar_options=lambda _items, _style: ActionResult(True, "저장됨"),
+    )
+    try:
+        window._taskbar_options_button.invoke()
+        dialog = window._taskbar_options_dialog
+        assert dialog is not None and dialog.grab_current() is dialog
+        assert tuple(window._taskbar_item_checks) == ("cpu", "ram", "gpu", "vram", "codex")
+        assert {name for name, var in window._taskbar_item_vars.items() if var.get()} == {"ram", "codex"}
+        assert str(window._taskbar_style_combo.cget("state")) == "readonly"
+        assert window._taskbar_style_var.get() == "텍스트"
+        assert "선택한 2개" in window._taskbar_selection_count.cget("text")
+        assert window.taskbar_options == (("ram", "codex"), "text")
+    finally:
+        window.close()
+
+
+def test_taskbar_options_apply_arbitrary_subset_and_style_only_after_success() -> None:
+    requested: list[tuple[tuple[str, ...], str]] = []
+    window = make_window(on_taskbar_options=lambda items, style: requested.append((items, style)) or ActionResult(True, "저장됨"))
+    try:
+        window.show()
+        window._taskbar_options_button.invoke()
+        for name, var in window._taskbar_item_vars.items():
+            var.set(name in {"ram", "codex"})
+        window._taskbar_style_var.set("아이콘+텍스트")
+        window._apply_taskbar_options()
+        assert requested == [(("ram", "codex"), "both")]
+        assert window.taskbar_options == (("ram", "codex"), "both")
+        assert window._taskbar_options_dialog.state() == "withdrawn"
+        assert "RAM · CODEX" in window._taskbar_hint.cget("text")
+    finally:
+        window.close()
+
+
+def test_taskbar_options_reject_empty_selection_without_callback_or_state_loss() -> None:
+    requested: list[tuple[tuple[str, ...], str]] = []
+    window = make_window(on_taskbar_options=lambda items, style: requested.append((items, style)) or ActionResult(True, "저장됨"))
+    try:
+        window.show()
+        window._taskbar_options_button.invoke()
+        for var in window._taskbar_item_vars.values():
+            var.set(False)
+        window._apply_taskbar_options()
+        assert requested == []
+        assert window.taskbar_options == (("cpu", "ram", "gpu", "vram", "codex"), "icon")
+        assert "하나 이상" in window._taskbar_options_status.cget("text")
+        assert window._taskbar_options_dialog.state() == "normal"
+    finally:
+        window.close()
+
+
+def test_taskbar_options_failure_keeps_committed_values_and_cancel_discards_draft() -> None:
+    window = make_window(
+        taskbar_items=("gpu",), taskbar_style="icon",
+        on_taskbar_options=lambda _items, _style: ActionResult(False, "저장 실패", "디스크 확인 필요"),
+    )
+    try:
+        window.show()
+        window._taskbar_options_button.invoke()
+        assert window._taskbar_options_dialog.state() == "normal"
+        window._taskbar_item_vars["gpu"].set(False)
+        window._taskbar_item_vars["ram"].set(True)
+        window._taskbar_style_var.set("텍스트")
+        window._apply_taskbar_options()
+        assert window.taskbar_options == (("gpu",), "icon")
+        assert "디스크 확인 필요" in window._taskbar_options_status.cget("text")
+        window._taskbar_options_dialog.event_generate("<Escape>")
+        window.window.update()
+        assert window._taskbar_options_dialog.state() == "withdrawn"
+        window._taskbar_options_button.invoke()
+        assert window._taskbar_item_vars["gpu"].get()
+        assert not window._taskbar_item_vars["ram"].get()
+        assert window._taskbar_style_var.get() == "아이콘"
+    finally:
+        window.close()
+
+
+def test_external_taskbar_options_sync_updates_hint_and_next_dialog_draft() -> None:
+    window = make_window(on_taskbar_options=lambda _items, _style: ActionResult(True, "저장됨"))
+    try:
+        window.set_taskbar_options(("codex", "ram"), "both")
+        assert window.taskbar_options == (("ram", "codex"), "both")
+        assert "RAM · CODEX" in window._taskbar_hint.cget("text")
+        window._taskbar_options_button.invoke()
+        assert {name for name, var in window._taskbar_item_vars.items() if var.get()} == {"ram", "codex"}
+        assert window._taskbar_style_var.get() == "아이콘+텍스트"
+    finally:
+        window.close()
+
+
+def test_taskbar_position_controls_save_live_without_applying_metric_draft() -> None:
+    position = [25.0, 1234]
+    moves: list[tuple[str, float]] = []
+    option_changes: list[tuple[tuple[str, ...], str]] = []
+
+    def move(action: str, value: float) -> ActionResult:
+        moves.append((action, value))
+        if action == "percent":
+            position[:] = [value, 1600]
+        elif action == "nudge":
+            position[:] = [position[0] + value, position[1] + int(value)]
+        elif action == "reset":
+            position[:] = [50.0, 1300]
+        return ActionResult(True, "위치 저장됨")
+
+    window = make_window(
+        get_taskbar_position=lambda: (position[0], position[1]),
+        on_taskbar_position=move,
+        on_taskbar_options=lambda items, style: option_changes.append((items, style)) or ActionResult(True, "설정 저장됨"),
+    )
+    try:
+        window._taskbar_options_button.invoke()
+        assert moves == []  # Opening/programmatic slider refresh must not save.
+        assert window._taskbar_position_percent.get() == pytest.approx(25.0)
+        assert "1234px" in window._taskbar_position_x.cget("text")
+        assert "위치는 즉시 저장됩니다" in window._taskbar_position_status.cget("text")
+        window._taskbar_item_vars["cpu"].set(False)
+        window._taskbar_position_changed("65")
+        window._taskbar_nudge_left.invoke()
+        window._taskbar_nudge_right.invoke()
+        window._taskbar_position_reset.invoke()
+        assert moves == [("percent", 65.0), ("nudge", -1.0), ("nudge", 1.0), ("reset", 0.0)]
+        assert window._taskbar_position_percent.get() == pytest.approx(50.0)
+        assert "1300px" in window._taskbar_position_x.cget("text")
+        assert option_changes == []
+        assert window.taskbar_options == (("cpu", "ram", "gpu", "vram", "codex"), "icon")
+    finally:
+        window.close()
+
+
+def test_taskbar_position_failure_shows_error_and_restores_actual_position() -> None:
+    moves: list[tuple[str, float]] = []
+    window = make_window(
+        get_taskbar_position=lambda: (25.0, 1234),
+        on_taskbar_position=lambda action, value: moves.append((action, value)) or ActionResult(False, "위치 저장 실패", "다시 시도하세요"),
+        on_taskbar_options=lambda _items, _style: ActionResult(True, "설정 저장됨"),
+    )
+    try:
+        window._taskbar_options_button.invoke()
+        window._taskbar_position_changed("80")
+        assert moves == [("percent", 80.0)]
+        assert window._taskbar_position_percent.get() == pytest.approx(25.0)
+        assert "1234px" in window._taskbar_position_x.cget("text")
+        assert "다시 시도하세요" in window._taskbar_position_status.cget("text")
+    finally:
+        window.close()
+
+
+def test_compact_main_left_settings_fit_normal_work_area_without_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        setup_ui_module, "_window_bounds",
+        lambda _window: setup_ui_module.WindowBounds(0, 0, 1920, 1080, 16, 39),
+    )
+    window = make_window(on_update_check=lambda: ActionResult(True, "확인됨"))
+    try:
+        window.show()
+        window.window.update()
+        assert window.window.winfo_width() <= 960
+        assert window.window.winfo_height() <= 720
+        assert not window._left_scrollbar_visible, (
+            window._left_scroll_content.winfo_reqheight(),
+            window._left_canvas.winfo_height(),
+            window._header.winfo_reqheight(),
+            window._display_controls.winfo_reqheight(),
+            window._controls.winfo_reqheight(),
+            window._codex_account_card.winfo_reqheight(),
+            window._left_scroll_content.winfo_children()[0].winfo_reqheight(),
+        )
+        assert window._left_canvas.yview() == (0.0, 1.0)
+        assert not window._codex_help_frame.winfo_ismapped()
+        assert not window._update_dialog.winfo_ismapped()
+        assert window._update_open_button.winfo_ismapped()
+        assert window._usage_button.winfo_ismapped()
+        assert window._exit_button.winfo_rooty() + window._exit_button.winfo_height() <= window.window.winfo_rooty() + window.window.winfo_height()
+        window.update_codex_account(SimpleNamespace(
+            state="ready", email="demo@example.invalid", plan_type="plus",
+            login_pending=False, windows=(
+                SimpleNamespace(duration_mins=300, remaining_percent=87.0, resets_at=None),
+                SimpleNamespace(duration_mins=10080, remaining_percent=34.0, resets_at=None),
+            ), updated_at=None, error_detail=None,
+            credit_balance="60519.1234567890", credits_unlimited=False,
+        ))
+        window.window.update()
+        assert not window._left_scrollbar_visible
+        assert "60,519.12" in window._codex_credits.cget("text")
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("size", [(480, 320), (320, 480)])
+def test_real_preview_and_all_detail_controls_fit_normal_window_without_scroll(
+    size: tuple[int, int], monkeypatch: pytest.MonkeyPatch, _shared_tk_interpreter,
+) -> None:
+    interpreter = _shared_tk_interpreter.tk
+    original_scaling = float(interpreter.call("tk", "scaling"))
+    interpreter.call("tk", "scaling", 96.0 / 72.0)
+    monkeypatch.setattr(
+        setup_ui_module, "_window_bounds",
+        lambda _window: setup_ui_module.WindowBounds(0, 0, 1920, 1080, 16, 39),
+    )
+    window = make_window(on_taskbar_options=lambda _items, _style: ActionResult(True, "저장됨"))
+    try:
+        window.update_image(Image.new("RGB", size, "black"))
+        window.show()
+        window.window.update()
+        assert window.window.winfo_width() == 960
+        assert window.window.winfo_height() == 720
+        assert not window._left_scrollbar_visible
+        assert not window._right_scrollbar_visible, (
+            window._right_scroll_content.winfo_reqheight(),
+            window._right_canvas.winfo_height(),
+            window._photo.size() if hasattr(window._photo, "size") else (window._photo.width(), window._photo.height()),
+        )
+        assert window._right_canvas.yview() == (0.0, 1.0)
+        for control in (
+            window._overlay_options_button,
+            window._taskbar_options_button,
+            window._reconnect_button,
+        ):
+            assert control.winfo_rooty() + control.winfo_height() <= window._right_canvas.winfo_rooty() + window._right_canvas.winfo_height()
+        assert window._photo.width() / window._photo.height() == pytest.approx(size[0] / size[1], rel=0.01)
+    finally:
+        window.close()
+        interpreter.call("tk", "scaling", original_scaling)
+
+
+def test_preview_resizes_when_only_right_viewport_height_changes(
+    monkeypatch: pytest.MonkeyPatch, _shared_tk_interpreter,
+) -> None:
+    interpreter = _shared_tk_interpreter.tk
+    original_scaling = float(interpreter.call("tk", "scaling"))
+    interpreter.call("tk", "scaling", 96.0 / 72.0)
+    monkeypatch.setattr(
+        setup_ui_module, "_window_bounds",
+        lambda _window: setup_ui_module.WindowBounds(0, 0, 1920, 1080, 16, 39),
+    )
+    window = make_window()
+    try:
+        window.update_image(Image.new("RGB", (480, 320), "black"))
+        window.show()
+        window.window.update()
+        full_height = window._photo.height()
+        window.window.geometry("960x600")
+        window.window.update()
+        assert window._photo.height() < full_height
+        window.window.geometry("960x720")
+        window.window.update()
+        assert window._photo.height() == full_height
+    finally:
+        window.close()
+        interpreter.call("tk", "scaling", original_scaling)
+
+
+def test_troubleshooting_and_update_dialog_are_explicitly_opened() -> None:
+    window = make_window(on_update_check=lambda: ActionResult(True, "확인됨"))
+    try:
+        window.show()
+        window.window.update()
+        assert not window._codex_help_frame.winfo_ismapped()
+        window._codex_help_button.invoke()
+        window.window.update()
+        assert window._codex_help_frame.winfo_ismapped()
+        window._codex_help_button.invoke()
+        window.window.update()
+        assert not window._codex_help_frame.winfo_ismapped()
+        window.update_update_status(SimpleNamespace(state="available", version="2.0", message="새 버전", prepared=None, release_url=None))
+        assert "새 버전" in window._update_open_button.cget("text")
+        window._update_open_button.invoke()
+        window.window.update()
+        assert window._update_dialog.winfo_ismapped()
+        window._update_dialog.event_generate("<Escape>")
+        window.window.update()
+        assert not window._update_dialog.winfo_ismapped()
+    finally:
+        window.close()
+
+
+def test_compact_account_and_usage_actions_show_feedback_without_moving_exit() -> None:
+    window = make_window(
+        on_codex_login=lambda: ActionResult(False, "로그인 실패", "다시 시도하세요"),
+        on_check_usage=lambda _selection: ActionResult(False, "사용량 실패", "연결을 확인하세요"),
+    )
+    try:
+        window.show()
+        window.window.update()
+        exit_before = window._exit_button.winfo_rooty()
+        assert not window._codex_feedback.winfo_ismapped()
+        window._codex_login_button.invoke()
+        window.window.update()
+        assert window._codex_feedback.winfo_ismapped()
+        assert "로그인 실패" in window._codex_feedback.cget("text")
+        window._usage_button.invoke()
+        window.window.update()
+        assert "사용량 실패" in window._codex_feedback.cget("text")
+        assert "연결을 확인하세요" in window._codex_feedback.cget("text")
+        window.update_codex_account(SimpleNamespace(
+            state="ready", email="demo@example.invalid", plan_type="plus",
+            login_pending=False, windows=(), updated_at=None, error_detail=None,
+            credit_balance=None, credits_unlimited=False,
+        ))
+        window.window.update()
+        assert "사용량 실패" in window._codex_feedback.cget("text")
+        assert window._codex_feedback.winfo_ismapped()
+        window.update_codex_account(SimpleNamespace(
+            state="auth_error", email=None, plan_type=None,
+            login_pending=False, windows=(), updated_at=None,
+            error_detail="인증 오류", credit_balance=None, credits_unlimited=False,
+        ))
+        assert window._codex_feedback.cget("text") == "인증 오류"
+        assert str(window._codex_feedback.cget("foreground")) == setup_ui_module.RED
+        assert window._exit_button.winfo_rooty() == exit_before
+    finally:
+        window.close()
+
+
+def test_taskbar_options_modal_controls_fit_short_high_dpi_work_area(
+    monkeypatch: pytest.MonkeyPatch, _shared_tk_interpreter,
+) -> None:
+    interpreter = _shared_tk_interpreter.tk
+    original_scaling = float(interpreter.call("tk", "scaling"))
+    interpreter.call("tk", "scaling", 2.00075)
+    monkeypatch.setattr(
+        setup_ui_module, "_window_bounds",
+        lambda _window: setup_ui_module.WindowBounds(-1600, 0, -640, 640, 16, 48),
+    )
+    window = make_window(
+        on_taskbar_options=lambda _items, _style: ActionResult(True, "저장됨"),
+        get_taskbar_position=lambda: (45.0, -1200),
+        on_taskbar_position=lambda _action, _value: ActionResult(True, "저장됨"),
+    )
+    try:
+        window.show()
+        window._taskbar_options_button.invoke()
+        window.window.update()
+        dialog = window._taskbar_options_dialog
+        assert dialog.state() == "normal"
+        assert dialog.winfo_rooty() >= 0
+        assert dialog.winfo_rooty() + dialog.winfo_height() <= 640
+        for widget in (
+            *window._taskbar_item_checks.values(), window._taskbar_style_combo,
+            window._taskbar_position_scale, window._taskbar_nudge_left,
+            window._taskbar_nudge_right, window._taskbar_position_reset,
+            window._taskbar_apply_button,
+        ):
+            assert widget.winfo_rooty() >= dialog.winfo_rooty()
+            assert widget.winfo_rooty() + widget.winfo_height() <= dialog.winfo_rooty() + dialog.winfo_height()
+        assert window._exit_button.winfo_rooty() + window._exit_button.winfo_height() <= window.window.winfo_rooty() + window.window.winfo_height()
+    finally:
+        window.close()
+        interpreter.call("tk", "scaling", original_scaling)
 
 
 def test_uncertain_pc_status_failure_uses_observed_hidden_state() -> None:
@@ -452,7 +918,7 @@ def test_overlay_dialog_clamps_to_parent_negative_monitor_work_area(
         window.close()
 
 
-def test_preview_action_buttons_wrap_without_horizontal_overflow_at_high_dpi(
+def test_fixed_display_controls_remain_visible_above_scrolling_panes_at_high_dpi(
     monkeypatch: pytest.MonkeyPatch,
     _shared_tk_interpreter,
 ) -> None:
@@ -474,44 +940,26 @@ def test_preview_action_buttons_wrap_without_horizontal_overflow_at_high_dpi(
     try:
         window.show()
         window.window.update_idletasks()
-        actions = window._overlay_options_button.master
-        initial_positions = tuple(
-            (button.winfo_y(), button.winfo_height())
-            for button in (
-                window._overlay_quick_button,
-                window._overlay_options_button,
-                window._reconnect_button,
-            )
-        )
+        controls = window._display_controls
+        groups = (window._monitor_control_group, window._overlay_control_group, window._taskbar_control_group)
+        assert [group.grid_info()["column"] for group in groups] == [0, 1, 2]
+        assert max(group.winfo_width() for group in groups) - min(group.winfo_width() for group in groups) <= 2
+        buttons = (window._start_button, window._stop_button, window._overlay_quick_button, window._taskbar_button)
+        initial_positions = tuple((button.winfo_rooty(), button.winfo_height()) for button in buttons)
+        assert all(button.winfo_rooty() >= controls.winfo_rooty() for button in buttons)
+        assert all(button.winfo_rooty() + button.winfo_height() <= controls.winfo_rooty() + controls.winfo_height() for button in buttons)
         window._overlay_quick_button.invoke()
-        window.window.update_idletasks()
-        assert window._overlay_quick_button.grid_info()["row"] == 0
-        assert window._overlay_options_button.grid_info()["row"] == 2
-        assert window._reconnect_button.grid_info()["row"] == 3
-        assert actions.winfo_reqwidth() <= actions.winfo_width()
-        buttons = (
-            window._overlay_quick_button,
-            window._overlay_options_button,
-            window._reconnect_button,
-        )
-        assert tuple(
-            (button.winfo_y(), button.winfo_height()) for button in buttons
-        ) == initial_positions
+        window._left_canvas.yview_moveto(1.0)
+        window._right_canvas.yview_moveto(1.0)
+        window.window.update()
+        assert tuple((button.winfo_rooty(), button.winfo_height()) for button in buttons) == initial_positions
+        assert window._exit_button.winfo_rooty() + window._exit_button.winfo_height() <= window.window.winfo_rooty() + window.window.winfo_height()
         for button in buttons:
-            assert button.winfo_x() + button.winfo_width() <= actions.winfo_width()
-            visible_top = button.winfo_rooty()
-            visible_bottom = visible_top + button.winfo_height()
-            ancestor = button.master
-            while ancestor is not None:
-                visible_top = max(visible_top, ancestor.winfo_rooty())
-                visible_bottom = min(
-                    visible_bottom,
-                    ancestor.winfo_rooty() + ancestor.winfo_height(),
-                )
-                if ancestor is window.window:
-                    break
-                ancestor = ancestor.master
-            assert max(0, visible_bottom - visible_top) == button.winfo_height()
+            assert button.winfo_rootx() >= controls.winfo_rootx()
+            assert button.winfo_rootx() + button.winfo_width() <= controls.winfo_rootx() + controls.winfo_width()
+            button.focus_force()
+            window.window.update()
+            assert button.winfo_rooty() + button.winfo_height() <= window.window.winfo_rooty() + window.window.winfo_height()
     finally:
         window.close()
         interpreter.call("tk", "scaling", original_scaling)
@@ -561,13 +1009,47 @@ def test_setup_window_has_separate_controls_and_native_preview() -> None:
     try:
         assert not window.visible
         assert window.window.title() == "Mini Monitor 설정"
-        assert window.selection == SetupSelection(AIProviderKind.CODEX_LOCAL.value, False, "")
+        assert window.selection == SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False, "")
         window.update_image(Image.new("RGB", (480, 320), "black"))
         with pytest.raises(ValueError, match="480x320"):
             window.update_image(Image.new("RGB", (320, 240), "black"))
         assert window._start_button.cget("text") == "모니터 시작"
         assert window._stop_button.cget("text") == "모니터 중지"
         assert window._overlay_quick_button.cget("text") == "PC 상태창 켜기"
+    finally:
+        window.close()
+
+
+def test_three_top_display_modes_show_current_state_and_keep_one_control_each() -> None:
+    window = make_window(
+        on_overlay_change=lambda _settings: ActionResult(True, "표시 변경됨"),
+        on_taskbar_change=lambda _enabled: ActionResult(True, "표시 변경됨"),
+    )
+    try:
+        assert window._monitor_mode_status.cget("text") == "중지됨"
+        assert window._overlay_mode_status.cget("text") == "꺼짐"
+        assert window._taskbar_mode_status.cget("text") == "꺼짐"
+        assert window._start_button.master is window._monitor_control_group
+        assert window._stop_button.master is window._monitor_control_group
+        assert window._overlay_quick_button.master is window._overlay_control_group
+        assert window._taskbar_button.master is window._taskbar_control_group
+        assert window._overlay_options_button.master is not window._overlay_control_group
+        assert window._reconnect_button.master is window._overlay_options_button.master
+        window.set_running(True)
+        window._overlay_quick_button.invoke()
+        window._taskbar_button.invoke()
+        assert window._monitor_mode_status.cget("text") == "실행 중"
+        assert window._overlay_mode_status.cget("text") == "켜짐"
+        assert window._taskbar_mode_status.cget("text") == "켜짐"
+    finally:
+        window.close()
+
+
+def test_top_display_states_reflect_persisted_enabled_modes_on_open() -> None:
+    window = make_window(overlay_enabled=True, taskbar_enabled=True)
+    try:
+        assert window._overlay_mode_status.cget("text") == "켜짐"
+        assert window._taskbar_mode_status.cget("text") == "켜짐"
     finally:
         window.close()
 
@@ -882,14 +1364,13 @@ def test_brightness_is_disabled_during_lifecycle_and_usage_busy_states() -> None
         window.close()
 
 
-def test_consent_and_orientation_use_checkmarks_with_native_widget_states() -> None:
+def test_orientation_uses_neutral_checkmark_with_native_widget_states() -> None:
     window = make_window()
     try:
         style = setup_ui_module.ttk.Style(window.window)
         layout = str(style.layout(window._checkbutton_style))
         assert window._checkmark_element in layout
         assert "Checkbutton.indicator" not in layout
-        assert window._consent.cget("style") == window._checkbutton_style
         assert window._orientation_flip.cget("style") == window._checkbutton_style
 
         checked = window._checkmark_bitmaps["checked"]
@@ -901,37 +1382,24 @@ def test_consent_and_orientation_use_checkmarks_with_native_widget_states() -> N
         assert checked_pixel[1] > 180 and checked_pixel[2] > 180
         assert max(unchecked_pixel[:3]) < 80
 
-        assert "selected" not in window._consent.state()
         assert "selected" not in window._orientation_flip.state()
-        window._consent.invoke()
         window._orientation_flip.invoke()
-        assert window._codex_consent.get() is True
         assert window._orientation_inverted.get() is True
-        assert "selected" in window._consent.state()
         assert "selected" in window._orientation_flip.state()
 
         window.window.deiconify()
         window.window.update()
-        window._consent.focus_force()
-        window.window.update()
-        window._consent.event_generate("<space>")
         window._orientation_flip.focus_force()
         window.window.update()
         window._orientation_flip.event_generate("<space>")
-        assert window._codex_consent.get() is False
         assert window._orientation_inverted.get() is False
-        assert "selected" not in window._consent.state()
         assert "selected" not in window._orientation_flip.state()
 
-        window._consent.invoke()
         window._orientation_flip.invoke()
 
         window.set_running(True)
-        assert "disabled" in window._consent.state()
         assert "disabled" in window._orientation_flip.state()
-        window._consent.invoke()
         window._orientation_flip.invoke()
-        assert window._codex_consent.get() is True
         assert window._orientation_inverted.get() is True
     finally:
         window.close()
@@ -1039,13 +1507,12 @@ def test_hidden_admin_key_is_never_forwarded_for_codex() -> None:
     window = make_window(on_start=start)
     try:
         window.hide()
-        window._codex_consent.set(True)
         window._admin_key.set("not-a-real-key")
         window._start_button.invoke()
         assert captured == [
             SetupSelection(
-                provider=AIProviderKind.CODEX_LOCAL.value,
-                codex_local_consent=True,
+                provider=AIProviderKind.CODEX_ACCOUNT.value,
+                codex_local_consent=False,
                 openai_admin_key="",
             )
         ]
@@ -1081,6 +1548,23 @@ def test_runtime_status_is_presented_without_opening_serial() -> None:
         window.close()
 
 
+def test_runtime_connection_status_uses_korean_in_settings() -> None:
+    window = make_window()
+    try:
+        ai = AIData(
+            provider=AIProviderKind.CODEX_ACCOUNT,
+            title="Codex 한도",
+            status=SyncStatus.OK,
+            primary_value="12%",
+            primary_label="5시간 남음",
+        )
+        window.update_runtime(ConnectionData(ConnectionStatus.ONLINE, port="COM3"), ai, running=True)
+        assert window._device_title.cget("text") == "연결됨 · COM3"
+        assert window._usage_detail.cget("text") == "정상"
+    finally:
+        window.close()
+
+
 def test_pending_start_does_not_claim_running_before_worker_completion() -> None:
     window = make_window(
         on_start=lambda _selection: ActionResult(
@@ -1090,7 +1574,6 @@ def test_pending_start_does_not_claim_running_before_worker_completion() -> None
         )
     )
     try:
-        window._codex_consent.set(True)
         window._start_button.invoke()
         assert window._running is False
         assert "disabled" in window._start_button.state()
@@ -1104,7 +1587,6 @@ def test_pending_start_does_not_claim_running_before_worker_completion() -> None
 def test_port_in_use_start_failure_stays_retryable_and_is_not_generic_reconnecting() -> None:
     window = make_window()
     try:
-        window._codex_consent.set(True)
         window.complete_start(
             ActionResult(
                 False,
@@ -1153,7 +1635,7 @@ def test_runtime_port_in_use_exposes_one_reconnect_action() -> None:
         window.close()
 
 
-def test_pending_openai_start_clears_one_shot_key_immediately() -> None:
+def test_pending_account_start_never_forwards_legacy_one_shot_key() -> None:
     captured: list[SetupSelection] = []
 
     def start(selection: SetupSelection) -> ActionResult:
@@ -1162,10 +1644,10 @@ def test_pending_openai_start_clears_one_shot_key_immediately() -> None:
 
     window = make_window(on_start=start)
     try:
-        window._provider.set(AIProviderKind.OPENAI_API.value)
         window._admin_key.set("synthetic-one-shot")
         window._start_button.invoke()
-        assert captured[0].openai_admin_key == "synthetic-one-shot"
+        assert captured[0].provider == AIProviderKind.CODEX_ACCOUNT.value
+        assert captured[0].openai_admin_key == ""
         assert window._admin_key.get() == ""
         window.complete_start(ActionResult(True, "모니터 시작됨", "COM3"), running=True)
         assert window._admin_key.get() == ""
@@ -1189,73 +1671,34 @@ def test_incomplete_stop_blocks_both_lifecycle_buttons() -> None:
         window.close()
 
 
-def test_admin_key_is_only_returned_for_openai_and_cleared_on_provider_change() -> None:
-    window = make_window()
-    try:
-        window._provider.set(AIProviderKind.OPENAI_API.value)
-        window._admin_key.set("one-shot-secret")
-        assert window.selection.openai_admin_key == "one-shot-secret"
-        window._provider.set(AIProviderKind.CODEX_LOCAL.value)
-        assert window._admin_key.get() == ""
-        assert window.selection.openai_admin_key == ""
-    finally:
-        window.close()
-
-
-def test_openai_budget_and_polling_options_are_explicit_and_validated() -> None:
-    invoked = False
-
-    def start(_selection: SetupSelection) -> ActionResult:
-        nonlocal invoked
-        invoked = True
-        return ActionResult(True, "started")
-
+def test_legacy_refresh_budget_values_remain_compatible_but_not_editable() -> None:
     window = make_window(
-        on_start=start,
         usage_refresh_seconds=120,
         cost_refresh_seconds=900,
         daily_budget_usd=5.5,
         monthly_budget_usd=50.0,
     )
     try:
-        window._provider.set(AIProviderKind.OPENAI_API.value)
         selection = window.selection
+        assert selection.provider == AIProviderKind.CODEX_ACCOUNT.value
         assert selection.usage_refresh_seconds == 120
         assert selection.cost_refresh_seconds == 900
         assert selection.daily_budget_usd == 5.5
         assert selection.monthly_budget_usd == 50.0
-
-        window._usage_refresh.set("59")
-        window._start_button.invoke()
-        assert not invoked
-        assert window._running is False
-        assert "60초" in window._device_detail.cget("text")
-
-        window._provider.set(AIProviderKind.CODEX_LOCAL.value)
-        assert window.selection.usage_refresh_seconds == 120
-        assert window.selection.cost_refresh_seconds == 900
     finally:
         window.close()
 
 
-def test_running_state_freezes_provider_consent_and_secret_settings() -> None:
+def test_running_state_freezes_display_settings_only() -> None:
     window = make_window()
     try:
-        window._provider.set(AIProviderKind.OPENAI_API.value)
-        window._show_openai_options()
-        assert window._openai_dialog is not None
-        assert window._openai_dialog.grab_current() is window._openai_dialog
         window.set_running(True)
-        assert all("disabled" in button.state() for button in window._provider_buttons)
-        assert "disabled" in window._consent.state()
-        assert "disabled" in window._key_entry.state()
-        assert "disabled" in window._openai_options_button.state()
-        assert all("disabled" in entry.state() for entry in window._option_entries)
+        assert "disabled" in window._orientation_flip.state()
+        assert "disabled" in window._orientation_combo.state()
 
         window.set_running(False)
-        assert all("disabled" not in button.state() for button in window._provider_buttons)
-        assert "disabled" not in window._key_entry.state()
-        assert all("disabled" not in entry.state() for entry in window._option_entries)
+        assert "disabled" not in window._orientation_flip.state()
+        assert "disabled" not in window._orientation_combo.state()
     finally:
         window.close()
 
@@ -1271,11 +1714,10 @@ def test_pending_usage_keeps_settings_locked_across_idle_state_updates() -> None
     try:
         window._usage_button.invoke()
         window.set_running(False)
-        assert all("disabled" in button.state() for button in window._provider_buttons)
-        assert "disabled" in window._consent.state()
+        assert "disabled" in window._orientation_flip.state()
 
         window.complete_usage(ActionResult(True, "확인 완료"))
-        assert all("disabled" not in button.state() for button in window._provider_buttons)
+        assert "disabled" not in window._orientation_flip.state()
     finally:
         window.close()
 
@@ -1357,18 +1799,9 @@ def test_usage_feedback_never_reflows_controls_or_pushes_exit_outside_window(
 
     def assert_feedback_fits_reserved_area() -> None:
         window.window.update_idletasks()
-        feedback = window._usage_detail.master
-        feedback_bottom = feedback.winfo_rooty() + feedback.winfo_height()
-        assert (
-            window._usage_status.winfo_rooty()
-            + window._usage_status.winfo_reqheight()
-            <= feedback_bottom
-        )
-        assert (
-            window._usage_detail.winfo_rooty()
-            + window._usage_detail.winfo_reqheight()
-            <= feedback_bottom
-        )
+        assert not window._usage_status.winfo_ismapped()
+        assert not window._usage_detail.winfo_ismapped()
+        assert window._usage_button.winfo_ismapped()
 
     try:
         expected_icon_size = max(
@@ -1452,15 +1885,3 @@ def test_usage_feedback_never_reflows_controls_or_pushes_exit_outside_window(
     finally:
         window.close()
         interpreter.call("tk", "scaling", original_scaling)
-
-
-def test_provider_radio_value_is_safe_during_partial_advanced_input() -> None:
-    window = make_window()
-    try:
-        window._provider.set(AIProviderKind.OPENAI_API.value)
-        window._usage_refresh.set("")
-        assert window.selected_provider == AIProviderKind.OPENAI_API.value
-        with pytest.raises(ValueError):
-            _ = window.selection
-    finally:
-        window.close()

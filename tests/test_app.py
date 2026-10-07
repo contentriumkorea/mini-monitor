@@ -96,18 +96,40 @@ def test_draft_selection_does_not_mutate_active_config() -> None:
         brightness=43,
     )
     draft = app._draft_config(base, selection)
-    assert base.ai.provider == AIProviderKind.NOT_CONFIGURED.value
+    assert base.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
     assert base.ai.codex_local_consent is False
-    assert draft.ai.provider == AIProviderKind.CODEX_LOCAL.value
-    assert draft.ai.codex_local_consent is True
+    assert draft.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+    assert draft.ai.codex_local_consent is False
     assert draft.ai.usage_refresh_seconds == 120
-    assert draft.ai.cost_refresh_seconds == 900
-    assert draft.ai.daily_budget_usd == 4.0
-    assert draft.ai.monthly_budget_usd == 40.0
+    assert draft.ai.cost_refresh_seconds == base.ai.cost_refresh_seconds
+    assert draft.ai.daily_budget_usd is None
+    assert draft.ai.monthly_budget_usd is None
     assert base.device.rotation == "landscape"
     assert draft.device.rotation == "portrait_inverted"
     assert base.device.brightness == 25
     assert draft.device.brightness == 43
+
+
+def test_start_ignores_legacy_openai_key_entry_and_uses_account(tmp_path) -> None:
+    class ForbiddenSecrets:
+        def configured(self):
+            raise AssertionError("legacy key must not be inspected")
+
+        def set(self, _value):
+            raise AssertionError("legacy key must not be written")
+
+    session = FakeSession()
+    selection = SetupSelection(
+        AIProviderKind.OPENAI_API.value,
+        False,
+        openai_admin_key="synthetic-secret",
+    )
+    draft = app._draft_config(AppConfig(), selection)
+
+    result = app._start_session(session, draft, selection, ForbiddenSecrets(), tmp_path / "settings.json")
+
+    assert result.action.ok
+    assert session.started[0].ai.provider == AIProviderKind.CODEX_ACCOUNT.value
 
 
 def test_minimized_selection_preserves_saved_openai_options() -> None:
@@ -220,13 +242,13 @@ def test_live_route_failure_keeps_the_already_persisted_desired_value(
     assert "다음 시작" in result.action.detail
 
 
-def test_minimized_not_configured_provider_is_not_silently_recommended() -> None:
+def test_minimized_legacy_provider_is_mapped_to_account() -> None:
     config = AppConfig()
     config.ai.provider = AIProviderKind.NOT_CONFIGURED.value
 
     assert (
         app._initial_setup_provider(config, minimized=True)
-        == AIProviderKind.NOT_CONFIGURED.value
+        == AIProviderKind.CODEX_ACCOUNT.value
     )
     assert (
         app._initial_setup_provider(config, minimized=False)
@@ -256,8 +278,6 @@ def test_start_requires_explicit_codex_consent_before_saving(tmp_path) -> None:
 def test_successful_local_start_atomically_saves_consent_and_starts(tmp_path) -> None:
     path = tmp_path / "config.json"
     draft = AppConfig()
-    draft.ai.provider = AIProviderKind.CODEX_LOCAL.value
-    draft.ai.codex_local_consent = True
     session = FakeSession(enable_serial=False)
 
     result = app._start_session(
@@ -271,14 +291,13 @@ def test_successful_local_start_atomically_saves_consent_and_starts(tmp_path) ->
     assert result.action.ok
     assert len(session.started) == 1
     saved = load_config(path)
-    assert saved.ai.provider == AIProviderKind.CODEX_LOCAL.value
-    assert saved.ai.codex_local_consent is True
+    assert saved.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+    assert saved.ai.codex_local_consent is False
 
 
 def test_openai_key_is_one_shot_and_dpapi_store_is_used(tmp_path) -> None:
     path = tmp_path / "config.json"
     draft = AppConfig()
-    draft.ai.provider = AIProviderKind.OPENAI_API.value
     store = FakeSecretStore()
     session = FakeSession(enable_serial=False)
 
@@ -295,7 +314,7 @@ def test_openai_key_is_one_shot_and_dpapi_store_is_used(tmp_path) -> None:
     )
 
     assert result.action.ok
-    assert store.value == "synthetic-key"
+    assert store.value is None
     assert "synthetic-key" not in path.read_text(encoding="utf-8")
 
 
@@ -344,7 +363,6 @@ def test_post_prepare_start_failure_keeps_new_settings_and_latest_overlay(
     app.save_config(persisted, path)
 
     draft = AppConfig()
-    draft.ai.provider = AIProviderKind.CHATGPT_ACTIVITY.value
     draft.device.rotation = "portrait_inverted"
     draft.device.brightness = 44
     session = FakeSession(
@@ -368,7 +386,7 @@ def test_post_prepare_start_failure_keeps_new_settings_and_latest_overlay(
 
     assert not result.action.ok
     assert result.config is not None
-    assert result.config.ai.provider == AIProviderKind.CHATGPT_ACTIVITY.value
+    assert result.config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
     assert result.config.device.rotation == "portrait_inverted"
     assert result.config.device.brightness == 44
     assert result.config.overlay == persisted.overlay
@@ -378,7 +396,6 @@ def test_post_prepare_start_failure_keeps_new_settings_and_latest_overlay(
 def test_shutdown_gate_prevents_openai_secret_and_config_writes(tmp_path, monkeypatch) -> None:
     path = tmp_path / "config.json"
     draft = AppConfig()
-    draft.ai.provider = AIProviderKind.OPENAI_API.value
     store = FakeSecretStore()
     session = FakeSession(enable_serial=False)
     session.shutting_down = True
@@ -458,33 +475,6 @@ def test_running_usage_check_wakes_active_provider_and_returns_lcd_value() -> No
     assert "UPDATED" not in result.action.detail
 
 
-def test_setup_usage_check_labels_seven_day_remaining_fallback(
-    monkeypatch,
-) -> None:
-    snapshot = CodexUsageSnapshot(
-        status=CodexUsageStatus.OK,
-        seven_day_remaining_percent=82.0,
-        updated_at=datetime.now(timezone.utc),
-    )
-
-    class FakeCodexProvider:
-        def __init__(self, *, consent_granted: bool) -> None:
-            assert consent_granted is True
-
-        def refresh(self) -> CodexUsageSnapshot:
-            return snapshot
-
-    monkeypatch.setattr(app, "CodexUsageProvider", FakeCodexProvider)
-
-    result = app._check_usage(
-        SetupSelection(AIProviderKind.CODEX_LOCAL.value, True),
-        FakeSecretStore(),
-    )
-
-    assert result.action.ok
-    assert result.action.title == "7D LEFT 82%"
-    assert result.ai.primary_label == "7D LEFT"
-    assert result.ai.primary_value == "82%"
 
 
 def test_preview_uses_owned_setup_frame_before_controller_start() -> None:
@@ -525,6 +515,97 @@ def test_overlay_settings_persist_without_touching_saved_position(tmp_path) -> N
     assert (saved.overlay.x, saved.overlay.y) == (-800, 120)
     assert load_config(path).overlay == saved.overlay
     assert base.overlay.enabled is False
+
+
+def test_taskbar_option_save_failure_rolls_back_live_bar(tmp_path, monkeypatch) -> None:
+    config = AppConfig()
+    path = tmp_path / "config.json"
+    app.save_config(config, path)
+
+    class Bar:
+        closed = False
+        items = ("cpu", "ram", "gpu", "vram", "codex")
+        style = "icon"
+        position = (1400, 1040)
+
+        @property
+        def state(self):
+            return SimpleNamespace(x=self.position[0], y=self.position[1])
+
+        def set_options(self, items, style):
+            self.items, self.style = tuple(items), style
+            if style == "both":
+                self.position = (1100, 1040)
+
+        def set_position(self, x, y):
+            self.position = (x, y)
+
+    bar = Bar()
+    apply = getattr(app, "_apply_taskbar_options_request", None)
+    assert callable(apply)
+    def fail_save(*_args, **_kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(app, "save_config", fail_save)
+    unchanged, result = apply(config, bar, ("cpu", "codex"), "both", path)
+    assert not result.ok
+    assert unchanged is config
+    assert bar.items == ("cpu", "ram", "gpu", "vram", "codex")
+    assert bar.style == "icon"
+    assert bar.position == (1400, 1040)
+    assert load_config(path).overlay.taskbar_items == list(bar.items)
+
+
+def test_hidden_taskbar_position_request_persists_once_and_rolls_back_on_save_error(tmp_path, monkeypatch) -> None:
+    config = AppConfig()
+    path = tmp_path / "config.json"
+    app.save_config(config, path)
+
+    class Bar:
+        def __init__(self):
+            self.x = 100
+            self.y = 1040
+            self.calls = []
+
+        @property
+        def state(self):
+            return OverlayState(self.x, self.y, 360, 32, 0.0, 100, False)
+
+        def set_horizontal_percent(self, value, *, notify):
+            self.calls.append(("percent", value, notify))
+            self.x = 500
+
+        def nudge_horizontal(self, delta, *, notify):
+            self.calls.append(("nudge", delta, notify))
+            self.x += delta
+
+        def reset_horizontal_position(self, *, notify):
+            self.calls.append(("reset", notify))
+            self.x = 1310
+
+        def set_position(self, x, y, *, notify):
+            self.x, self.y = x, y
+            self.calls.append(("rollback", x, y, notify))
+
+    bar = Bar()
+    apply = getattr(app, "_apply_taskbar_position_request", None)
+    assert callable(apply)
+    updated, result = apply(config, bar, "percent", 50.0, path)
+    assert result.ok
+    assert updated.overlay.taskbar_x == 500
+    assert updated.overlay.taskbar_y == 1040
+    assert updated.overlay.taskbar_enabled is False
+    assert bar.calls == [("percent", 50.0, False)]
+    assert load_config(path).overlay.taskbar_x == 500
+
+    original_save = app.save_config
+    monkeypatch.setattr(app, "save_config", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    unchanged, failure = apply(updated, bar, "nudge", 1, path)
+    assert not failure.ok
+    assert unchanged is updated
+    assert (bar.x, bar.y) == (500, 1040)
+    assert bar.calls[-2:] == [("nudge", 1, False), ("rollback", 500, 1040, False)]
+    assert load_config(path).overlay.taskbar_x == 500
+    monkeypatch.setattr(app, "save_config", original_save)
 
 
 def test_overlay_quick_toggle_can_atomically_persist_fully_clear_background(
@@ -791,7 +872,6 @@ def test_late_worker_config_cannot_revert_newer_overlay_settings(tmp_path) -> No
 def test_shutdown_overlay_merge_preserves_latest_worker_settings(tmp_path) -> None:
     path = tmp_path / "config.json"
     worker = AppConfig()
-    worker.ai.provider = AIProviderKind.CHATGPT_ACTIVITY.value
     worker.device.rotation = "portrait"
     worker.device.brightness = 41
     app.save_config(worker, path)
@@ -805,7 +885,7 @@ def test_shutdown_overlay_merge_preserves_latest_worker_settings(tmp_path) -> No
 
     merged = app._persist_latest_overlay_on_shutdown(current, path)
 
-    assert merged.ai.provider == AIProviderKind.CHATGPT_ACTIVITY.value
+    assert merged.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
     assert merged.device.rotation == "portrait"
     assert merged.device.brightness == 41
     assert merged.overlay == current.overlay
@@ -967,6 +1047,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             accounts.append(self)
             self.generation = 0
             self.state = "signed_out"
+            self.polling = False
 
         def snapshot(self):
             value = "85%" if self.state == "ready" else "LOGIN"
@@ -989,6 +1070,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             return True
 
         def set_polling(self, enabled):
+            self.polling = enabled
             events.append(("polling", enabled))
 
         def close(self):
@@ -1061,6 +1143,24 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
 
         def mainloop(self):
             callbacks = self.setup.callbacks
+            assert callbacks["get_taskbar_position"]() == (50.0, 1400)
+            assert callbacks["on_taskbar_position"]("nudge", 1.0).ok
+            before_show = load_config(tmp_path / "settings.json").overlay
+            assert before_show.taskbar_enabled is False
+            assert (before_show.taskbar_x, before_show.taskbar_y) == (1401, 1050)
+            assert callbacks["on_taskbar_change"](True).ok
+            assert ("taskbar_init", ("ram", "codex"), "text") in events
+            assert ("taskbar_ai", "85%") in events
+            assert accounts[0].polling
+            assert load_config(tmp_path / "settings.json").overlay.taskbar_enabled
+            assert callbacks["on_taskbar_options"](("cpu", "codex"), "both").ok
+            assert ("taskbar_options", ("cpu", "codex"), "both") in events
+            options_saved = load_config(tmp_path / "settings.json").overlay
+            assert options_saved.taskbar_items == ["cpu", "codex"]
+            assert options_saved.taskbar_style == "both"
+            assert callbacks["on_taskbar_change"](False).ok
+            assert not accounts[0].polling
+            assert not load_config(tmp_path / "settings.json").overlay.taskbar_enabled
             if running_legacy:
                 callbacks["on_start"](SetupSelection(AIProviderKind.CODEX_LOCAL.value, True))
                 self._poll_once()
@@ -1068,8 +1168,8 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             if manual_refresh:
                 callbacks["on_check_usage"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
             if running_legacy:
-                assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_LOCAL.value
-                assert self.setup.selected_provider() == AIProviderKind.CODEX_LOCAL.value
+                assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+                assert self.setup.selected_provider() == AIProviderKind.CODEX_ACCOUNT.value
                 callbacks["on_stop"]()
                 self._poll_once()
                 callbacks["on_check_usage"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
@@ -1078,15 +1178,21 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             assert not any(item == ("work", "usage") for item in events)
             callbacks["on_start"](SetupSelection(AIProviderKind.CODEX_ACCOUNT.value, False))
             self._poll_once()
+            assert callbacks["on_taskbar_change"](True).ok
             callbacks["on_stop"]()
             self._poll_once()
+            assert accounts[0].polling  # Codex still refreshes for the visible bar.
+            polling_transitions = events.count(("polling", True))
+            self._poll_once()
+            assert events.count(("polling", True)) == polling_transitions
+            assert callbacks["on_taskbar_change"](False).ok
+            assert not accounts[0].polling
             if not manual_refresh and not running_legacy:
                 assert accounts[0].snapshot().login_pending
             if disconnect_after_stop:
-                callbacks["on_codex_disconnect"]()
-                assert self.setup.selected_provider() == AIProviderKind.NOT_CONFIGURED.value
+                assert not callbacks["on_codex_disconnect"]().ok
+                assert self.setup.selected_provider() == AIProviderKind.CODEX_ACCOUNT.value
                 self._poll_once()
-                assert self.setup.images[-1].getpixel((0, 0)) == (0, 0, 0)
                 callbacks["on_start"](self.setup.selection)
                 self._poll_once()
                 callbacks["on_stop"]()
@@ -1106,6 +1212,8 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             if not setup_visible_for_notice:
                 self.setup.show()
             callbacks["on_update_apply"]()
+            assert callbacks["on_taskbar_change"](True).ok
+            assert ("taskbar_ai", accounts[0].snapshot().ai.primary_value) in events
             self._poll_once()
             if not helper_success:
                 assert "window_quit" not in events
@@ -1117,6 +1225,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             callback()
 
         def quit(self):
+            assert events[-1] == "taskbar_hidden"
             events.append("window_quit")
 
     class Setup:
@@ -1169,6 +1278,46 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
 
         def destroy(self):
             self.closed = True
+
+    class Taskbar(Overlay):
+        def __init__(self, *_args, **kwargs):
+            self.items = tuple(kwargs["items"])
+            self.style = kwargs["style"]
+            self.x, self.y = 1400, 1050
+            events.append(("taskbar_init", self.items, self.style))
+
+        @property
+        def state(self):
+            return OverlayState(self.x, self.y, 264, 32, 0.65, 100, self.visible)
+
+        def horizontal_position(self):
+            return (50.0, self.x)
+
+        def set_horizontal_percent(self, value, *, notify):
+            self.x = round(value * 10)
+
+        def nudge_horizontal(self, delta, *, notify):
+            self.x += delta
+
+        def reset_horizontal_position(self, *, notify):
+            self.x = 1400
+
+        def set_position(self, x, y, *, notify):
+            self.x, self.y = x, y
+
+        def set_options(self, items, style):
+            self.items, self.style = tuple(items), style
+            events.append(("taskbar_options", self.items, self.style))
+
+        def show(self, **kwargs):
+            self.visible = True
+
+        def hide(self, **kwargs):
+            self.visible = False
+            events.append("taskbar_hidden")
+
+        def update_sensor(self, sensor, ai=None):
+            events.append(("taskbar_ai", ai.primary_value if ai else None))
 
     class Tray:
         def __init__(self, *_args, **_kwargs):
@@ -1230,6 +1379,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     monkeypatch.setattr(app, "SerialTaskWorker", Worker)
     monkeypatch.setattr(app, "SetupWindow", Setup)
     monkeypatch.setattr(app, "OverlayWindow", Overlay)
+    monkeypatch.setattr(app, "TaskbarWindow", Taskbar, raising=False)
     monkeypatch.setattr(app, "TrayController", Tray)
     monkeypatch.setattr(app, "WindowsPowerEventHook", Power)
     monkeypatch.setattr(app, "_read_autostart_state", lambda _path: ("", False, False, False))
@@ -1245,18 +1395,18 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     monkeypatch.setattr(app, "acknowledge_update_startup", lambda **_kwargs: actions.append("ack") or events.append("ack") or True)
     monkeypatch.setattr(app, "launch_update_helper", lambda *_args, **_kwargs: events.append("helper_launch") or helper_success)
     config = AppConfig()
-    config.ai.provider = AIProviderKind.CODEX_LOCAL.value
+    config.overlay.taskbar_items = ["ram", "codex"]
+    config.overlay.taskbar_style = "text"
     assert app.run_desktop(config, enable_serial=False, config_path=tmp_path / "settings.json") == 0
     assert events.count("account_create") == 1
     assert events.count("account_close") == 1
     assert "login" in events
-    assert ("refresh" in events) is (manual_refresh or running_legacy)
+    assert "refresh" in events
     assert ("polling", True) in events and ("polling", False) in events
-    expected_provider = AIProviderKind.NOT_CONFIGURED.value if disconnect_after_stop else AIProviderKind.CODEX_ACCOUNT.value
-    assert load_config(tmp_path / "settings.json").ai.provider == expected_provider
+    assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_ACCOUNT.value
     if disconnect_after_stop:
-        assert rendered_ai[-1].provider is AIProviderKind.NOT_CONFIGURED
-        assert events.count(("polling", True)) == 1
+        assert rendered_ai[-1].provider is AIProviderKind.CODEX_ACCOUNT
+        assert events.count(("polling", True)) >= 1
     assert any(ai.provider is AIProviderKind.CODEX_ACCOUNT and ai.primary_value == ("85%" if manual_refresh or running_legacy else "LOGIN") for ai in rendered_ai)
     assert events.count("helper_launch") == 1
     assert events.count(("update_notice", "0.2.0")) == 2

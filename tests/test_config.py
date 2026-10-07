@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict
 
 import pytest
+import ai_mini_monitor.config as config_module
 
 from ai_mini_monitor.config import (
     DEFAULT_BRIGHTNESS,
@@ -21,6 +22,10 @@ from ai_mini_monitor.orientation import CANONICAL_ROTATIONS
 
 def test_defaults_and_all_documented_boundaries_validate() -> None:
     AppConfig().validate()
+    assert AppConfig().overlay.taskbar_items == list(getattr(config_module, "DEFAULT_TASKBAR_ITEMS", ()))
+    assert AppConfig().overlay.taskbar_style == "icon"
+
+
     for usb_fps in (1.0, 8.0):
         config = AppConfig()
         config.device.usb_fps = usb_fps
@@ -33,10 +38,7 @@ def test_defaults_and_all_documented_boundaries_validate() -> None:
         config = AppConfig()
         config.app.render_fps = render_fps
         config.validate()
-    for provider in AIProviderKind:
-        config = AppConfig()
-        config.ai.provider = provider.value
-        config.validate()
+    assert AppConfig().ai.provider == AIProviderKind.CODEX_ACCOUNT.value
     for rotation in CANONICAL_ROTATIONS:
         config = AppConfig()
         config.device.rotation = rotation
@@ -58,6 +60,27 @@ def test_defaults_and_all_documented_boundaries_validate() -> None:
         config.overlay.x = coordinate
         config.overlay.y = coordinate
         config.validate()
+
+
+def test_taskbar_options_are_canonical_and_persisted(tmp_path) -> None:
+    validator = getattr(config_module, "validate_taskbar_options", None)
+    assert callable(validator)
+    assert validator(["codex", "cpu"], "both") == ("cpu", "codex")
+    config = AppConfig()
+    config.overlay.taskbar_items = ["codex", "cpu"]
+    config.overlay.taskbar_style = "text"
+    path = tmp_path / "config.json"
+    save_config(config, path)
+    assert load_config(path).overlay.taskbar_items == ["cpu", "codex"]
+    assert load_config(path).overlay.taskbar_style == "text"
+
+
+@pytest.mark.parametrize("items,style", [([], "icon"), (["cpu", "cpu"], "icon"), (["disk"], "icon"), ("cpu", "icon"), (["cpu"], "unknown")])
+def test_invalid_taskbar_options_are_rejected(items, style) -> None:
+    validator = getattr(config_module, "validate_taskbar_options", None)
+    assert callable(validator)
+    with pytest.raises(ValueError, match="taskbar"):
+        validator(items, style)
 
 
 @pytest.mark.parametrize(
@@ -143,9 +166,7 @@ def test_atomic_save_and_load_round_trip(tmp_path) -> None:
     config.device.manual_port = "COM12"
     config.device.brightness = 37
     config.sensors.cpu_temperature_sensor = "/intelcpu/0/temperature/0"
-    config.ai.provider = AIProviderKind.OPENAI_API.value
-    config.ai.codex_local_consent = True
-    config.ai.daily_budget_usd = 5.5
+    config.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
     config.overlay.enabled = True
     config.overlay.opacity = 0.62
     config.overlay.scale_percent = 135
@@ -163,6 +184,32 @@ def test_atomic_save_and_load_round_trip(tmp_path) -> None:
 def test_missing_file_returns_valid_defaults(tmp_path) -> None:
     config = load_config(tmp_path / "missing.json")
     assert config == AppConfig()
+    assert config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+
+
+@pytest.mark.parametrize("legacy_provider", [
+    "codex_local", "openai_api", "chatgpt_activity", "not_configured",
+])
+def test_legacy_provider_loads_as_account_without_rewriting_user_file(tmp_path, legacy_provider) -> None:
+    path = tmp_path / "legacy.json"
+    original = json.dumps({"ai": {"provider": legacy_provider}, "device": {"brightness": 37}})
+    path.write_text(original, encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert loaded.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
+    assert loaded.device.brightness == 37
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("legacy_provider", [
+    "codex_local", "openai_api", "chatgpt_activity", "not_configured",
+])
+def test_runtime_rejects_legacy_provider_reactivation(legacy_provider) -> None:
+    config = AppConfig()
+    config.ai.provider = legacy_provider
+    with pytest.raises(ValueError, match="ai.provider"):
+        config.validate()
 
 
 def test_codex_account_contract_preserves_legacy_configuration(tmp_path) -> None:
@@ -170,7 +217,7 @@ def test_codex_account_contract_preserves_legacy_configuration(tmp_path) -> None
     path.write_text('{"ai": {"provider": "codex_local"}}', encoding="utf-8")
     legacy = load_config(path)
     assert legacy.ai.codex_cli_path is None
-    assert legacy.ai.provider == AIProviderKind.CODEX_LOCAL.value
+    assert legacy.ai.provider == AIProviderKind.CODEX_ACCOUNT.value
 
     legacy.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
     legacy.ai.codex_cli_path = r"C:\Program Files\Codex\codex.exe"
@@ -235,6 +282,11 @@ def test_missing_overlay_migrates_disabled_defaults_and_saves_canonically(
         "scale_percent": DEFAULT_OVERLAY_SCALE_PERCENT,
         "x": None,
         "y": None,
+        "taskbar_enabled": False,
+        "taskbar_x": None,
+        "taskbar_y": None,
+        "taskbar_items": ["cpu", "ram", "gpu", "vram", "codex"],
+        "taskbar_style": "icon",
     }
 
 

@@ -23,6 +23,13 @@ def test_validated_update_config_used_only_without_explicit_config(monkeypatch, 
     assert seen == [inherited, explicit]
 
 
+@pytest.mark.parametrize("flag", ["--set-openai-key", "--clear-openai-key"])
+def test_removed_openai_key_commands_are_not_accepted(flag) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.build_parser().parse_args([flag])
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize("args", [
     ["--desktop-smoke", "2"],
     ["--desktop-smoke", "0", "--no-serial"],

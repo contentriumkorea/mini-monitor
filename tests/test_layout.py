@@ -6,6 +6,7 @@ from itertools import combinations
 
 from ai_mini_monitor.rendering.layout import (
     AI,
+    VRAM,
     CARD_GAP,
     CARD_RECTS,
     CONNECTION,
@@ -28,17 +29,19 @@ def test_exact_480x320_geometry() -> None:
     assert CARD_GAP == 8
     assert CARD_RECTS == {
         "connection": Rect(8, 8, 464, 20),
-        "cpu": Rect(8, 36, 228, 134),
-        "gpu": Rect(244, 36, 228, 134),
-        "memory": Rect(8, 178, 228, 134),
-        "ai": Rect(244, 178, 228, 134),
+        "cpu": Rect(8, 36, 228, 88),
+        "memory": Rect(244, 36, 228, 88),
+        "gpu": Rect(8, 132, 228, 88),
+        "vram": Rect(244, 132, 228, 88),
+        "ai": Rect(8, 228, 464, 84),
     }
     assert CONNECTION.bottom + CARD_GAP == CPU.y
-    assert CPU.right + CARD_GAP == GPU.x
-    assert CPU.bottom + CARD_GAP == MEMORY.y
-    assert MEMORY.right + CARD_GAP == AI.x
+    assert CPU.right + CARD_GAP == MEMORY.x
+    assert CPU.bottom + CARD_GAP == GPU.y
+    assert GPU.right + CARD_GAP == VRAM.x
+    assert GPU.bottom + CARD_GAP == AI.y
     assert CONNECTION.right == SCREEN_WIDTH - OUTER_MARGIN
-    assert MEMORY.bottom == AI.bottom == SCREEN_HEIGHT - OUTER_MARGIN
+    assert AI.bottom == SCREEN_HEIGHT - OUTER_MARGIN
 
 
 def test_cards_never_overlap_or_leave_the_frame() -> None:
@@ -57,11 +60,13 @@ def test_area_ratios_preserve_the_integer_pixel_realization() -> None:
         "cpu": 1.0,
         "gpu": GPU.area / CPU.area,
         "memory": MEMORY.area / CPU.area,
+        "vram": VRAM.area / CPU.area,
         "ai": AI.area / CPU.area,
     }
     assert ratios["gpu"] == 1.0
-    assert ratios["memory"] == ratios["ai"] == 1.0
-    assert ratios["connection"] == (464 * 20) / (228 * 134)
+    assert ratios["memory"] == ratios["vram"] == 1.0
+    assert ratios["ai"] > 1.0
+    assert ratios["connection"] == (464 * 20) / (228 * 88)
 
 
 def test_half_open_rectangles_and_clamping_are_stable() -> None:
@@ -75,10 +80,11 @@ def test_portrait_layout_is_native_size_horizontal_text_geometry() -> None:
     assert PORTRAIT_LAYOUT.size == (320, 480)
     assert PORTRAIT_LAYOUT.card_rects == {
         "connection": Rect(8, 8, 304, 20),
-        "cpu": Rect(8, 36, 304, 103),
-        "gpu": Rect(8, 147, 304, 103),
-        "memory": Rect(8, 258, 304, 103),
-        "ai": Rect(8, 369, 304, 103),
+        "cpu": Rect(8, 36, 304, 81),
+        "memory": Rect(8, 125, 304, 81),
+        "gpu": Rect(8, 214, 304, 81),
+        "vram": Rect(8, 303, 304, 81),
+        "ai": Rect(8, 392, 304, 80),
     }
     assert validate_layout(PORTRAIT_LAYOUT) == []
     cards = tuple(PORTRAIT_LAYOUT.card_rects.values())
@@ -87,3 +93,22 @@ def test_portrait_layout_is_native_size_horizontal_text_geometry() -> None:
         assert 0 <= rect.y < rect.bottom <= 480
     for first, second in combinations(cards, 2):
         assert not first.intersects(second)
+
+
+def test_five_card_reading_order_and_full_width_codex() -> None:
+    from ai_mini_monitor.rendering.layout import LANDSCAPE_LAYOUT
+
+    landscape = LANDSCAPE_LAYOUT
+    assert set(landscape.card_rects) == {"connection", "cpu", "memory", "gpu", "vram", "ai"}
+    assert landscape.cpu.y == landscape.memory.y
+    assert landscape.gpu.y == landscape.vram.y > landscape.cpu.y
+    assert landscape.ai.y > landscape.gpu.y
+    assert landscape.ai.x == landscape.cpu.x
+    assert landscape.ai.width == landscape.connection.width
+    assert validate_layout(landscape) == []
+
+    portrait = PORTRAIT_LAYOUT
+    assert [portrait.card_rects[key].y for key in ("cpu", "memory", "gpu", "vram", "ai")] == sorted(
+        portrait.card_rects[key].y for key in ("cpu", "memory", "gpu", "vram", "ai")
+    )
+    assert validate_layout(portrait) == []

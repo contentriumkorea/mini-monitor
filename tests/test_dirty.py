@@ -53,11 +53,11 @@ def test_distant_changes_in_one_card_remain_separate() -> None:
     before = frame()
     after = before.copy()
     after.putpixel((10, 40), (255, 255, 255))
-    after.putpixel((230, 125), (255, 255, 255))
+    after.putpixel((220, 110), (255, 255, 255))
 
     assert calculate_dirty_rectangles(before, after) == [
         Rect(9, 39, 3, 3),
-        Rect(229, 124, 3, 3),
+        Rect(219, 109, 3, 3),
     ]
 
 

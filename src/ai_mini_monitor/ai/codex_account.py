@@ -11,6 +11,7 @@ import json
 import math
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -77,6 +78,8 @@ class CodexAccountSnapshot:
     updated_at: datetime | None
     error_detail: str | None
     ai: AIData
+    credit_balance: str | None = None
+    credits_unlimited: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +94,10 @@ def _display(
     windows: tuple[CodexLimitWindow, ...] = (),
     updated_at: datetime | None = None,
     error_detail: str | None = None,
+    credit_balance: str | None = None,
+    credits_unlimited: bool = False,
 ) -> AIData:
+    credit_field = ("CREDITS", "UNLIMITED" if credits_unlimited else credit_balance or "--")
     if windows:
         main = windows[0]
         fields: tuple[tuple[str, str], ...] = tuple(
@@ -104,7 +110,7 @@ def _display(
             status=SyncStatus.DELAYED if state == "delayed" else SyncStatus.OK,
             primary_value=f"{round(main.remaining_percent)}%",
             primary_label=f"{_duration_label(main.duration_mins)} LEFT",
-            fields=fields,
+            fields=fields + (credit_field,),
             last_sync=updated_at,
             budget_ratio=main.used_percent / 100.0,
             budget_label=f"{_duration_label(main.duration_mins)} USED {round(main.used_percent)}%",
@@ -126,6 +132,7 @@ def _display(
         status=sync,
         primary_value=value,
         primary_label=label,
+        fields=(credit_field,),
         error_detail=error_detail,
     )
 
@@ -163,16 +170,37 @@ def _parse_window(value: Any) -> CodexLimitWindow | None:
     return CodexLimitWindow(duration, used, resets_at)
 
 
-def _parse_windows(result: Any) -> tuple[CodexLimitWindow, ...]:
+def _codex_bucket(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
-        return ()
+        return {}
     buckets = result.get("rateLimitsByLimitId")
     bucket = buckets.get("codex") if isinstance(buckets, dict) else None
     if not isinstance(bucket, dict):
         legacy = result.get("rateLimits")
         bucket = legacy if isinstance(legacy, dict) and legacy.get("limitId") == "codex" else None
     if not isinstance(bucket, dict) or bucket.get("limitId") != "codex":
-        return ()
+        return {}
+    return bucket
+
+
+def _parse_credits(result: Any) -> tuple[str | None, bool]:
+    credits = _codex_bucket(result).get("credits")
+    if not isinstance(credits, dict):
+        return None, False
+    if type(credits.get("unlimited")) is not bool or type(credits.get("hasCredits")) is not bool:
+        return None, False
+    if credits["unlimited"]:
+        return None, True
+    balance = credits.get("balance")
+    # Preserve the server's decimal precision, without displaying arbitrary text
+    # or turning absent credit information into a zero balance.
+    if not isinstance(balance, str) or not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,32})?", balance):
+        return None, False
+    return balance, False
+
+
+def _parse_windows(result: Any) -> tuple[CodexLimitWindow, ...]:
+    bucket = _codex_bucket(result)
     found = [window for key in ("primary", "secondary") if (window := _parse_window(bucket.get(key)))]
     return tuple(sorted(found, key=lambda item: item.duration_mins, reverse=True))
 
@@ -313,7 +341,7 @@ class CodexAccountService:
         if value.state == "ready" and value.updated_at is not None:
             age = (datetime.now(timezone.utc) - value.updated_at).total_seconds()
             if age > _STALE_SECONDS:
-                return replace(value, state="delayed", ai=_display("delayed", value.windows, value.updated_at, "stale"))
+                return replace(value, state="delayed", ai=_display("delayed", value.windows, value.updated_at, "stale", value.credit_balance, value.credits_unlimited))
         return value
 
     def drain_events(self) -> tuple[CodexAccountEvent, ...]:
@@ -456,13 +484,16 @@ class CodexAccountService:
         updated: datetime | None = None,
         error: str | None = None,
         pending: bool = False,
+        credit_balance: str | None = None,
+        credits_unlimited: bool = False,
     ) -> None:
         with self._lock:
             if generation != self._snapshot.generation or self._stop.is_set():
                 return
             self._snapshot = CodexAccountSnapshot(
                 generation, state, email, plan, pending, windows, updated, error,
-                _display(state, windows, updated, error),
+                _display(state, windows, updated, error, credit_balance, credits_unlimited),
+                credit_balance, credits_unlimited,
             )
         self._events.put(CodexAccountEvent("updated", generation))
 
@@ -520,10 +551,11 @@ class CodexAccountService:
             previous = self._snapshot
         if previous.generation != generation:
             return
-        if previous.windows and previous.email:
+        if previous.email and (previous.windows or previous.credit_balance is not None or previous.credits_unlimited):
             self._publish(
                 generation, "delayed", email=previous.email, plan=previous.plan_type,
                 windows=previous.windows, updated=previous.updated_at, error=reason,
+                credit_balance=previous.credit_balance, credits_unlimited=previous.credits_unlimited,
             )
         else:
             self._publish(generation, "unavailable", error=reason)
@@ -697,12 +729,16 @@ class CodexAccountService:
             if generation != self._snapshot.generation:
                 return
         windows = _parse_windows(limits_result)
+        credit_balance, credits_unlimited = _parse_credits(limits_result)
         if not windows:
-            self._publish(generation, "no_data", email=email, plan=plan)
+            self._publish(generation, "no_data", email=email, plan=plan,
+                          updated=datetime.now(timezone.utc), credit_balance=credit_balance,
+                          credits_unlimited=credits_unlimited)
         else:
             self._publish(
                 generation, "ready", email=email, plan=plan, windows=windows,
                 updated=datetime.now(timezone.utc),
+                credit_balance=credit_balance, credits_unlimited=credits_unlimited,
             )
             with self._lock:
                 self._backoff = self._refresh_seconds

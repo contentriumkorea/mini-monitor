@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import time
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from PIL import Image, ImageDraw
 
 from ai_mini_monitor.config import AppConfig
-from ai_mini_monitor.ai.codex_usage import CodexUsageSnapshot, CodexUsageStatus
 from ai_mini_monitor.ai.codex_account import CodexAccountSnapshot
 from ai_mini_monitor.controller import MonitorController, MonitorStartError
 
@@ -24,7 +23,6 @@ def test_account_provider_reads_injected_snapshot_without_local_scan_or_rpc() ->
         config,
         enable_serial=False,
         codex_account_snapshot=lambda: (calls.append("snapshot") or expected),
-        codex_provider_factory=lambda: (_ for _ in ()).throw(AssertionError("legacy scan")),
     )
     original_update = controller.store.update_ai
 
@@ -36,6 +34,26 @@ def test_account_provider_reads_injected_snapshot_without_local_scan_or_rpc() ->
     controller._ai_loop()
     assert calls == ["snapshot"]
     assert controller.store.read().ai == expected.ai
+
+
+def test_account_without_snapshot_requires_login_and_never_uses_legacy_provider() -> None:
+    config = AppConfig()
+    controller = MonitorController(
+        config,
+        enable_serial=False,
+    )
+    original_update = controller.store.update_ai
+
+    def capture(value):
+        original_update(value)
+        controller._stop.set()
+
+    controller.store.update_ai = capture
+    controller._ai_loop()
+
+    ai = controller.store.read().ai
+    assert ai.provider is AIProviderKind.CODEX_ACCOUNT
+    assert ai.status is SyncStatus.SETUP_REQUIRED
 from ai_mini_monitor.models import (
     AIData,
     AIProviderKind,
@@ -397,164 +415,3 @@ def test_controller_power_transition_is_bounded_and_duplicate_resume_is_ignored(
     assert controller.resume_from_power_event() is True
     assert controller.resume_from_power_event() is False
     assert serial.resumes == 1
-
-
-def test_codex_consent_gate_never_constructs_or_scans_a_provider() -> None:
-    config = AppConfig()
-    config.ai.provider = AIProviderKind.CODEX_LOCAL.value
-    config.ai.codex_local_consent = False
-
-    def forbidden_provider():
-        raise AssertionError("provider must not be created before consent")
-
-    controller = MonitorController(
-        config,
-        enable_serial=False,
-        sensor_collector_factory=FakeCollector,
-        codex_provider_factory=forbidden_provider,
-    )
-    controller.start()
-    try:
-        deadline = time.monotonic() + 1.0
-        while controller.store.read().ai.primary_value != "CONSENT" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        ai = controller.store.read().ai
-        assert ai.provider is AIProviderKind.CODEX_LOCAL
-        assert ai.status is SyncStatus.SETUP_REQUIRED
-        assert ai.primary_value == "CONSENT"
-    finally:
-        assert controller.stop()
-
-
-def test_codex_provider_refreshes_once_then_only_on_manual_wake() -> None:
-    config = AppConfig()
-    config.ai.provider = AIProviderKind.CODEX_LOCAL.value
-    config.ai.codex_local_consent = True
-    config.ai.usage_refresh_seconds = 60
-    calls = 0
-    called = threading.Event()
-    now = datetime.now(timezone.utc)
-
-    class FakeCodexProvider:
-        def refresh(self):
-            nonlocal calls
-            calls += 1
-            called.set()
-            return CodexUsageSnapshot(
-                status=CodexUsageStatus.OK,
-                five_hour_remaining_percent=75.0,
-                seven_day_remaining_percent=60.0,
-                five_hour_reset_at=now + timedelta(hours=1),
-                seven_day_reset_at=now + timedelta(days=2),
-                updated_at=now,
-            )
-
-    provider = FakeCodexProvider()
-    controller = MonitorController(
-        config,
-        enable_serial=False,
-        sensor_collector_factory=FakeCollector,
-        codex_provider_factory=lambda: provider,
-    )
-    controller.start()
-    try:
-        assert called.wait(1.0)
-        assert calls == 1
-        assert controller.store.read().ai.primary_value == "60%"
-        assert controller.store.read().ai.primary_label == "7D LEFT"
-        assert ("5H LEFT", "75%") in controller.store.read().ai.fields
-        called.clear()
-        controller.request_ai_refresh()
-        assert called.wait(1.0)
-        assert calls == 2
-    finally:
-        assert controller.stop()
-
-
-def test_codex_refresh_keeps_newer_fresh_usage_but_never_hides_current_errors() -> None:
-    config = AppConfig()
-    config.ai.provider = AIProviderKind.CODEX_LOCAL.value
-    config.ai.codex_local_consent = True
-    config.ai.usage_refresh_seconds = 60
-    now = datetime.now(timezone.utc)
-    snapshots = (
-        CodexUsageSnapshot(
-            status=CodexUsageStatus.OK,
-            seven_day_remaining_percent=85.0,
-            updated_at=now,
-        ),
-        CodexUsageSnapshot(
-            status=CodexUsageStatus.STALE,
-            seven_day_remaining_percent=100.0,
-            updated_at=now - timedelta(minutes=1),
-        ),
-        CodexUsageSnapshot(
-            status=CodexUsageStatus.OK,
-            seven_day_remaining_percent=84.0,
-            updated_at=now + timedelta(seconds=1),
-        ),
-        CodexUsageSnapshot(status=CodexUsageStatus.UNAVAILABLE),
-    )
-    condition = threading.Condition()
-    calls = 0
-
-    class SequencedCodexProvider:
-        def refresh(self):
-            nonlocal calls
-            with condition:
-                result = snapshots[min(calls, len(snapshots) - 1)]
-                calls += 1
-                condition.notify_all()
-                return result
-
-    def wait_for_calls(expected: int) -> None:
-        deadline = time.monotonic() + 1.0
-        with condition:
-            while calls < expected:
-                remaining = deadline - time.monotonic()
-                assert remaining > 0
-                condition.wait(remaining)
-
-    def wait_for_ai(primary: str, status: SyncStatus):
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
-            value = controller.store.read().ai
-            if value.primary_value == primary and value.status is status:
-                return value
-            time.sleep(0.005)
-        raise AssertionError(f"AI state did not reach {primary} / {status.value}")
-
-    controller = MonitorController(
-        config,
-        enable_serial=False,
-        sensor_collector_factory=FakeCollector,
-        codex_provider_factory=SequencedCodexProvider,
-    )
-    controller.start()
-    try:
-        wait_for_calls(1)
-        first = wait_for_ai("85%", SyncStatus.OK)
-        assert first.primary_value == "85%"
-        assert first.status is SyncStatus.OK
-
-        controller.request_ai_refresh()
-        wait_for_calls(2)
-        guarded = wait_for_ai("85%", SyncStatus.DELAYED)
-        assert guarded.primary_value == "85%"
-        assert guarded.last_sync == now
-        assert guarded.status is SyncStatus.DELAYED
-
-        controller.request_ai_refresh()
-        wait_for_calls(3)
-        newer = wait_for_ai("84%", SyncStatus.OK)
-        assert newer.primary_value == "84%"
-        assert newer.last_sync == now + timedelta(seconds=1)
-        assert newer.status is SyncStatus.OK
-
-        controller.request_ai_refresh()
-        wait_for_calls(4)
-        current_error = wait_for_ai("UNAVAILABLE", SyncStatus.DELAYED)
-        assert current_error.primary_value == "UNAVAILABLE"
-        assert current_error.status is SyncStatus.DELAYED
-    finally:
-        assert controller.stop()

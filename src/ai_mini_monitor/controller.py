@@ -4,7 +4,7 @@ import logging
 import math
 import threading
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from statistics import mean
@@ -12,15 +12,7 @@ from typing import Callable
 
 from PIL import Image
 
-from .ai.activity import ChatGPTActivityProvider
 from .ai.codex_account import CodexAccountSnapshot
-from .ai.codex_usage import (
-    CodexUsageProvider,
-    CodexUsageSnapshot,
-    CodexUsageStatus,
-    to_ai_data as codex_to_ai_data,
-)
-from .ai.openai_usage import OpenAIUsageClient, OpenAIUsageProvider
 from .config import AppConfig, validate_brightness
 from .models import (
     AIData,
@@ -36,9 +28,8 @@ from .orientation import orientation_spec
 from .rendering.dirty import calculate_dirty_rectangles
 from .rendering.layout import Rect, layout_for_dimensions
 from .rendering.renderer import DashboardRenderer
-from .security.dpapi import DPAPISecretStore
 from .sensors.collector import SystemSensorCollector
-from .state import DisplayComposer, RuntimeStateStore, not_configured_ai
+from .state import DisplayComposer, RuntimeStateStore
 from .transport.serial_writer import (
     InitialRestoreStatus,
     SerialWriter,
@@ -117,11 +108,9 @@ class MonitorController:
         config: AppConfig,
         *,
         enable_serial: bool = True,
-        secret_store: DPAPISecretStore | None = None,
         image_callback: Callable[[Image.Image], None] | None = None,
         sensor_collector_factory: Callable[[], SystemSensorCollector] | None = None,
         serial_writer: SerialWriter | None = None,
-        codex_provider_factory: Callable[[], CodexUsageProvider] | None = None,
         codex_account_snapshot: Callable[[], CodexAccountSnapshot] | None = None,
         initial_restore_timeout: float = INITIAL_RESTORE_TIMEOUT_SECONDS,
     ) -> None:
@@ -138,7 +127,6 @@ class MonitorController:
             raise ValueError("initial restore timeout must be a positive finite number")
         self.config = config
         self.enable_serial = enable_serial
-        self.secret_store = secret_store or DPAPISecretStore()
         self.image_callback = image_callback
         self.store = RuntimeStateStore()
         self.orientation = orientation_spec(config.device.rotation)
@@ -167,11 +155,6 @@ class MonitorController:
         self._last_observed_sent = -1
         self._sensor_collector_factory = sensor_collector_factory or (
             lambda: SystemSensorCollector(self.config.sensors)
-        )
-        self._codex_provider_factory = codex_provider_factory or (
-            lambda: CodexUsageProvider(
-                consent_granted=self.config.ai.codex_local_consent,
-            )
         )
         self._codex_account_snapshot = codex_account_snapshot
         self._initial_restore_timeout = restore_timeout
@@ -373,18 +356,7 @@ class MonitorController:
 
     def _ai_loop(self) -> None:
         try:
-            provider_name = self.config.ai.provider
-            if provider_name == AIProviderKind.CODEX_LOCAL.value:
-                self._run_codex_provider()
-            elif provider_name == AIProviderKind.CODEX_ACCOUNT.value:
-                self._run_codex_account()
-            elif provider_name == AIProviderKind.OPENAI_API.value:
-                self._run_openai_provider()
-            elif provider_name == AIProviderKind.CHATGPT_ACTIVITY.value:
-                self._run_activity_provider()
-            else:
-                self.store.update_ai(not_configured_ai())
-                self._stop.wait()
+            self._run_codex_account()
         except Exception as error:
             with self._stats_lock:
                 self.stats.unhandled_worker_errors += 1
@@ -413,122 +385,6 @@ class MonitorController:
             self._ai_wake.clear()
             self.store.update_ai(snapshot().ai)
             self._ai_wake.wait(0.5)
-
-    def _run_codex_provider(self) -> None:
-        if not self.config.ai.codex_local_consent:
-            self.store.update_ai(
-                codex_to_ai_data(
-                    CodexUsageSnapshot(CodexUsageStatus.CONSENT_REQUIRED)
-                )
-            )
-            self._stop.wait()
-            return
-
-        provider = self._codex_provider_factory()
-        interval = float(self.config.ai.usage_refresh_seconds)
-        last_fresh_snapshot: CodexUsageSnapshot | None = None
-        while not self._stop.is_set():
-            self._ai_wake.clear()
-            try:
-                snapshot = provider.refresh()
-            except Exception as error:
-                LOGGER.error(
-                    "Codex local limit refresh failed (%s)",
-                    type(error).__name__,
-                )
-                snapshot = CodexUsageSnapshot(CodexUsageStatus.UNAVAILABLE)
-            if snapshot.status is CodexUsageStatus.OK:
-                if (
-                    last_fresh_snapshot is not None
-                    and last_fresh_snapshot.updated_at is not None
-                    and (
-                        snapshot.updated_at is None
-                        or snapshot.updated_at < last_fresh_snapshot.updated_at
-                    )
-                ):
-                    display = replace(
-                        codex_to_ai_data(last_fresh_snapshot),
-                        status=SyncStatus.DELAYED,
-                        error_detail="older local rate-limit snapshot ignored",
-                    )
-                else:
-                    display = codex_to_ai_data(snapshot)
-                    if snapshot.updated_at is not None:
-                        last_fresh_snapshot = snapshot
-            elif (
-                snapshot.status is CodexUsageStatus.STALE
-                and last_fresh_snapshot is not None
-            ):
-                display = replace(
-                    codex_to_ai_data(last_fresh_snapshot),
-                    status=SyncStatus.DELAYED,
-                    error_detail="stale local rate-limit snapshot ignored",
-                )
-            else:
-                # Explicit current errors must remain visible.  Never hide a
-                # revoked consent or missing session state behind cached quota.
-                display = codex_to_ai_data(snapshot)
-                if snapshot.status in {
-                    CodexUsageStatus.CONSENT_REQUIRED,
-                    CodexUsageStatus.SESSIONS_NOT_FOUND,
-                    CodexUsageStatus.NO_RATE_LIMITS,
-                }:
-                    last_fresh_snapshot = None
-            self.store.update_ai(display)
-            deadline = time.monotonic() + interval
-            while not self._stop.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or self._ai_wake.wait(min(0.5, remaining)):
-                    break
-
-    def _run_openai_provider(self) -> None:
-        try:
-            key = self.secret_store.get()
-        except Exception:
-            LOGGER.exception("could not unlock the OpenAI Admin Key")
-            self.store.update_ai(
-                AIData(
-                    provider=AIProviderKind.OPENAI_API,
-                    title="OPENAI API",
-                    status=SyncStatus.AUTH_ERROR,
-                    primary_value="KEY",
-                    primary_label="UNAVAILABLE",
-                    fields=(("STATUS", "UNLOCK FAILED"),),
-                )
-            )
-            self._stop.wait()
-            return
-        if not key:
-            self.store.update_ai(
-                AIData(
-                    provider=AIProviderKind.OPENAI_API,
-                    title="OPENAI API",
-                    status=SyncStatus.SETUP_REQUIRED,
-                    primary_value="SETUP",
-                    primary_label="REQUIRED",
-                    fields=(("STATUS", "NO ADMIN KEY"),),
-                )
-            )
-            self._stop.wait()
-            return
-        provider = OpenAIUsageProvider(
-            OpenAIUsageClient(key),
-            usage_interval=self.config.ai.usage_refresh_seconds,
-            cost_interval=self.config.ai.cost_refresh_seconds,
-            daily_budget=self.config.ai.daily_budget_usd,
-            monthly_budget=self.config.ai.monthly_budget_usd,
-        )
-        while not self._stop.is_set():
-            self._ai_wake.clear()
-            self.store.update_ai(provider.refresh())
-            self._ai_wake.wait(1.0)
-
-    def _run_activity_provider(self) -> None:
-        provider = ChatGPTActivityProvider(self.config.ai.activity_processes)
-        while not self._stop.is_set():
-            self._ai_wake.clear()
-            self.store.update_ai(provider.tick())
-            self._ai_wake.wait(1.0)
 
     def _render_loop(self) -> None:
         frame_period = 1.0 / self.config.app.render_fps

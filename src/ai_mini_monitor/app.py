@@ -21,13 +21,13 @@ from PIL import Image
 from . import __version__
 from . import autostart
 from .ai.codex_account import CodexAccountService, CodexAccountSnapshot
-from .ai.codex_usage import CodexUsageProvider, CodexUsageStatus, to_ai_data as codex_to_ai_data
 from .config import (
     AppConfig,
     default_config_path,
     load_config,
     save_config,
     validate_brightness,
+    validate_taskbar_options,
 )
 from .desktop_session import (
     DesktopSession,
@@ -49,11 +49,11 @@ from .power_events import WindowsPowerEventHook
 from .rendering.layout import layout_for_dimensions
 from .rendering.renderer import DashboardRenderer
 from .resources import user_data_dir
-from .security.dpapi import DPAPISecretStore
 from .single_instance import acquire_single_instance
 from .state import not_configured_ai
 from .transport.device import DeviceDetector
 from .ui.overlay import OverlayState, OverlayWindow
+from .ui.taskbar import TaskbarWindow
 from .ui.setup import (
     ActionResult,
     OverlaySettings,
@@ -212,7 +212,6 @@ def run_desktop(
         )
         session = DesktopSession(enable_serial=enable_serial, codex_account_snapshot=account.snapshot)
         worker = SerialTaskWorker()
-        secret_store = DPAPISecretStore()
         renderer = _renderer_for_rotation(current_config.device.rotation)
         preview_ai = _initial_ai(current_config, account.snapshot())
         preview_frame = None
@@ -236,18 +235,38 @@ def run_desktop(
     overlay_faulted = False
     setup: SetupWindow | None = None
     overlay: OverlayWindow | None = None
+    taskbar: TaskbarWindow | None = None
     power_events: WindowsPowerEventHook | None = None
     apply_requested = False
     notice_retry_at: dict[str, float] = {}
     last_account_snapshot: CodexAccountSnapshot | None = None
     last_update_snapshot: object | None = None
     next_update_check = time.monotonic() + 3600.0
+    account_polling = False
+
+    def sync_account_polling() -> None:
+        nonlocal account_polling
+        wanted = not exiting and bool(
+            session.running
+            or (overlay is not None and not overlay.closed and overlay.visible)
+            or (taskbar is not None and not taskbar.closed and taskbar.visible)
+        )
+        # Repeated set_polling(True) resets the service's deadline. Only send
+        # transitions so the 100 ms UI timer cannot flood account requests.
+        if wanted != account_polling:
+            account.set_polling(wanted)
+            account_polling = wanted
 
     def request_exit() -> None:
         nonlocal exiting
         if exiting:
             return
         exiting = True
+        try:
+            if taskbar is not None:
+                taskbar.hide(notify=False)
+        except (RuntimeError, tk.TclError):
+            pass
         try:
             setup.hide()
         except (NameError, tk.TclError):
@@ -317,37 +336,18 @@ def run_desktop(
         return submit_brightness(value)
 
     def request_usage(selection: SetupSelection) -> ActionResult:
-        if selection.provider == AIProviderKind.CODEX_ACCOUNT.value:
-            deferred = account_selection_deferred()
-            if not deferred:
-                selected = select_account_provider()
-                if not selected.ok:
-                    return selected
-            if not account.refresh():
-                return ActionResult(False, "Codex 한도 확인 실패", "계정 서비스를 다시 시작해 주세요.")
-            return ActionResult(
-                True,
-                "Codex 계정 한도 확인 중…",
-                "현재 모니터의 표시 방식은 중지 후 변경할 수 있습니다." if deferred else None,
-            )
-        if "usage" in pending:
-            return ActionResult(True, "사용량 확인 중…", pending=True)
-        if pending.intersection({"start", "stop"}):
-            return ActionResult(False, "시작·중지 작업 완료 후 확인하세요", "현재 수명주기 작업이 끝나면 다시 시도할 수 있습니다.")
-        if session.running and selection.provider != current_config.ai.provider:
-            return ActionResult(
-                False,
-                "사용량 방식을 바꾸려면 먼저 중지하세요",
-                "모니터 중지 후 새 방식을 선택하고 다시 시작하면 적용됩니다.",
-            )
-        if session.running:
-            action = lambda: _refresh_active_usage(session)
-        else:
-            action = lambda: _check_usage(selection, secret_store)
-        if not worker.submit("usage", action):
-            return ActionResult(False, "사용량 확인을 시작하지 못했습니다", "작업 큐 종료")
-        pending.add("usage")
-        return ActionResult(True, "사용량 확인 중…", "로컬 기록은 이 PC 밖으로 전송되지 않습니다.", pending=True)
+        deferred = account_selection_deferred()
+        if not deferred:
+            selected = select_account_provider()
+            if not selected.ok:
+                return selected
+        if not account.refresh():
+            return ActionResult(False, "Codex 한도 확인 실패", "계정 서비스를 다시 시작해 주세요.")
+        return ActionResult(
+            True,
+            "Codex 계정 한도 확인 중…",
+            "현재 모니터의 표시 방식은 중지 후 변경할 수 있습니다." if deferred else None,
+        )
 
     def request_start(selection: SetupSelection) -> ActionResult:
         if "usage" in pending:
@@ -361,7 +361,7 @@ def run_desktop(
                 session,
                 draft,
                 selection,
-                secret_store,
+                None,
                 config_path,
             ),
         ):
@@ -386,6 +386,101 @@ def run_desktop(
 
     def request_autostart(enabled: bool) -> ActionResult:
         return _change_autostart(enabled, startup_command)
+
+    def persist_taskbar_state(state: OverlayState) -> None:
+        nonlocal current_config
+        if exiting:
+            return
+        try:
+            current_config = _persist_taskbar_state_config(current_config, state, config_path)
+        except (OSError, ValueError):
+            LOGGER.warning("could not persist taskbar bar position")
+            current_config.overlay.taskbar_enabled = state.visible
+            current_config.overlay.taskbar_x = state.x
+            current_config.overlay.taskbar_y = state.y
+        setup.set_taskbar_enabled(state.visible)
+        sync_account_polling()
+
+    def ensure_taskbar_window() -> TaskbarWindow:
+        nonlocal taskbar
+        if taskbar is None or taskbar.closed:
+            position = (
+                (current_config.overlay.taskbar_x, current_config.overlay.taskbar_y)
+                if current_config.overlay.taskbar_x is not None else None
+            )
+            taskbar = TaskbarWindow(
+                setup.window,
+                position=position,
+                items=current_config.overlay.taskbar_items,
+                style=current_config.overlay.taskbar_style,
+                on_state_change=persist_taskbar_state,
+            )
+        return taskbar
+
+    def request_taskbar(enabled: bool) -> ActionResult:
+        nonlocal taskbar, current_config
+        if exiting:
+            return ActionResult(False, "프로그램 종료 중")
+        previous_visible = bool(taskbar and not taskbar.closed and taskbar.visible)
+        try:
+            taskbar = ensure_taskbar_window()
+            if enabled:
+                values = session.runtime_values()
+                taskbar.update_sensor(
+                    values.sensor if values and session.running else None,
+                    account.snapshot().ai,
+                )
+                taskbar.show(notify=False)
+            else:
+                taskbar.hide(notify=False)
+            current_config = _persist_taskbar_state_config(current_config, taskbar.state, config_path)
+        except Exception as error:
+            LOGGER.warning("taskbar bar change failed (%s)", type(error).__name__)
+            if taskbar is not None and not taskbar.closed:
+                try:
+                    if previous_visible:
+                        taskbar.show(notify=False)
+                    else:
+                        taskbar.hide(notify=False)
+                except Exception:
+                    LOGGER.warning("taskbar bar rollback failed")
+            return ActionResult(False, "작업 표시줄 바를 변경하지 못했습니다", "다시 시도해 주세요.")
+        sync_account_polling()
+        return ActionResult(True, "작업 표시줄 바 켜짐" if enabled else "작업 표시줄 바 꺼짐")
+
+    def request_taskbar_options(items: tuple[str, ...], style: str) -> ActionResult:
+        nonlocal current_config
+        if exiting:
+            return ActionResult(False, "프로그램 종료 중")
+        current_config, result = _apply_taskbar_options_request(
+            current_config, taskbar, items, style, config_path,
+        )
+        if result.ok:
+            setup.set_taskbar_options(current_config.overlay.taskbar_items, current_config.overlay.taskbar_style)
+        return result
+
+    def get_taskbar_position() -> tuple[float, int] | None:
+        if exiting:
+            return None
+        try:
+            return ensure_taskbar_window().horizontal_position()
+        except Exception as error:
+            LOGGER.warning("could not read taskbar position (%s)", type(error).__name__)
+            return None
+
+    def request_taskbar_position(action: str, value: float) -> ActionResult:
+        nonlocal current_config
+        if exiting:
+            return ActionResult(False, "프로그램 종료 중")
+        try:
+            bar = ensure_taskbar_window()
+        except Exception as error:
+            LOGGER.warning("could not create taskbar position control (%s)", type(error).__name__)
+            return ActionResult(False, "작업 표시줄 바 위치를 변경하지 못했습니다")
+        current_config, result = _apply_taskbar_position_request(
+            current_config, bar, action, value, config_path,
+        )
+        return result
 
     def persist_overlay_state(state: OverlayState) -> None:
         """Persist a user move/show/hide after OverlayWindow has applied it."""
@@ -502,32 +597,7 @@ def run_desktop(
         return ActionResult(bool(account.logout()), "Mini Monitor 전용 계정 로그아웃 중…")
 
     def request_codex_disconnect() -> ActionResult:
-        nonlocal current_config, preview_ai, preview_frame
-        if session.running or pending.intersection({"start", "stop"}):
-            return ActionResult(False, "모니터를 먼저 중지하세요", "실행 중인 계정 표시를 자동으로 바꾸지 않습니다.")
-        if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
-            try:
-                with _CONFIG_WRITE_LOCK:
-                    draft = _latest_persisted_config(current_config, config_path)
-                    draft.ai.provider = AIProviderKind.NOT_CONFIGURED.value
-                    draft.validate()
-                    save_config(draft, config_path)
-                    current_config = draft
-            except (OSError, ValueError):
-                return ActionResult(False, "연결 해제 저장 실패", "설정 파일을 확인해 주세요.")
-        account.set_polling(False)
-        preview_ai = not_configured_ai()
-        setup.set_provider(AIProviderKind.NOT_CONFIGURED.value)
-        preview_frame = renderer.render(DisplaySnapshot(
-            ai=preview_ai,
-            connection=ConnectionData(
-                ConnectionStatus.DISCONNECTED,
-                detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
-            ),
-        ))
-        setup.update_image(preview_frame)
-        update_visible_overlay(preview_frame)
-        return ActionResult(True, "표시 연결 해제됨", "Mini Monitor 전용 로그인은 유지됩니다.")
+        return ActionResult(False, "Codex 계정 방식만 지원합니다", "로그아웃을 사용해 주세요.")
 
     def request_codex_cli_selected(path: Path) -> ActionResult:
         nonlocal current_config
@@ -667,7 +737,7 @@ def run_desktop(
             on_reconnect=request_reconnect,
             on_exit=request_exit,
             enable_serial=enable_serial,
-            openai_key_configured=secret_store.configured(),
+            openai_key_configured=False,
             usage_refresh_seconds=current_config.ai.usage_refresh_seconds,
             cost_refresh_seconds=current_config.ai.cost_refresh_seconds,
             daily_budget_usd=current_config.ai.daily_budget_usd,
@@ -685,6 +755,13 @@ def run_desktop(
             overlay_scale_percent=current_config.overlay.scale_percent,
             on_overlay_change=request_overlay,
             on_overlay_reset_position=reset_overlay_position,
+            taskbar_enabled=current_config.overlay.taskbar_enabled,
+            on_taskbar_change=request_taskbar,
+            taskbar_items=current_config.overlay.taskbar_items,
+            taskbar_style=current_config.overlay.taskbar_style,
+            on_taskbar_options=request_taskbar_options,
+            get_taskbar_position=get_taskbar_position,
+            on_taskbar_position=request_taskbar_position,
             on_codex_login=request_codex_login,
             on_codex_cancel=request_codex_cancel,
             on_codex_logout=request_codex_logout,
@@ -730,6 +807,10 @@ def run_desktop(
         )
         preview_frame = initial_frame.copy()
         setup.update_image(initial_frame)
+        if current_config.overlay.taskbar_enabled:
+            result = request_taskbar(True)
+            if not result.ok:
+                setup.set_taskbar_enabled(False)
         if current_config.overlay.enabled:
             try:
                 overlay.update_image(initial_frame)
@@ -845,8 +926,7 @@ def run_desktop(
                     LOGGER.warning("could not re-merge desktop overlay settings")
             setup.complete_start(result.value.action, running=session.running)
             if result.value.action.ok and current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
-                account.set_polling(True)
-            setup.set_openai_key_configured(secret_store.configured())
+                sync_account_polling()
         elif result.kind == "stop" and isinstance(result.value, SessionResult):
             action = ActionResult(
                 result.value.ok,
@@ -859,7 +939,7 @@ def run_desktop(
                 blocked=result.value.state is SessionState.ERROR,
             )
             if result.value.ok:
-                account.set_polling(False)
+                sync_account_polling()
                 if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
                     preview_ai = account.snapshot().ai
                     preview_frame = renderer.render(DisplaySnapshot(
@@ -944,6 +1024,7 @@ def run_desktop(
                 except (OSError, webbrowser.Error):
                     LOGGER.warning("could not open Codex authorization browser")
 
+        sync_account_polling()
         account_snapshot = account.snapshot()
         if account_snapshot != last_account_snapshot:
             last_account_snapshot = account_snapshot
@@ -1002,6 +1083,15 @@ def run_desktop(
             update_visible_overlay(image)
 
         values = session.runtime_values()
+        if taskbar is not None and not taskbar.closed and taskbar.visible:
+            try:
+                taskbar.update_sensor(
+                    values.sensor if values and session.running else None,
+                    account_snapshot.ai,
+                )
+            except Exception as error:
+                LOGGER.warning("taskbar render failed (%s)", type(error).__name__)
+                taskbar.hide(notify=True)
         if values is not None and session.running:
             setup.update_runtime(values.connection, values.ai, running=True)
             status = values.connection.status.value
@@ -1086,6 +1176,8 @@ def run_desktop(
         except (OSError, ValueError):
             LOGGER.warning("could not persist final desktop overlay state")
         try:
+            if taskbar is not None and not taskbar.closed:
+                taskbar.destroy()
             if overlay is not None and not overlay.closed:
                 overlay.destroy()
         except (NameError, tk.TclError):
@@ -1109,62 +1201,6 @@ def _detect_device(config: AppConfig, enable_serial: bool) -> ActionResult:
         True,
         f"장치 준비됨 · {selected.device}",
         "VID 1A86 · PID 5722 · USB35INCHIPSV2",
-    )
-
-
-def _check_usage(selection: SetupSelection, secret_store: DPAPISecretStore) -> UsageWorkResult:
-    if selection.provider == AIProviderKind.CODEX_LOCAL.value:
-        if not selection.codex_local_consent:
-            ai = codex_to_ai_data(
-                CodexUsageProvider(consent_granted=False).refresh()
-            )
-            return UsageWorkResult(
-                ActionResult(False, "동의가 필요합니다", "체크박스를 선택해야 로컬 세션을 확인합니다."),
-                ai,
-            )
-        snapshot = CodexUsageProvider(consent_granted=True).refresh()
-        ai = codex_to_ai_data(snapshot)
-        if snapshot.status is CodexUsageStatus.OK:
-            detail = " · ".join(f"{label} {value}" for label, value in ai.fields[:3])
-            return UsageWorkResult(
-                ActionResult(
-                    True,
-                    f"{ai.primary_label} {ai.primary_value}".strip(),
-                    detail,
-                ),
-                ai,
-            )
-        messages = {
-            CodexUsageStatus.STALE: ("오래된 Codex 한도 정보", "최근 15분 안에 새 한도 이벤트가 없어 지연 상태로 표시합니다."),
-            CodexUsageStatus.SESSIONS_NOT_FOUND: ("Codex 기록을 찾지 못했습니다", "Codex를 한 번 사용한 뒤 다시 확인하세요."),
-            CodexUsageStatus.NO_RATE_LIMITS: ("한도 정보가 아직 없습니다", "Codex가 새 rate-limit 이벤트를 기록한 뒤 갱신됩니다."),
-            CodexUsageStatus.UNAVAILABLE: ("로컬 기록을 읽지 못했습니다", "권한과 CODEX_HOME 설정을 확인하세요."),
-            CodexUsageStatus.CONSENT_REQUIRED: ("동의가 필요합니다", "로컬 기록은 동의 전에는 열지 않습니다."),
-        }
-        title, detail = messages[snapshot.status]
-        return UsageWorkResult(ActionResult(False, title, detail), ai)
-
-    if selection.provider == AIProviderKind.OPENAI_API.value:
-        configured = bool(selection.openai_admin_key) or secret_store.configured()
-        ai = not_configured_ai()
-        if configured:
-            return UsageWorkResult(
-                ActionResult(True, "OpenAI API 설정 준비됨", "시작하면 공식 조직 Usage·Costs API를 사용합니다."),
-                ai,
-            )
-        return UsageWorkResult(
-            ActionResult(False, "Admin Key가 필요합니다", "키를 입력하거나 이미 저장된 키를 사용하세요."),
-            ai,
-        )
-
-    if selection.provider == AIProviderKind.CHATGPT_ACTIVITY.value:
-        return UsageWorkResult(
-            ActionResult(True, "로컬 활동 시간 사용", "창 활성 시간만 집계하며 메시지 내용은 읽지 않습니다."),
-            not_configured_ai(),
-        )
-    return UsageWorkResult(
-        ActionResult(True, "AI 사용량 표시 안 함", "하드웨어 모니터만 실행할 수 있습니다."),
-        not_configured_ai(),
     )
 
 
@@ -1391,6 +1427,105 @@ def _overlay_config_from_settings(
     return draft
 
 
+def _persist_taskbar_state_config(
+    base: AppConfig,
+    state: OverlayState,
+    config_path: Path | None,
+) -> AppConfig:
+    with _CONFIG_WRITE_LOCK:
+        draft = _latest_persisted_config(base, config_path)
+        draft.overlay.taskbar_enabled = state.visible
+        draft.overlay.taskbar_x = state.x
+        draft.overlay.taskbar_y = state.y
+        save_config(draft, config_path)
+        return draft
+
+
+def _persist_taskbar_options_config(
+    base: AppConfig,
+    items: tuple[str, ...] | list[str],
+    style: str,
+    config_path: Path | None,
+) -> AppConfig:
+    selected = validate_taskbar_options(items, style)
+    with _CONFIG_WRITE_LOCK:
+        draft = _latest_persisted_config(base, config_path)
+        draft.overlay.taskbar_items = list(selected)
+        draft.overlay.taskbar_style = style
+        save_config(draft, config_path)
+        return draft
+
+
+def _apply_taskbar_options_request(
+    base: AppConfig,
+    taskbar: TaskbarWindow | None,
+    items: tuple[str, ...] | list[str],
+    style: str,
+    config_path: Path | None,
+) -> tuple[AppConfig, ActionResult]:
+    """Apply live options first, then persist; restore the bar if saving fails."""
+
+    try:
+        selected = validate_taskbar_options(items, style)
+    except ValueError:
+        return base, ActionResult(False, "작업 표시줄 바 설정이 올바르지 않습니다")
+    live = taskbar is not None and not taskbar.closed
+    old_items = tuple(taskbar.items) if live else tuple(base.overlay.taskbar_items)
+    old_style = taskbar.style if live else base.overlay.taskbar_style
+    old_position = (taskbar.state.x, taskbar.state.y) if live else None
+    try:
+        if live:
+            taskbar.set_options(selected, style)
+        updated = _persist_taskbar_options_config(base, selected, style, config_path)
+    except Exception as error:
+        LOGGER.warning("taskbar options change failed (%s)", type(error).__name__)
+        if live:
+            try:
+                taskbar.set_options(old_items, old_style)
+                if old_position is not None:
+                    taskbar.set_position(*old_position)
+            except Exception:
+                LOGGER.warning("taskbar options rollback failed")
+        return base, ActionResult(False, "작업 표시줄 바 설정을 저장하지 못했습니다", "다시 시도해 주세요.")
+    return updated, ActionResult(True, "작업 표시줄 바 설정 저장됨")
+
+
+def _apply_taskbar_position_request(
+    base: AppConfig,
+    taskbar: TaskbarWindow,
+    action: str,
+    value: float,
+    config_path: Path | None,
+) -> tuple[AppConfig, ActionResult]:
+    """Apply a horizontal move once and restore the old coordinates on failure."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return base, ActionResult(False, "가로 위치 값이 올바르지 않습니다")
+    if action not in ("percent", "nudge", "reset"):
+        return base, ActionResult(False, "가로 위치 동작이 올바르지 않습니다")
+    if action == "percent" and not 0 <= value <= 100:
+        return base, ActionResult(False, "가로 위치는 0~100%여야 합니다")
+    if action == "nudge" and value not in (-1, 1):
+        return base, ActionResult(False, "한 번에 1px씩 이동할 수 있습니다")
+    old_state = taskbar.state
+    try:
+        if action == "percent":
+            taskbar.set_horizontal_percent(value, notify=False)
+        elif action == "nudge":
+            taskbar.nudge_horizontal(int(value), notify=False)
+        else:
+            taskbar.reset_horizontal_position(notify=False)
+        updated = _persist_taskbar_state_config(base, taskbar.state, config_path)
+    except Exception as error:
+        LOGGER.warning("taskbar position change failed (%s)", type(error).__name__)
+        try:
+            taskbar.set_position(old_state.x, old_state.y, notify=False)
+        except Exception:
+            LOGGER.warning("taskbar position rollback failed")
+        return base, ActionResult(False, "작업 표시줄 바 위치를 저장하지 못했습니다", "다시 시도해 주세요.")
+    return updated, ActionResult(True, "작업 표시줄 바 위치 저장됨")
+
+
 def _persist_overlay_state_config(
     base: AppConfig,
     state: OverlayState,
@@ -1602,12 +1737,9 @@ def _draft_config(base: AppConfig, selection: SetupSelection) -> AppConfig:
     draft = copy.deepcopy(base)
     draft.device.rotation = selection.rotation
     draft.device.brightness = selection.brightness
-    draft.ai.provider = selection.provider
-    draft.ai.codex_local_consent = selection.codex_local_consent
+    draft.ai.provider = AIProviderKind.CODEX_ACCOUNT.value
+    draft.ai.codex_local_consent = False
     draft.ai.usage_refresh_seconds = selection.usage_refresh_seconds
-    draft.ai.cost_refresh_seconds = selection.cost_refresh_seconds
-    draft.ai.daily_budget_usd = selection.daily_budget_usd
-    draft.ai.monthly_budget_usd = selection.monthly_budget_usd
     return draft
 
 
@@ -1615,8 +1747,8 @@ def _selection_from_config(config: AppConfig) -> SetupSelection:
     """Build a non-secret selection without resetting saved advanced values."""
 
     return SetupSelection(
-        provider=config.ai.provider,
-        codex_local_consent=config.ai.codex_local_consent,
+        provider=AIProviderKind.CODEX_ACCOUNT.value,
+        codex_local_consent=False,
         usage_refresh_seconds=config.ai.usage_refresh_seconds,
         cost_refresh_seconds=config.ai.cost_refresh_seconds,
         daily_budget_usd=config.ai.daily_budget_usd,
@@ -1634,10 +1766,7 @@ def _renderer_for_rotation(rotation: str) -> DashboardRenderer:
 
 
 def _initial_setup_provider(config: AppConfig, *, minimized: bool) -> str:
-    """Recommend official account limits for interactive first-run setup."""
-
-    if minimized or config.ai.provider != AIProviderKind.NOT_CONFIGURED.value:
-        return config.ai.provider
+    """The account is the only selectable AI data source."""
     return AIProviderKind.CODEX_ACCOUNT.value
 
 
@@ -1645,15 +1774,11 @@ def _start_session(
     session: DesktopSession,
     draft: AppConfig,
     selection: SetupSelection,
-    secret_store: DPAPISecretStore,
+    secret_store: object | None,
     config_path: Path | None,
 ) -> StartWorkResult:
     if getattr(session, "shutting_down", False):
         return StartWorkResult(ActionResult(False, "프로그램 종료 중", "새 설정이나 COM 연결을 시작하지 않습니다."))
-    if draft.ai.provider == AIProviderKind.CODEX_LOCAL.value and not draft.ai.codex_local_consent:
-        return StartWorkResult(
-            ActionResult(False, "Codex 로컬 읽기 동의를 확인하세요", "또는 AI 사용량에서 ‘사용 안 함’을 선택하세요.")
-        )
     try:
         draft.validate()
     except ValueError:
@@ -1666,22 +1791,10 @@ def _start_session(
         except Exception as error:
             return StartWorkResult(ActionResult(False, "미니 모니터를 찾지 못했습니다", type(error).__name__))
 
-    if (
-        draft.ai.provider == AIProviderKind.OPENAI_API.value
-        and not selection.openai_admin_key
-        and not secret_store.configured()
-    ):
-        return StartWorkResult(ActionResult(False, "OpenAI Admin Key가 없습니다", "키를 입력하거나 다른 사용량 방식을 선택하세요."))
-
     committed_config: AppConfig | None = None
 
     def commit_persistent_settings() -> None:
         nonlocal committed_config
-        if (
-            draft.ai.provider == AIProviderKind.OPENAI_API.value
-            and selection.openai_admin_key
-        ):
-            secret_store.set(selection.openai_admin_key)
         committed_config = _save_worker_config_preserving_overlay(
             draft,
             config_path,
@@ -1748,33 +1861,14 @@ def _start_failure_action(reason: str | None, port: str | None) -> ActionResult:
 
 
 def _initial_ai(config: AppConfig, account: CodexAccountSnapshot | None = None) -> AIData:
-    if config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
-        return account.ai if account is not None else AIData(
-            provider=AIProviderKind.CODEX_ACCOUNT,
-            title="CODEX",
-            status=SyncStatus.DELAYED,
-            primary_value="--",
-            primary_label="NO LIMIT",
-        )
-    if config.ai.provider == AIProviderKind.CODEX_LOCAL.value:
-        if not config.ai.codex_local_consent:
-            return codex_to_ai_data(CodexUsageProvider(consent_granted=False).refresh())
-        return AIData(
-            provider=AIProviderKind.CODEX_LOCAL,
-            title="CODEX LIMITS",
-            status=SyncStatus.DELAYED,
-            primary_value="READY",
-            primary_label="PRESS START",
-            fields=(("LOCAL READ", "ENABLED"),),
-        )
-    return not_configured_ai()
+    return account.ai if account is not None else AIData(
+        provider=AIProviderKind.CODEX_ACCOUNT,
+        title="CODEX",
+        status=SyncStatus.SETUP_REQUIRED,
+        primary_value="LOGIN",
+        primary_label="CHATGPT",
+    )
 
 
 def _provider_title(provider: str) -> str:
-    return {
-        AIProviderKind.CODEX_ACCOUNT.value: "CODEX",
-        AIProviderKind.CODEX_LOCAL.value: "CODEX LIMITS",
-        AIProviderKind.OPENAI_API.value: "OPENAI API",
-        AIProviderKind.CHATGPT_ACTIVITY.value: "APP ACTIVITY",
-        AIProviderKind.NOT_CONFIGURED.value: "NOT CONFIGURED",
-    }.get(provider, "NOT CONFIGURED")
+    return "CODEX"

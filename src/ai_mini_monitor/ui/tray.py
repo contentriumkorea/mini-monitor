@@ -12,7 +12,9 @@ import threading
 from enum import Enum
 from typing import Any, Protocol
 
-from PIL import Image, ImageDraw
+from PIL import Image
+
+from .app_icon import load_icon_image
 
 
 if sys.platform == "win32":
@@ -51,23 +53,7 @@ def _load_pystray() -> Any:
 
 
 def _default_icon() -> Image.Image:
-    image = Image.new("RGBA", (64, 64), "#070A0F")
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle(
-        (7, 10, 57, 49),
-        radius=8,
-        fill="#151B25",
-        outline="#5EEBFF",
-        width=3,
-    )
-    draw.line(
-        (17, 42, 26, 31, 34, 37, 47, 22),
-        fill="#9A7CFF",
-        width=4,
-        joint="curve",
-    )
-    draw.rectangle((25, 53, 39, 57), fill="#7E8A9A")
-    return image
+    return load_icon_image()
 
 
 class TrayController:

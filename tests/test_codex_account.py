@@ -26,6 +26,62 @@ def test_structured_http_status_code_auth_failure_is_classified_without_message(
     assert not _is_auth_error({"data": {"httpStatusCode": 429}})
 
 
+@pytest.mark.parametrize("credits, expected, unlimited", [
+    ({"hasCredits": True, "unlimited": False, "balance": "1250.50"}, "1250.50", False),
+    ({"hasCredits": True, "unlimited": False, "balance": "60519.0000000000"}, "60519.0000000000", False),
+    ({"hasCredits": False, "unlimited": False, "balance": "0"}, "0", False),
+    ({"hasCredits": True, "unlimited": True, "balance": None}, None, True),
+    ({"hasCredits": False, "unlimited": False, "balance": None}, None, False),
+    (None, None, False),
+    ({"hasCredits": True, "unlimited": False, "balance": "NaN"}, None, False),
+    ({"hasCredits": True, "unlimited": False, "balance": "-1"}, None, False),
+    ({"hasCredits": True, "unlimited": False, "balance": "private text"}, None, False),
+])
+def test_account_credits_are_separate_from_quota(monkeypatch, tmp_path, credits, expected, unlimited):
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess()
+    process.limits["rateLimitsByLimitId"]["codex"]["credits"] = credits
+    process.limits["rateLimitsByLimitId"]["codex_other"]["credits"] = {
+        "hasCredits": True, "unlimited": False, "balance": "99999"
+    }
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *a, **k: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        snapshot = service.snapshot()
+        assert snapshot.credit_balance == expected
+        assert snapshot.credits_unlimited is unlimited
+        assert snapshot.ai.primary_value == "79%"
+        assert ("CREDITS", "UNLIMITED" if unlimited else expected or "--") in snapshot.ai.fields
+        service.logout()
+        assert service.snapshot().credit_balance is None
+        assert service.snapshot().credits_unlimited is False
+    finally:
+        service.close()
+
+
+def test_credits_available_even_without_quota_windows(monkeypatch, tmp_path):
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    process = _FakeProcess(limits={"rateLimits": {
+        "limitId": "codex", "credits": {"hasCredits": True, "unlimited": False, "balance": "42"}
+    }})
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_: tmp_path / "codex.exe")
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *a, **k: process)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "no_data")
+        assert service.snapshot().credit_balance == "42"
+        assert ("CREDITS", "42") in service.snapshot().ai.fields
+        assert service.snapshot().ai.primary_value == "--"
+    finally:
+        service.close()
+
+
 class _FakeOutput:
     def __init__(self) -> None:
         self.lines: queue.Queue[str | None] = queue.Queue()
@@ -723,6 +779,9 @@ def test_structured_auth_failure_clears_old_account(monkeypatch, tmp_path: Path,
             super().respond(message)
 
     process = AuthRejects()
+    process.limits["rateLimitsByLimitId"]["codex"]["credits"] = {
+        "hasCredits": True, "unlimited": False, "balance": "1250.50"
+    }
     monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: tmp_path / "codex.exe")
     monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
     service = CodexAccountService(cli_path=None, home=tmp_path / "home")
@@ -735,6 +794,8 @@ def test_structured_auth_failure_clears_old_account(monkeypatch, tmp_path: Path,
         snapshot = service.snapshot()
         assert snapshot.email is None
         assert snapshot.windows == ()
+        assert snapshot.credit_balance is None
+        assert ("CREDITS", "1250.50") not in snapshot.ai.fields
         assert "private-token" not in (snapshot.error_detail or "")
     finally:
         service.close()

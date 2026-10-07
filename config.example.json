@@ -13,21 +13,21 @@
     "gpu_temperature_sensor": null
   },
   "ai": {
-    "provider": "not_configured",
-    "codex_local_consent": false,
+    "provider": "codex_account",
     "codex_cli_path": null,
-    "usage_refresh_seconds": 60,
-    "cost_refresh_seconds": 600,
-    "daily_budget_usd": null,
-    "monthly_budget_usd": null,
-    "activity_processes": ["ChatGPT.exe", "Codex.exe"]
+    "usage_refresh_seconds": 60
   },
   "overlay": {
     "enabled": false,
     "opacity": 0.85,
     "scale_percent": 100,
     "x": null,
-    "y": null
+    "y": null,
+    "taskbar_enabled": false,
+    "taskbar_x": null,
+    "taskbar_y": null,
+    "taskbar_items": ["cpu", "ram", "gpu", "vram", "codex"],
+    "taskbar_style": "icon"
   },
   "app": {
     "render_fps": 12.0,
