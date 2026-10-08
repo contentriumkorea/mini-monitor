@@ -220,13 +220,6 @@ def windows_taskbar_rects() -> tuple[WorkArea, WorkArea] | None:
 
         taskbar_bounds = bounds(taskbar)
         notify_bounds = bounds(notify) if notify else None
-        if taskbar_bounds and notify_bounds is None:
-            notify_bounds = WorkArea(
-                max(taskbar_bounds.left, taskbar_bounds.right - 240),
-                taskbar_bounds.top,
-                taskbar_bounds.right,
-                taskbar_bounds.bottom,
-            )
         if taskbar_bounds and notify_bounds:
             return taskbar_bounds, notify_bounds
     except (AttributeError, OSError, TypeError, ValueError):
@@ -305,6 +298,7 @@ class TaskbarWindow(OverlayWindow):
     ) -> None:
         self.items = validate_taskbar_options(items, style)
         self.style = style
+        self._shell_binding: tuple[WorkArea, WorkArea, WorkArea] | None = None
         size = taskbar_frame_size(self.items, self.style)
         if position is None:
             primary = full_monitor_areas(root)[0]
@@ -329,19 +323,57 @@ class TaskbarWindow(OverlayWindow):
     def _apply_geometry(self, *, render: bool) -> None:
         primary = full_monitor_areas(self._window)[0]
         current = self._geometry
+        rects = windows_taskbar_rects()
+        binding = None
+        if rects is not None:
+            bar, notify = rects
+            if (bar.width > bar.height * 3
+                    and primary.left <= bar.left < bar.right <= primary.right
+                    and primary.top <= bar.top < bar.bottom <= primary.bottom
+                    and bar.left <= notify.left < notify.right <= bar.right
+                    and bar.top <= notify.top < notify.bottom <= bar.bottom
+                    and notify.left - current.width - _TRAY_GAP >= bar.left):
+                binding = primary, bar, notify
         x, y = clamp_taskbar_position(
             (current.x, current.y),
             (current.width, current.height),
             primary,
-            windows_taskbar_rects(),
+            rects,
         )
+        if binding is not None:
+            _, bar, notify = binding
+            minimum, maximum = bar.left, notify.left - current.width - _TRAY_GAP
+            previous = self._shell_binding
+            if previous is not None and binding != previous:
+                _, old_bar, old_notify = previous
+                old_range = old_notify.left - current.width - _TRAY_GAP - old_bar.left
+                fraction = 1.0 if old_range <= 0 else min(1.0, max(0.0, (current.x - old_bar.left) / old_range))
+                x = minimum + round((maximum - minimum) * fraction)
+            elif previous is None and not (current.y < bar.bottom and current.y + current.height > bar.top):
+                # Legacy absolute coordinates may still be on-screen after a
+                # resolution change, but they are not a valid shell anchor.
+                x = maximum
+            x = min(maximum, max(minimum, x))
+            y = bar.top + (bar.height - current.height) // 2
+        self._shell_binding = binding
         if (x, y) != (current.x, current.y):
             self._geometry = OverlayGeometry(x, y, current.width, current.height)
+        elif not render and self._initial_work_areas is None:
+            return
         super()._apply_geometry(render=render)
+
+    def _refresh_shell_position(self) -> None:
+        previous = self._geometry
+        self._apply_geometry(render=False)
+        if self._geometry != previous:
+            self._notify_state_change()
 
     def update_sensor(self, sensor: SensorSnapshot | None, ai: AIData | None = None) -> None:
         require_main_thread()
         self._ensure_open()
+        # Shell geometry is independent of readings. Re-read even when the
+        # cached sensor frame is unchanged (monitor/DPI/Explorer changes).
+        self._refresh_shell_position()
         readouts = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
         selected_readouts = tuple(readouts[name] for name in self.items)
         signature = (self.items, self.style, selected_readouts)
@@ -368,7 +400,11 @@ class TaskbarWindow(OverlayWindow):
         self._notify_state_change()
 
     def _horizontal_limits(self) -> tuple[int, int, bool]:
+        self._refresh_shell_position()
         state = self.state
+        if self._shell_binding is not None:
+            _, bar, notify = self._shell_binding
+            return bar.left, notify.left - state.width - _TRAY_GAP, True
         areas = full_monitor_areas(self._window)
         center_x = state.x + state.width / 2
         center_y = state.y + state.height / 2

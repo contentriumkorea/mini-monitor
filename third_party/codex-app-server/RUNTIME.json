@@ -1,0 +1,16 @@
+{
+  "name": "OpenAI Codex app-server (Windows x64 standalone)",
+  "version": "rust-v0.161.0",
+  "upstream_source": "https://github.com/openai/codex/tree/rust-v0.161.0",
+  "release": "https://github.com/openai/codex/releases/tag/rust-v0.161.0",
+  "archive_url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-app-server-x86_64-pc-windows-msvc.exe.zip",
+  "archive_size": 82771748,
+  "archive_sha256": "7f1c62370b877006ee044dfea731ce753f3646ccd7082d6cb3d1d81f207f3a5e",
+  "archive_member": "codex-app-server-x86_64-pc-windows-msvc.exe",
+  "runtime_path": "third_party/codex-app-server/codex-app-server.exe",
+  "runtime_size": 255511856,
+  "runtime_sha256": "bbc4400446037926e2446f36ccc74d7fa01577084e517c5f43ae2c7c7c82346b",
+  "license": "Apache-2.0",
+  "license_url": "https://github.com/openai/codex/blob/rust-v0.161.0/LICENSE",
+  "notice_url": "https://github.com/openai/codex/blob/rust-v0.161.0/NOTICE"
+}

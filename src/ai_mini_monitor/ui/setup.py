@@ -2078,7 +2078,7 @@ class SetupWindow:
             row=5, column=0, sticky="w",
         )
         self._taskbar_position_reset = ttk.Button(
-            card, text="기본 가로 위치", style="Secondary.TButton",
+            card, text="작업표시줄 복원", style="Secondary.TButton",
             command=lambda: self._request_taskbar_position("reset", 0.0),
         )
         self._taskbar_position_reset.grid(row=5, column=1, sticky="ew", padx=4)

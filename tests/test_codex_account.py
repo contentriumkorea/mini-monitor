@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import queue
 import shutil
@@ -17,6 +18,53 @@ from types import SimpleNamespace
 import pytest
 
 from ai_mini_monitor.ai.codex_account import CodexAccountService
+
+
+@pytest.fixture(autouse=True)
+def _no_bundled_runtime_except_in_explicit_tests(monkeypatch, request):
+    """Existing RPC tests exercise their own fake external CLI, not the release binary."""
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    if not request.node.name.startswith("test_bundled_"):
+        monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: None, raising=False)
+
+
+def test_bundled_app_server_starts_account_login_with_no_external_cli(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    runtime = tmp_path / "codex-app-server.exe"
+    runtime.write_bytes(b"official runtime fixture")
+    process = _FakeProcess()
+    launch_args: dict = {}
+    monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: runtime)
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_args: None)
+    monkeypatch.setenv("PATH", "")
+
+    def launch(argv, **kwargs):
+        launch_args.update(argv=argv, **kwargs)
+        return process
+
+    monkeypatch.setattr(account_module.subprocess, "Popen", launch)
+    service = CodexAccountService(cli_path=None, home=tmp_path / "isolated-home")
+    try:
+        assert service.begin_login()
+        _eventually(lambda: any(event.kind == "auth_url" for event in service.drain_events()))
+        assert launch_args["argv"][:3] == [str(runtime), "--listen", "stdio://"]
+        assert launch_args["env"]["CODEX_HOME"] == str(tmp_path / "isolated-home")
+    finally:
+        service.close()
+
+
+def test_bundled_runtime_rejects_hash_mismatch_and_external_cli_is_fallback(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    bundled = tmp_path / "codex-app-server.exe"
+    bundled.write_bytes(b"tampered")
+    monkeypatch.setattr(account_module, "resource_path", lambda _relative: bundled, raising=False)
+    assert account_module._resolve_bundled_runtime() is None
+    bundled.write_bytes(b"official runtime fixture")
+    monkeypatch.setattr(account_module, "_BUNDLED_SHA256", hashlib.sha256(b"official runtime fixture").hexdigest(), raising=False)
+    assert account_module._resolve_bundled_runtime() == bundled
 
 
 def test_structured_http_status_code_auth_failure_is_classified_without_message() -> None:

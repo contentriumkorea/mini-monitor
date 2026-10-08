@@ -379,12 +379,70 @@ def test_horizontal_controls_follow_current_secondary_monitor(monkeypatch) -> No
     primary = WorkArea(0, 0, 1920, 1080)
     secondary = WorkArea(1920, 0, 3840, 1080)
     monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: (primary, secondary))
-    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: (WorkArea(0, 1032, 1920, 1080), WorkArea(1678, 1032, 1920, 1080)))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: None)
     window = taskbar.TaskbarWindow(object(), position=(2000, 1040))
     window.set_horizontal_percent(100, notify=False)
     assert (window.state.x, window.state.y) == (3492, 1040)
     window.nudge_horizontal(-1, notify=False)
     assert (window.state.x, window.state.y) == (3491, 1040)
+
+
+def test_saved_old_resolution_position_docks_to_real_taskbar_on_start(monkeypatch) -> None:
+    taskbar, _windows, _presenters = _fake_taskbar(monkeypatch)
+    primary = WorkArea(0, 0, 3840, 2160)
+    bar = WorkArea(0, 2112, 3840, 2160)
+    notify = WorkArea(3598, 2112, 3840, 2160)
+    monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: (primary,))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: (bar, notify))
+    window = taskbar.TaskbarWindow(object(), position=(1296, 1040))
+    assert (window.state.x, window.state.y) == (3248, 2120)
+
+
+def test_live_display_change_reanchors_even_when_sensor_readings_are_unchanged(monkeypatch) -> None:
+    taskbar, _windows, _presenters = _fake_taskbar(monkeypatch)
+    areas = [WorkArea(0, 0, 1920, 1080)]
+    shell = [WorkArea(0, 1032, 1920, 1080), WorkArea(1678, 1032, 1920, 1080)]
+    monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: tuple(areas))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: tuple(shell))
+    changed = []
+    window = taskbar.TaskbarWindow(object(), position=(1328, 1040), on_state_change=changed.append)
+    sample = _sensor(30, 40, 50)
+    window.update_sensor(sample)
+    areas[:] = [WorkArea(0, 0, 3840, 2160)]
+    shell[:] = [WorkArea(0, 2112, 3840, 2160), WorkArea(3598, 2112, 3840, 2160)]
+    window.update_sensor(sample)
+    assert (window.state.x, window.state.y) == (3248, 2120)
+    assert (changed[-1].x, changed[-1].y) == (3248, 2120)
+
+
+def test_shell_taskbar_move_preserves_horizontal_choice_and_snaps_vertical_drag(monkeypatch) -> None:
+    taskbar, _windows, _presenters = _fake_taskbar(monkeypatch)
+    primary = WorkArea(0, 0, 1920, 1080)
+    shell = [WorkArea(0, 1032, 1920, 1080), WorkArea(1678, 1032, 1920, 1080)]
+    monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: (primary,))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: tuple(shell))
+    window = taskbar.TaskbarWindow(object(), position=(664, 1040))
+    shell[:] = [WorkArea(0, 0, 1920, 48), WorkArea(1678, 0, 1920, 48)]
+    window.update_sensor(None)
+    assert (window.state.x, window.state.y) == (664, 8)
+    window.set_position(700, 500, notify=False)
+    assert (window.state.x, window.state.y) == (700, 8)
+
+
+def test_primary_monitor_relocation_and_tray_resize_use_live_shell_bounds(monkeypatch) -> None:
+    taskbar, _windows, presenters = _fake_taskbar(monkeypatch)
+    areas = [WorkArea(0, 0, 1920, 1080)]
+    shell = [WorkArea(0, 1032, 1920, 1080), WorkArea(1678, 1032, 1920, 1080)]
+    monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: tuple(areas))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: tuple(shell))
+    window = taskbar.TaskbarWindow(object(), position=(1328, 1040))
+    window.show(notify=False)
+    areas[:] = [WorkArea(-1920, -200, 0, 880)]
+    shell[:] = [WorkArea(-1920, 832, 0, 880), WorkArea(-400, 832, 0, 880)]
+    window.update_sensor(None)
+    assert (window.state.x, window.state.y) == (-750, 840)
+    assert presenters[-1].frames[-1][1:] == (-750, 840)
+    assert window.horizontal_position() == (100.0, -750)
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.1, 100.1, True])

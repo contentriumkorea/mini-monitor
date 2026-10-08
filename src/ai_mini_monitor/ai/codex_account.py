@@ -7,6 +7,7 @@ session logs, creates a Codex thread, or asks a model to do work.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..models import AIData, AIProviderKind, SyncStatus
+from ..resources import resource_path
 from ..security.windows_system import pin_powershell_modules, windows_powershell_paths
 
 
@@ -32,6 +34,8 @@ _MAX_RESET = 253_402_300_799
 _STALE_SECONDS = 120
 _AUTH_HOSTS = {"chatgpt.com", "auth.openai.com"}
 _SENSITIVE_ENV = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CHATGPT_ACCESS_TOKEN")
+_BUNDLED_SHA256 = "bbc4400446037926e2446f36ccc74d7fa01577084e517c5f43ae2c7c7c82346b"
+_BUNDLED_RELATIVE = "third_party/codex-app-server/codex-app-server.exe"
 
 
 class _RpcError(RuntimeError):
@@ -117,7 +121,7 @@ def _display(
             error_detail=error_detail,
         )
     labels = {
-        "setup_required": ("SETUP", "CODEX CLI", SyncStatus.SETUP_REQUIRED),
+        "setup_required": ("SETUP", "CODEX RUNTIME", SyncStatus.SETUP_REQUIRED),
         "signed_out": ("LOGIN", "CHATGPT", SyncStatus.AUTH_ERROR),
         "login_pending": ("LOGIN", "PENDING", SyncStatus.DELAYED),
         "auth_error": ("LOGIN", "ERROR", SyncStatus.AUTH_ERROR),
@@ -303,6 +307,19 @@ def _resolve_cli(chosen: Path | None, home: Path, environment: dict[str, str]) -
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
             continue
     return None
+
+
+def _resolve_bundled_runtime() -> Path | None:
+    """Trust the packaged standalone app-server only at the pinned upstream digest."""
+    candidate = resource_path(_BUNDLED_RELATIVE)
+    try:
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+        with candidate.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        return candidate if digest == _BUNDLED_SHA256 else None
+    except OSError:
+        return None
 
 
 class CodexAccountService:
@@ -532,14 +549,14 @@ class CodexAccountService:
                         self._expected_logout_notice = None
                 if operation in ("refresh", "cli"):
                     if isinstance(error, FileNotFoundError):
-                        self._publish(generation, "setup_required", error="codex_cli_unavailable")
+                        self._publish(generation, "setup_required", error="codex_runtime_unavailable")
                     elif isinstance(error, _RpcError) and error.authentication:
                         self._publish(generation, "auth_error", error="authentication_required")
                     else:
                         self._failed_refresh(generation, type(error).__name__)
                 elif operation == "login":
                     if isinstance(error, FileNotFoundError):
-                        self._publish(generation, "setup_required", error="codex_cli_unavailable")
+                        self._publish(generation, "setup_required", error="codex_runtime_unavailable")
                     else:
                         self._publish(generation, "auth_error", error=type(error).__name__)
                 with self._lock:
@@ -568,12 +585,20 @@ class CodexAccountService:
             raise RuntimeError("unsafe_codex_home")
         self._home.mkdir(parents=True, exist_ok=True)
         environment = _safe_environment(self._home)
-        cli = _resolve_cli(self._cli_path, self._home, environment)
-        if cli is None:
-            raise FileNotFoundError("codex_cli_unavailable")
+        # A user-selected official CLI overrides the bundled runtime. Otherwise
+        # the pinned standalone server wins, with installed CLI as legacy fallback.
+        bundled = _resolve_bundled_runtime() if self._cli_path is None else None
+        cli = None if bundled is not None else _resolve_cli(self._cli_path, self._home, environment)
+        if bundled is None and cli is None:
+            raise FileNotFoundError("codex_runtime_unavailable")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        command = (
+            [str(bundled), "--listen", "stdio://", "-c", 'cli_auth_credentials_store="file"']
+            if bundled is not None else
+            [str(cli), "app-server", "--stdio", "-c", 'cli_auth_credentials_store="file"']
+        )
         self._process = subprocess.Popen(
-            [str(cli), "app-server", "--stdio", "-c", 'cli_auth_credentials_store="file"'],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

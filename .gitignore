@@ -34,3 +34,4 @@ design-system/
 *.dpapi
 codex-home/
 update-signing/
+third_party/codex-app-server/codex-app-server.exe

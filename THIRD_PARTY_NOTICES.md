@@ -4,6 +4,20 @@ This notice records the audited Windows development/build environment and the fi
 bundled in the source tree as of 2026-08-10. The machine-readable companion is
 `THIRD_PARTY_COMPONENTS.json`.
 
+## OpenAI Codex account runtime
+
+The release bundles the unmodified official OpenAI Codex standalone app-server
+for Windows x64, pinned to [`rust-v0.161.0`](https://github.com/openai/codex/releases/tag/rust-v0.161.0).
+`third_party/codex-app-server/RUNTIME.json` records the release URL, ZIP and EXE
+sizes, and SHA-256 digests. The Git repository excludes the large EXE; the build
+fetches and verifies it before packaging. Complete upstream source is available
+at the pinned [Codex source tag](https://github.com/openai/codex/tree/rust-v0.161.0).
+Codex is Apache-2.0; the full license text is in
+`LICENSES/python/cryptography/LICENSE.APACHE`, and the upstream NOTICE is in
+`third_party/codex-app-server/NOTICE`. Mini Monitor runs the app-server as a
+separate process with an isolated application-owned `CODEX_HOME`; it does not
+read any other Codex application's local credentials or sessions.
+
 ## Project license and protocol provenance
 
 AI Mini Monitor and its combined distribution are licensed under `GPL-3.0-or-later`; the complete

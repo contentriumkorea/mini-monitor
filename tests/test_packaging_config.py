@@ -130,6 +130,20 @@ def test_spec_is_asinvoker_and_collects_required_runtime_content() -> None:
         assert hidden_import in text
 
 
+def test_official_codex_runtime_is_bootstrapped_and_bundled() -> None:
+    spec = SPEC.read_text(encoding="utf-8")
+    build = read("scripts/Build.ps1")
+    fetch = read("scripts/Fetch-CodexRuntime.ps1")
+    assert '"third_party/codex-app-server/codex-app-server.exe"' in spec
+    assert "Fetch-CodexRuntime.ps1" in build
+    assert "codex-app-server.exe" in fetch
+    assert "Get-FileHash" in fetch
+    assert "SHA256" in fetch
+    assert "Invoke-WebRequest" in fetch
+    assert "Refusing mismatched existing Codex runtime" in fetch
+    assert "third_party/codex-app-server/codex-app-server.exe" in read(".gitignore")
+
+
 def test_build_script_pins_runtime_cleans_only_project_children_and_hashes() -> None:
     text = read("scripts/Build.ps1")
     assert '"3.13.3|64bit|6.22.0"' in text
@@ -248,6 +262,8 @@ def test_built_artifact_layout_and_pe_subsystems_when_present() -> None:
         artifact
         / "_internal/third_party/librehardwaremonitor/LibreHardwareMonitorLib.dll"
     ).is_file()
+    assert (artifact / "_internal/third_party/codex-app-server/codex-app-server.exe").is_file()
+    assert not (artifact / "source/third_party/codex-app-server/codex-app-server.exe").exists()
     assert build_info == {
         "schema": 1,
         "input_fingerprint": current_build_input_fingerprint(),

@@ -45,6 +45,23 @@
   "exclusion_statement": "No device-vendor executable, library, package, or proprietary source code is included, inventoried, or reused.",
   "components": [
     {
+      "bom_ref": "github:openai/codex@rust-v0.161.0#codex-app-server-x86_64-pc-windows-msvc.exe",
+      "name": "OpenAI Codex app-server",
+      "version": "rust-v0.161.0",
+      "kind": "standalone-runtime",
+      "scope": ["runtime"],
+      "license": "Apache-2.0",
+      "source_url": "https://github.com/openai/codex/tree/rust-v0.161.0",
+      "runtime_pin": "third_party/codex-app-server/RUNTIME.json",
+      "files": [
+        {"path": "third_party/codex-app-server/RUNTIME.json", "size": 931, "sha256": "a7239ece8b00a9e9a784cb873b0b60633187c8dc9e2eb77955177d58508afe18"},
+        {"path": "third_party/codex-app-server/SOURCE.md", "size": 1227, "sha256": "9269910b375b303c59ddd7a5f7fa0196e42a537944a1a3c691d35a3c2a65c40b"},
+        {"path": "third_party/codex-app-server/NOTICE", "size": 239, "sha256": "2918fe8efde0c31b0b0d9fdb2a70d3f029b46b7b70f4231da4937203e8c128eb"}
+      ],
+      "file_note": "The large executable is fetched at build time, pinned by RUNTIME.json, ignored by Git, and verified again before launch. Its Apache-2.0 text is included at LICENSES/python/cryptography/LICENSE.APACHE; the upstream NOTICE is reproduced locally.",
+      "source_offer_note": "The complete corresponding upstream source is available at the pinned OpenAI Codex tag. Mini Monitor starts it as a separate subprocess."
+    },
+    {
       "bom_ref": "source:github/mathoudebine/turing-smart-screen-python@262a28a3ab615f2047c0bf44afc482cc341c465c",
       "name": "turing-smart-screen-python rev-A protocol derivative",
       "version": "262a28a3ab615f2047c0bf44afc482cc341c465c",

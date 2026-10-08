@@ -47,6 +47,12 @@ add_tree(datas, "assets", "assets")
 add_optional_file(datas, "scripts/Apply-Update.ps1", "scripts")
 add_tree(datas, "previews", "previews")
 add_tree(datas, "third_party/source", "third_party/source")
+codex_runtime = ROOT / "third_party/codex-app-server/codex-app-server.exe"
+if not codex_runtime.is_file():
+    raise FileNotFoundError(f"Pinned Codex runtime is missing: {codex_runtime}")
+binaries.append((str(codex_runtime), "third_party/codex-app-server"))
+for codex_document in ("RUNTIME.json", "SOURCE.md", "NOTICE"):
+    add_optional_file(datas, f"third_party/codex-app-server/{codex_document}", "third_party/codex-app-server")
 add_tree(
     datas,
     "third_party/turing-smart-screen-python",

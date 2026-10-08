@@ -128,6 +128,7 @@ if ($runtime.Trim() -ne $expectedRuntime) {
 
 Push-Location $ProjectRoot
 try {
+    & (Join-Path $PSScriptRoot "Fetch-CodexRuntime.ps1")
     & $Python -m pip check
     if ($LASTEXITCODE -ne 0) {
         throw "The pinned virtual environment failed pip check."
@@ -225,6 +226,12 @@ try {
         if (Test-Path -LiteralPath $source -PathType Container) {
             Copy-Item -LiteralPath $source -Destination $sourceBundle -Recurse -Force
         }
+    }
+    # The official runtime is already shipped in _internal. It is object code,
+    # not corresponding source, so avoid a second 255 MB copy in source/.
+    $duplicateCodexRuntime = Join-Path $sourceBundle "third_party\codex-app-server\codex-app-server.exe"
+    if (Test-Path -LiteralPath $duplicateCodexRuntime -PathType Leaf) {
+        Remove-BuildPath -Candidate $duplicateCodexRuntime
     }
     # Build/test caches are not corresponding source. Keep the shipped source
     # tree readable and deterministic even when the local checkout was tested.

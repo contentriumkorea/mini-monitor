@@ -21,7 +21,7 @@ def test_release_versions_and_program_names_match() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     spec = (ROOT / "AI-Mini-Monitor.spec").read_text(encoding="utf-8")
 
-    assert project["project"]["version"] == __version__ == "0.2.3"
+    assert project["project"]["version"] == __version__ == "0.2.4"
     assert re.search(r'console=False,.*?name="Mini-Monitor"', spec, re.DOTALL) or re.search(
         r'name="Mini-Monitor".*?console=False,', spec, re.DOTALL
     )

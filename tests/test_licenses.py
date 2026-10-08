@@ -199,6 +199,25 @@ def test_bundled_dll_and_font_inventory_is_complete() -> None:
     assert recorded_fonts == {"Inter-Variable.ttf", "JetBrainsMono-Variable.ttf"}
 
 
+def test_official_codex_runtime_provenance_and_pinned_binary() -> None:
+    component = next(component for component in _components() if component["name"] == "OpenAI Codex app-server")
+    pin = json.loads((ROOT / "third_party/codex-app-server/RUNTIME.json").read_text(encoding="utf-8"))
+    assert component["version"] == "rust-v0.161.0"
+    assert component["license"] == "Apache-2.0"
+    assert component["runtime_pin"] == "third_party/codex-app-server/RUNTIME.json"
+    assert component["source_url"] == pin["upstream_source"]
+    assert pin["archive_sha256"] == "7f1c62370b877006ee044dfea731ce753f3646ccd7082d6cb3d1d81f207f3a5e"
+    assert pin["runtime_sha256"] == "bbc4400446037926e2446f36ccc74d7fa01577084e517c5f43ae2c7c7c82346b"
+    runtime = ROOT / pin["runtime_path"]
+    if runtime.is_file():
+        assert runtime.stat().st_size == pin["runtime_size"]
+        assert _sha256(runtime) == pin["runtime_sha256"]
+    source = (ROOT / "third_party/codex-app-server/SOURCE.md").read_text(encoding="utf-8")
+    assert "LICENSES/python/cryptography/LICENSE.APACHE" in source
+    assert "Apache License" in (ROOT / "LICENSES/python/cryptography/LICENSE.APACHE").read_text(encoding="utf-8")
+    assert "OpenAI Codex" in (ROOT / "third_party/codex-app-server/NOTICE").read_text(encoding="utf-8")
+
+
 def test_no_executable_is_claimed_as_a_bundled_component() -> None:
     recorded_paths = [
         record["path"]
