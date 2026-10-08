@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Isolated, account-backed Codex limits through the official app-server.
 
-The Codex CLI owns authentication.  This module never opens credentials or
+The bundled Codex app-server owns authentication. This module never opens credentials or
 session logs, creates a Codex thread, or asks a model to do work.
 """
 
@@ -44,6 +44,14 @@ class _RpcError(RuntimeError):
     def __init__(self, *, authentication: bool) -> None:
         super().__init__("codex_auth_error" if authentication else "codex_rpc_error")
         self.authentication = authentication
+
+
+class _BundledRuntimeError(RuntimeError):
+    """A safe, path-free reason the pinned packaged runtime cannot run."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 def _is_auth_error(value: Any) -> bool:
@@ -309,17 +317,25 @@ def _resolve_cli(chosen: Path | None, home: Path, environment: dict[str, str]) -
     return None
 
 
-def _resolve_bundled_runtime() -> Path | None:
+def _resolve_bundled_runtime() -> Path:
     """Trust the packaged standalone app-server only at the pinned upstream digest."""
     candidate = resource_path(_BUNDLED_RELATIVE)
     try:
-        if not candidate.is_file() or candidate.is_symlink():
-            return None
+        if candidate.is_symlink():
+            raise _BundledRuntimeError("codex_runtime_integrity")
+        if not candidate.is_file():
+            raise _BundledRuntimeError("codex_runtime_missing")
+        digest = hashlib.sha256()
         with candidate.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        return candidate if digest == _BUNDLED_SHA256 else None
-    except OSError:
-        return None
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != _BUNDLED_SHA256:
+            raise _BundledRuntimeError("codex_runtime_integrity")
+        return candidate
+    except FileNotFoundError as error:
+        raise _BundledRuntimeError("codex_runtime_missing") from error
+    except OSError as error:
+        raise _BundledRuntimeError("codex_runtime_access_denied") from error
 
 
 class CodexAccountService:
@@ -548,15 +564,15 @@ class CodexAccountService:
                     with self._lock:
                         self._expected_logout_notice = None
                 if operation in ("refresh", "cli"):
-                    if isinstance(error, FileNotFoundError):
-                        self._publish(generation, "setup_required", error="codex_runtime_unavailable")
+                    if isinstance(error, _BundledRuntimeError):
+                        self._publish(generation, "setup_required", error=error.code)
                     elif isinstance(error, _RpcError) and error.authentication:
                         self._publish(generation, "auth_error", error="authentication_required")
                     else:
                         self._failed_refresh(generation, type(error).__name__)
                 elif operation == "login":
-                    if isinstance(error, FileNotFoundError):
-                        self._publish(generation, "setup_required", error="codex_runtime_unavailable")
+                    if isinstance(error, _BundledRuntimeError):
+                        self._publish(generation, "setup_required", error=error.code)
                     else:
                         self._publish(generation, "auth_error", error=type(error).__name__)
                 with self._lock:
@@ -585,30 +601,25 @@ class CodexAccountService:
             raise RuntimeError("unsafe_codex_home")
         self._home.mkdir(parents=True, exist_ok=True)
         environment = _safe_environment(self._home)
-        # A user-selected official CLI overrides the bundled runtime. Otherwise
-        # the pinned standalone server wins, with installed CLI as legacy fallback.
-        bundled = _resolve_bundled_runtime() if self._cli_path is None else None
-        cli = None if bundled is not None else _resolve_cli(self._cli_path, self._home, environment)
-        if bundled is None and cli is None:
-            raise FileNotFoundError("codex_runtime_unavailable")
+        bundled = _resolve_bundled_runtime()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        command = (
-            [str(bundled), "--listen", "stdio://", "-c", 'cli_auth_credentials_store="file"']
-            if bundled is not None else
-            [str(cli), "app-server", "--stdio", "-c", 'cli_auth_credentials_store="file"']
-        )
-        self._process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=self._home,
-            env=environment,
-            creationflags=creationflags,
-        )
+        try:
+            self._process = subprocess.Popen(
+                [str(bundled), "--listen", "stdio://", "-c", 'cli_auth_credentials_store="file"'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=self._home,
+                env=environment,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError as error:
+            raise _BundledRuntimeError("codex_runtime_missing") from error
+        except PermissionError as error:
+            raise _BundledRuntimeError("codex_runtime_access_denied") from error
         self._reader = threading.Thread(target=self._read_loop, args=(self._process,), name="mini-monitor-codex-rpc", daemon=True)
         self._reader.start()
         self._rpc("initialize", {"clientInfo": {"name": "mini_monitor", "title": "Mini Monitor", "version": "1.0.0"}})

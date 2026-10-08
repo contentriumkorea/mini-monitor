@@ -10,10 +10,9 @@ import sys
 from ctypes import wintypes
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
@@ -400,9 +399,6 @@ class SetupWindow:
         on_codex_login: Action | None = None,
         on_codex_cancel: Action | None = None,
         on_codex_logout: Action | None = None,
-        on_codex_disconnect: Action | None = None,
-        on_codex_cli_selected: Callable[[Path], ActionResult] | None = None,
-        on_codex_install_guide: Action | None = None,
         on_update_check: Action | None = None,
         on_update_apply: Action | None = None,
         on_update_dismiss: Action | None = None,
@@ -460,9 +456,6 @@ class SetupWindow:
         self._on_codex_login = on_codex_login
         self._on_codex_cancel = on_codex_cancel
         self._on_codex_logout = on_codex_logout
-        self._on_codex_disconnect = on_codex_disconnect
-        self._on_codex_cli_selected = on_codex_cli_selected
-        self._on_codex_install_guide = on_codex_install_guide
         self._on_update_check = on_update_check
         self._on_update_apply = on_update_apply
         self._on_update_dismiss = on_update_dismiss
@@ -1503,40 +1496,14 @@ class SetupWindow:
         self._codex_logout_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self._codex_cancel_button.grid_remove()
         self._codex_logout_button.grid_remove()
-        self._codex_help_button = ttk.Button(
-            card, text="연결 문제 해결 ▾", style="Secondary.TButton", command=self._toggle_codex_help,
-        )
-        self._codex_help_button.grid(row=8, column=0, sticky="ew", pady=(4, 0))
         self._update_open_button = ttk.Button(
             card, text="업데이트", style="Secondary.TButton", command=self._show_update_dialog,
         )
-        self._update_open_button.grid(row=8, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
-        help_frame = ttk.Frame(card, style="Card.TFrame")
-        self._codex_help_frame = help_frame
-        help_frame.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        help_frame.columnconfigure(0, weight=1)
-        help_frame.columnconfigure(1, weight=1)
-        self._codex_cli_button = ttk.Button(help_frame, text="설치된 CLI 찾기", style="Secondary.TButton", command=self._select_codex_cli)
-        self._codex_cli_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self._codex_guide_button = ttk.Button(help_frame, text="Codex CLI 설치 안내", style="Secondary.TButton", command=lambda: self._account_action(self._on_codex_install_guide, "설치 안내를 열지 못했습니다"))
-        self._codex_guide_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        help_frame.grid_remove()
+        self._update_open_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self._codex_cancel_button.state(["disabled"])
         self._codex_logout_button.state(["disabled"])
         if self._on_codex_login is None:
             self._codex_login_button.state(["disabled"])
-        if self._on_codex_cli_selected is None:
-            self._codex_cli_button.state(["disabled"])
-        if self._on_codex_install_guide is None:
-            self._codex_guide_button.state(["disabled"])
-
-    def _toggle_codex_help(self) -> None:
-        if self._codex_help_frame.winfo_manager():
-            self._codex_help_frame.grid_remove()
-            self._codex_help_button.configure(text="연결 문제 해결 ▾")
-        else:
-            self._codex_help_frame.grid()
-            self._codex_help_button.configure(text="연결 문제 해결 ▴")
 
     def _show_update_dialog(self) -> None:
         dialog = self._update_dialog
@@ -2681,7 +2648,8 @@ class SetupWindow:
                 "login_pending": "ChatGPT 로그인 대기 중",
                 "signed_out": "연결된 계정 없음",
                 "auth_error": "로그인이 필요합니다",
-                "unavailable": "Codex CLI 확인 필요",
+                "setup_required": "로그인 실행 환경을 확인하세요",
+                "unavailable": "계정 연결을 확인하세요",
             }.get(state, "한도 정보 없음"))
         windows = getattr(snapshot, "windows", ())
         limit_lines = []
@@ -2709,9 +2677,16 @@ class SetupWindow:
         self._codex_credits.configure(text=credits_text)
         refreshed = getattr(snapshot, "updated_at", None)
         detail = "지연 · 마지막 확인 " + refreshed.astimezone().strftime("%H:%M") if state == "delayed" and refreshed is not None else getattr(snapshot, "error_detail", None) or " "
+        runtime_guidance = {
+            "codex_runtime_missing": "로그인 파일이 없습니다. 배포 ZIP의 폴더 전체를 다시 압축 해제하세요.",
+            "codex_runtime_integrity": "로그인 파일 검증에 실패했습니다. 최신 배포 파일을 다시 설치하세요.",
+            "codex_runtime_access_denied": "로그인 파일에 접근할 수 없습니다. 파일 권한 또는 보안 프로그램의 차단 여부를 확인하세요.",
+        }
+        runtime_error = detail in runtime_guidance
+        detail = runtime_guidance.get(detail, detail)
         if detail.strip():
             self._set_codex_feedback(
-                detail, RED if state in {"auth_error", "unavailable", "error"} else SECONDARY,
+                detail, RED if runtime_error or state in {"auth_error", "unavailable", "error"} else SECONDARY,
             )
         self._codex_login_button.state(["disabled"] if pending or self._on_codex_login is None else ["!disabled"])
         self._codex_cancel_button.state(["!disabled"] if pending and self._on_codex_cancel is not None else ["disabled"])
@@ -2774,14 +2749,6 @@ class SetupWindow:
             result.title + (f" · {result.detail}" if result.detail else ""),
             SECONDARY if result.ok else RED,
         )
-
-    def _select_codex_cli(self) -> None:
-        if self._on_codex_cli_selected is None:
-            return
-        path = filedialog.askopenfilename(parent=self._window, title="Codex CLI 선택", filetypes=(("실행 파일", "*.exe"),))
-        if path:
-            result = self._invoke(lambda: self._on_codex_cli_selected(Path(path)), "CLI를 확인하지 못했습니다")
-            self._set_codex_feedback(result.title, SECONDARY if result.ok else RED)
 
     def _update_action(self, action: Action | None, fallback: str) -> None:
         if action is None:

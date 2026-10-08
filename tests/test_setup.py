@@ -140,8 +140,6 @@ def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner
         on_codex_login=lambda: called.append("login") or ActionResult(True, "로그인 대기"),
         on_codex_cancel=lambda: called.append("cancel") or ActionResult(True, "취소됨"),
         on_codex_logout=lambda: called.append("logout") or ActionResult(True, "로그아웃됨"),
-        on_codex_disconnect=lambda: called.append("disconnect") or ActionResult(True, "연결 해제됨"),
-        on_codex_install_guide=lambda: called.append("guide") or ActionResult(True, "안내 열림"),
         on_update_check=lambda: called.append("check") or ActionResult(True, "확인 중"),
         on_update_apply=lambda: called.append("apply") or ActionResult(True, "적용 준비"),
         on_update_dismiss=lambda: called.append("dismiss") or ActionResult(True, "나중에"),
@@ -157,7 +155,6 @@ def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner
         window._codex_cancel_button.invoke()
         account = SimpleNamespace(state="ready", email="demo@example.invalid", plan_type="plus", login_pending=False, windows=(), updated_at=None, error_detail=None)
         window.update_codex_account(account)
-        window._codex_guide_button.invoke()
         banner_height = window._update_banner.winfo_reqheight()
         window.update_update_status(SimpleNamespace(state="available", version="2.0.0", message="업데이트가 있습니다", prepared=None, release_url="https://example.invalid"))
         window._update_check_button.invoke()
@@ -170,7 +167,7 @@ def test_codex_account_actions_do_not_start_serial_and_updates_keep_fixed_banner
         window.window.update()
         assert window._update_dismiss_button.winfo_y() + window._update_dismiss_button.winfo_height() <= window._update_banner.winfo_height()
         assert window._update_apply_button.winfo_x() + window._update_apply_button.winfo_width() <= window._update_banner.winfo_width()
-        assert called == ["login", "cancel", "guide", "check", "apply", "dismiss", "release"]
+        assert called == ["login", "cancel", "check", "apply", "dismiss", "release"]
         assert "demo@example.invalid" in window._codex_identity.cget("text")
     finally:
         window.close()
@@ -235,8 +232,7 @@ def test_account_and_update_controls_fit_short_negative_monitor_at_high_dpi(
         window.window.update()
         assert -1600 <= window.window.winfo_x()
         assert window.window.winfo_x() + window.window.winfo_width() + 16 <= -576
-        window._codex_help_button.invoke()
-        for control in (window._codex_login_button, window._codex_cli_button):
+        for control in (window._codex_login_button, window._codex_refresh_button):
             control.focus_force()
             window.window.update()
             assert control.winfo_x() + control.winfo_width() <= control.master.winfo_width()
@@ -644,7 +640,7 @@ def test_compact_main_left_settings_fit_normal_work_area_without_scroll(
             window._left_scroll_content.winfo_children()[0].winfo_reqheight(),
         )
         assert window._left_canvas.yview() == (0.0, 1.0)
-        assert not window._codex_help_frame.winfo_ismapped()
+        assert not hasattr(window, "_codex_help_frame")
         assert not window._update_dialog.winfo_ismapped()
         assert window._update_open_button.winfo_ismapped()
         assert window._usage_button.winfo_ismapped()
@@ -728,18 +724,13 @@ def test_preview_resizes_when_only_right_viewport_height_changes(
         interpreter.call("tk", "scaling", original_scaling)
 
 
-def test_troubleshooting_and_update_dialog_are_explicitly_opened() -> None:
+def test_bundled_login_removes_cli_troubleshooting_and_keeps_update_dialog() -> None:
     window = make_window(on_update_check=lambda: ActionResult(True, "확인됨"))
     try:
         window.show()
         window.window.update()
-        assert not window._codex_help_frame.winfo_ismapped()
-        window._codex_help_button.invoke()
-        window.window.update()
-        assert window._codex_help_frame.winfo_ismapped()
-        window._codex_help_button.invoke()
-        window.window.update()
-        assert not window._codex_help_frame.winfo_ismapped()
+        for name in ("_codex_help_frame", "_codex_help_button", "_codex_cli_button", "_codex_guide_button"):
+            assert not hasattr(window, name)
         window.update_update_status(SimpleNamespace(state="available", version="2.0", message="새 버전", prepared=None, release_url=None))
         assert "새 버전" in window._update_open_button.cget("text")
         window._update_open_button.invoke()
@@ -748,6 +739,26 @@ def test_troubleshooting_and_update_dialog_are_explicitly_opened() -> None:
         window._update_dialog.event_generate("<Escape>")
         window.window.update()
         assert not window._update_dialog.winfo_ismapped()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("codex_runtime_missing", "폴더 전체"),
+    ("codex_runtime_integrity", "검증에 실패"),
+    ("codex_runtime_access_denied", "접근할 수 없습니다"),
+])
+def test_bundled_login_errors_show_actionable_korean_guidance(code: str, expected: str) -> None:
+    window = make_window()
+    try:
+        window.update_codex_account(SimpleNamespace(
+            state="setup_required", email=None, plan_type=None, login_pending=False,
+            windows=(), updated_at=None, error_detail=code,
+        ))
+        assert expected in window._codex_feedback.cget("text")
+        assert code not in window._codex_feedback.cget("text")
+        assert "CLI" not in window._codex_identity.cget("text")
+        assert str(window._codex_feedback.cget("foreground")) == setup_ui_module.RED
     finally:
         window.close()
 

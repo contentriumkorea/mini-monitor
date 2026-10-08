@@ -94,6 +94,74 @@ class FakeController:
         return Image.new("RGB", (480, 320), "black")
 
 
+def test_desktop_session_keeps_one_controller_collecting_while_usb_stops() -> None:
+    class AttachableController(FakeController):
+        def attach_serial(self, config):
+            self.events.append("attach-serial")
+
+        def detach_serial(self, timeout=20.0):
+            self.events.append("detach-serial")
+            return True
+
+    AttachableController.instances.clear()
+    session = DesktopSession(enable_serial=True, controller_factory=AttachableController)
+    assert session.start_desktop(AppConfig()).ok
+    first = AttachableController.instances[-1]
+    assert first.enable_serial is False
+    assert session.state is SessionState.DESKTOP
+    assert not session.running
+    assert session.runtime_values() == "runtime"
+    assert not session.request_reconnect()
+    assert not session.request_brightness(25)
+
+    assert session.start(AppConfig()).ok
+    assert session.running
+    assert AttachableController.instances == [first]
+    assert session.stop_monitor().ok
+    assert not session.running
+    assert session.state is SessionState.DESKTOP
+    assert session.runtime_values() == "runtime"
+    assert not session.request_reconnect()
+    assert not session.request_brightness(25)
+    assert first.events.count("start") == 1
+    assert first.events.count("attach-serial") == 1
+    assert first.events.count("detach-serial") == 1
+    assert session.stop().ok
+    assert first.stopped
+
+
+def test_no_serial_desktop_start_never_attaches_usb() -> None:
+    class AttachableController(FakeController):
+        def attach_serial(self, config):
+            raise AssertionError("USB must remain closed in no-serial mode")
+
+        def detach_serial(self, timeout=20.0):
+            raise AssertionError("USB was never attached")
+
+    AttachableController.instances.clear()
+    session = DesktopSession(enable_serial=False, controller_factory=AttachableController)
+    assert session.start_desktop(AppConfig()).ok
+    assert session.start(AppConfig()).ok
+    assert session.stop_monitor().ok
+    assert session.runtime_values() == "runtime"
+    assert session.stop().ok
+
+
+def test_desktop_orientation_reconfigures_live_controller_without_restarting_it() -> None:
+    class RotatingController(FakeController):
+        def reconfigure_display(self, rotation):
+            self.events.append(("rotation", rotation))
+
+    RotatingController.instances.clear()
+    session = DesktopSession(enable_serial=True, controller_factory=RotatingController)
+    assert session.start_desktop(AppConfig()).ok
+    first = RotatingController.instances[-1]
+    assert session.reconfigure_desktop("portrait")
+    assert first.events == ["start", ("rotation", "portrait")]
+    assert RotatingController.instances == [first]
+    assert session.stop().ok
+
+
 def test_every_restart_gets_a_fresh_one_shot_controller() -> None:
     FakeController.instances.clear()
     session = DesktopSession(enable_serial=True, controller_factory=FakeController)

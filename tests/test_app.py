@@ -22,6 +22,8 @@ from ai_mini_monitor.models import (
     AIProviderKind,
     ConnectionData,
     DisplaySnapshot,
+    Metric,
+    SensorSnapshot,
     SyncStatus,
 )
 from ai_mini_monitor.state import RuntimeValues
@@ -1023,12 +1025,12 @@ def test_one_autostart_action_enables_and_disables_with_exact_readback(
 
 @pytest.mark.parametrize("helper_success", [False, True])
 @pytest.mark.parametrize("manual_refresh", [False, True])
-@pytest.mark.parametrize("disconnect_after_stop", [False, True])
 @pytest.mark.parametrize("running_legacy", [False, True])
 @pytest.mark.parametrize("setup_visible_for_notice", [False, True])
+@pytest.mark.parametrize("minimized", [False, True])
 def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart_service(
-    monkeypatch, tmp_path, helper_success, manual_refresh, disconnect_after_stop, running_legacy,
-    setup_visible_for_notice,
+    monkeypatch, tmp_path, helper_success, manual_refresh, running_legacy,
+    setup_visible_for_notice, minimized,
 ) -> None:
     events = []
     actions = []
@@ -1036,6 +1038,14 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     accounts = []
     updaters = []
     clock = [1000.0]
+    sensor = SensorSnapshot(
+        captured_at=datetime.now(timezone.utc),
+        cpu_percent=Metric(37.0, "%"), cpu_temperature=Metric(60.0, "°C"),
+        gpu_percent=Metric(42.0, "%"), gpu_temperature=Metric(62.0, "°C"),
+        memory_percent=Metric(51.0, "%"), memory_used_gib=Metric(8.0, "GiB"),
+        memory_total_gib=Metric(16.0, "GiB"), memory_available_gib=Metric(8.0, "GiB"),
+        gpu_vram_used_gib=Metric(4.0, "GiB"), gpu_vram_total_gib=Metric(8.0, "GiB"),
+    )
 
     class Guard:
         def release(self):
@@ -1083,7 +1093,14 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             self.shutting_down = False
             self.running = False
             self.state = SessionState.STOPPED
+            self.desktop_started = False
             assert kwargs["codex_account_snapshot"] is not None
+
+        def start_desktop(self, config):
+            events.append("desktop_start")
+            self.desktop_started = True
+            self.state = SessionState.DESKTOP
+            return SessionResult(True, self.state)
 
         def start(self, config, *, prepare=None):
             events.append("session_start")
@@ -1099,6 +1116,12 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             self.state = SessionState.STOPPED
             return SessionResult(True, self.state)
 
+        def stop_monitor(self, timeout=20.0):
+            events.append("monitor_stop")
+            self.running = False
+            self.state = SessionState.DESKTOP
+            return SessionResult(True, self.state)
+
         def begin_shutdown(self):
             self.shutting_down = True
 
@@ -1106,7 +1129,9 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             return Image.new("RGB", (480, 320), "red") if not self.running else None
 
         def runtime_values(self):
-            return None
+            if not self.desktop_started:
+                return None
+            return RuntimeValues(sensor, accounts[0].snapshot().ai, ConnectionData(), 1)
 
         def suspend_active(self, timeout=2.0):
             return True
@@ -1142,6 +1167,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             self.scheduled.append((delay, callback))
 
         def mainloop(self):
+            assert "session_start" not in events  # minimized launch must not open USB/COM
             callbacks = self.setup.callbacks
             assert callbacks["get_taskbar_position"]() == (50.0, 1400)
             assert callbacks["on_taskbar_position"]("nudge", 1.0).ok
@@ -1149,6 +1175,8 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             assert before_show.taskbar_enabled is False
             assert (before_show.taskbar_x, before_show.taskbar_y) == (1401, 1050)
             assert callbacks["on_taskbar_change"](True).ok
+            self._poll_once()
+            assert ("taskbar_sensor", 37.0) in events
             assert ("taskbar_init", ("ram", "codex"), "text") in events
             assert ("taskbar_ai", "85%") in events
             assert accounts[0].polling
@@ -1181,6 +1209,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             assert callbacks["on_taskbar_change"](True).ok
             callbacks["on_stop"]()
             self._poll_once()
+            assert ("taskbar_sensor", 37.0) in events
             assert accounts[0].polling  # Codex still refreshes for the visible bar.
             polling_transitions = events.count(("polling", True))
             self._poll_once()
@@ -1189,14 +1218,6 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             assert not accounts[0].polling
             if not manual_refresh and not running_legacy:
                 assert accounts[0].snapshot().login_pending
-            if disconnect_after_stop:
-                assert not callbacks["on_codex_disconnect"]().ok
-                assert self.setup.selected_provider() == AIProviderKind.CODEX_ACCOUNT.value
-                self._poll_once()
-                callbacks["on_start"](self.setup.selection)
-                self._poll_once()
-                callbacks["on_stop"]()
-                self._poll_once()
             self.setup.hide()
             if setup_visible_for_notice:
                 self.setup.show()
@@ -1317,6 +1338,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
             events.append("taskbar_hidden")
 
         def update_sensor(self, sensor, ai=None):
+            events.append(("taskbar_sensor", sensor.cpu_percent.value if sensor else None))
             events.append(("taskbar_ai", ai.primary_value if ai else None))
 
     class Tray:
@@ -1382,6 +1404,7 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     monkeypatch.setattr(app, "TaskbarWindow", Taskbar, raising=False)
     monkeypatch.setattr(app, "TrayController", Tray)
     monkeypatch.setattr(app, "WindowsPowerEventHook", Power)
+    monkeypatch.setattr(app, "DeviceDetector", lambda: SimpleNamespace(select=lambda _port: SimpleNamespace(device="COM_FAKE")))
     monkeypatch.setattr(app, "_read_autostart_state", lambda _path: ("", False, False, False))
     monkeypatch.setattr(app, "_persist_latest_overlay_on_shutdown", lambda config, _path: config)
     class Renderer:
@@ -1397,16 +1420,14 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     config = AppConfig()
     config.overlay.taskbar_items = ["ram", "codex"]
     config.overlay.taskbar_style = "text"
-    assert app.run_desktop(config, enable_serial=False, config_path=tmp_path / "settings.json") == 0
+    assert app.run_desktop(config, enable_serial=minimized, minimized=minimized, config_path=tmp_path / "settings.json") == 0
     assert events.count("account_create") == 1
     assert events.count("account_close") == 1
     assert "login" in events
     assert "refresh" in events
     assert ("polling", True) in events and ("polling", False) in events
     assert load_config(tmp_path / "settings.json").ai.provider == AIProviderKind.CODEX_ACCOUNT.value
-    if disconnect_after_stop:
-        assert rendered_ai[-1].provider is AIProviderKind.CODEX_ACCOUNT
-        assert events.count(("polling", True)) >= 1
+    assert events.count("desktop_start") == 1
     assert any(ai.provider is AIProviderKind.CODEX_ACCOUNT and ai.primary_value == ("85%" if manual_refresh or running_legacy else "LOGIN") for ai in rendered_ai)
     assert events.count("helper_launch") == 1
     assert events.count(("update_notice", "0.2.0")) == 2

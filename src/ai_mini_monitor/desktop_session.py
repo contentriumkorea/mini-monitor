@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""One-shot controller lifecycle and a serialized desktop work queue."""
+"""Shared desktop collection, optional USB transmission, and serialized work."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .state import RuntimeValues
 
 class SessionState(str, Enum):
     STOPPED = "stopped"
+    DESKTOP = "desktop"
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
@@ -41,7 +42,7 @@ ControllerFactory = Callable[..., MonitorController]
 
 
 class DesktopSession:
-    """Create a fresh controller for every Start and dispose it after Stop."""
+    """Keep one desktop collector alive while USB Start/Stop only owns COM."""
 
     def __init__(
         self,
@@ -58,6 +59,7 @@ class DesktopSession:
         self._shutdown_gate_lock = threading.Lock()
         self._power_lock = threading.Lock()
         self._controller: MonitorController | None = None
+        self._desktop_mode = False
         self._state = SessionState.STOPPED
         self._shutdown_event = threading.Event()
         self._power_suspended = False
@@ -107,9 +109,16 @@ class DesktopSession:
             with self._lock:
                 if self._shutdown_event.is_set():
                     return SessionResult(False, self._state, "shutting_down")
-                if self._controller is not None or self._state is not SessionState.STOPPED:
+                desktop_controller = (
+                    self._controller if self._desktop_mode and self._state is SessionState.DESKTOP
+                    else None
+                )
+                if desktop_controller is None and (self._controller is not None or self._state is not SessionState.STOPPED):
                     return SessionResult(False, self._state, "already_active")
-                self._state = SessionState.STARTING
+                if desktop_controller is None:
+                    self._state = SessionState.STARTING
+            if desktop_controller is not None:
+                return self._attach_monitor(desktop_controller, config, prepare)
             try:
                 draft = copy.deepcopy(config)
                 draft.validate()
@@ -181,6 +190,126 @@ class DesktopSession:
                 return self._finish_failed_start(controller, "shutting_down")
             return SessionResult(True, SessionState.RUNNING)
 
+    def start_desktop(self, config: AppConfig) -> SessionResult:
+        """Start one non-serial collector/renderer for desktop consumers."""
+        with self._operation_lock:
+            with self._lock:
+                if self._shutdown_event.is_set():
+                    return SessionResult(False, self._state, "shutting_down")
+                if self._controller is not None or self._state is not SessionState.STOPPED:
+                    return SessionResult(False, self._state, "already_active")
+                self._state = SessionState.STARTING
+            try:
+                draft = copy.deepcopy(config)
+                draft.validate()
+                account_kwargs = (
+                    {"codex_account_snapshot": self._codex_account_snapshot}
+                    if self._codex_account_snapshot is not None else {}
+                )
+                controller = self._controller_factory(draft, enable_serial=False, **account_kwargs)
+                with self._lock:
+                    self._controller = controller
+                if self._shutdown_event.is_set():
+                    return self._finish_failed_start(controller, "shutting_down")
+                with self._power_lock:
+                    if self._power_suspended and not controller.suspend_for_power_event(
+                        timeout=self._power_suspend_timeout
+                    ):
+                        raise RuntimeError("pre-start suspend was not acknowledged")
+                controller.start()
+            except Exception:
+                if self._controller is not None:
+                    return self._finish_failed_start(self._controller, "start_failed")
+                with self._lock:
+                    self._state = SessionState.STOPPED
+                return SessionResult(False, SessionState.STOPPED, "start_failed")
+            with self._lock:
+                shutdown_after_start = self._shutdown_event.is_set()
+                if not shutdown_after_start:
+                    self._desktop_mode = True
+                    self._state = SessionState.DESKTOP
+            if shutdown_after_start:
+                return self._finish_failed_start(controller, "shutting_down")
+            return SessionResult(True, SessionState.DESKTOP)
+
+    def _attach_monitor(
+        self, controller: MonitorController, config: AppConfig,
+        prepare: Callable[[], None] | None,
+    ) -> SessionResult:
+        self._state = SessionState.STARTING
+        try:
+            draft = copy.deepcopy(config)
+            draft.validate()
+            if prepare is not None:
+                with self._shutdown_gate_lock:
+                    if self._shutdown_event.is_set():
+                        raise RuntimeError("shutting_down")
+                prepare()
+            if self._shutdown_event.is_set():
+                raise RuntimeError("shutting_down")
+            if self.enable_serial:
+                controller.attach_serial(draft)
+            elif draft.device.rotation != controller.config.device.rotation:
+                controller.reconfigure_display(draft.device.rotation)
+        except Exception as error:
+            reason = (
+                "shutting_down" if self._shutdown_event.is_set() else
+                error.reason if isinstance(error, MonitorStartError) else
+                "start_failed"
+            )
+            state = SessionState.ERROR if str(error) == "serial_cleanup_incomplete" else SessionState.DESKTOP
+            with self._lock:
+                self._state = state
+            return SessionResult(False, state, "start_cleanup_incomplete" if state is SessionState.ERROR else reason)
+        with self._lock:
+            shutdown_after_attach = self._shutdown_event.is_set()
+            if not shutdown_after_attach:
+                self._state = SessionState.RUNNING
+        if shutdown_after_attach:
+            if self.enable_serial:
+                controller.detach_serial(timeout=5.0)
+            with self._lock:
+                self._state = SessionState.DESKTOP
+            return SessionResult(False, SessionState.DESKTOP, "shutting_down")
+        return SessionResult(True, SessionState.RUNNING)
+
+    def reconfigure_desktop(self, rotation: str) -> bool:
+        """Apply idle desktop orientation off Tk without opening USB."""
+        with self._operation_lock:
+            with self._lock:
+                controller = self._controller if self._desktop_mode and self._state is SessionState.DESKTOP else None
+            if controller is None or self.shutting_down:
+                return False
+            controller.reconfigure_display(rotation)
+            return True
+
+    def stop_monitor(self, timeout: float = 20.0) -> SessionResult:
+        """Stop USB transmission but preserve desktop collection when enabled."""
+        with self._lock:
+            desktop_mode = self._desktop_mode
+        if not desktop_mode:
+            return self.stop(timeout=timeout)
+        if not self._operation_lock.acquire(timeout=timeout):
+            with self._lock:
+                return SessionResult(False, self._state, "operation_busy")
+        try:
+            with self._lock:
+                controller = self._controller
+                if controller is None or self._state is SessionState.DESKTOP:
+                    return SessionResult(True, SessionState.DESKTOP)
+                if self._state is not SessionState.RUNNING:
+                    return SessionResult(False, self._state, "already_active")
+                self._state = SessionState.STOPPING
+            try:
+                complete = True if not self.enable_serial else controller.detach_serial(timeout=timeout)
+            except Exception:
+                complete = False
+            with self._lock:
+                self._state = SessionState.DESKTOP if complete else SessionState.ERROR
+                return SessionResult(complete, self._state, None if complete else "stop_incomplete")
+        finally:
+            self._operation_lock.release()
+
     def _finish_failed_start(self, controller: MonitorController, reason: str) -> SessionResult:
         cleanup_complete = False
         try:
@@ -218,6 +347,7 @@ class DesktopSession:
                 controller = self._controller
                 if controller is None:
                     self._state = SessionState.STOPPED
+                    self._desktop_mode = False
                     return SessionResult(True, SessionState.STOPPED)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -232,6 +362,7 @@ class DesktopSession:
             with self._lock:
                 if complete:
                     self._controller = None
+                    self._desktop_mode = False
                     self._state = SessionState.STOPPED
                     return SessionResult(True, SessionState.STOPPED)
                 self._state = SessionState.ERROR
@@ -240,7 +371,7 @@ class DesktopSession:
             self._operation_lock.release()
 
     def request_reconnect(self) -> bool:
-        if self.shutting_down:
+        if self.shutting_down or not self.running:
             return False
         controller = self._active_controller()
         if controller is None or not self.enable_serial:
@@ -252,7 +383,7 @@ class DesktopSession:
         """Route a validated live setting to the existing controller only."""
 
         value = validate_brightness(brightness)
-        if self.shutting_down:
+        if self.shutting_down or not self.running:
             return False
         controller = self._active_controller()
         if controller is None:
@@ -296,16 +427,20 @@ class DesktopSession:
             return True if controller is None else controller.resume_from_power_event()
 
     def latest_image(self) -> Image.Image | None:
-        controller = self._active_controller(include_starting=True)
+        with self._lock:
+            controller = self._controller if self._desktop_mode else None
+        controller = controller or self._active_controller(include_starting=True)
         return None if controller is None else controller.latest_image()
 
     def runtime_values(self) -> RuntimeValues | None:
-        controller = self._active_controller(include_starting=True)
+        with self._lock:
+            controller = self._controller if self._desktop_mode else None
+        controller = controller or self._active_controller(include_starting=True)
         return None if controller is None else controller.store.read()
 
     def _active_controller(self, *, include_starting: bool = False) -> MonitorController | None:
         with self._lock:
-            allowed = {SessionState.RUNNING}
+            allowed = {SessionState.RUNNING, SessionState.DESKTOP}
             if include_starting:
                 allowed.add(SessionState.STARTING)
             return self._controller if self._state in allowed else None

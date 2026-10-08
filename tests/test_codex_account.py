@@ -21,12 +21,12 @@ from ai_mini_monitor.ai.codex_account import CodexAccountService
 
 
 @pytest.fixture(autouse=True)
-def _no_bundled_runtime_except_in_explicit_tests(monkeypatch, request):
-    """Existing RPC tests exercise their own fake external CLI, not the release binary."""
+def _fake_bundled_runtime_for_rpc_tests(monkeypatch, request, tmp_path):
+    """RPC tests use a fake process at the bundled-runtime boundary."""
     import ai_mini_monitor.ai.codex_account as account_module
 
     if not request.node.name.startswith("test_bundled_"):
-        monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: None, raising=False)
+        monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: tmp_path / "codex-app-server.exe")
 
 
 def test_bundled_app_server_starts_account_login_with_no_external_cli(monkeypatch, tmp_path: Path) -> None:
@@ -55,16 +55,66 @@ def test_bundled_app_server_starts_account_login_with_no_external_cli(monkeypatc
         service.close()
 
 
-def test_bundled_runtime_rejects_hash_mismatch_and_external_cli_is_fallback(monkeypatch, tmp_path: Path) -> None:
+def test_bundled_runtime_rejects_hash_mismatch(monkeypatch, tmp_path: Path) -> None:
     import ai_mini_monitor.ai.codex_account as account_module
 
     bundled = tmp_path / "codex-app-server.exe"
     bundled.write_bytes(b"tampered")
     monkeypatch.setattr(account_module, "resource_path", lambda _relative: bundled, raising=False)
-    assert account_module._resolve_bundled_runtime() is None
+    with pytest.raises(RuntimeError, match="codex_runtime_integrity"):
+        account_module._resolve_bundled_runtime()
     bundled.write_bytes(b"official runtime fixture")
     monkeypatch.setattr(account_module, "_BUNDLED_SHA256", hashlib.sha256(b"official runtime fixture").hexdigest(), raising=False)
     assert account_module._resolve_bundled_runtime() == bundled
+
+
+def test_bundled_runtime_wins_over_stale_configured_cli(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    runtime = tmp_path / "codex-app-server.exe"
+    process = _FakeProcess()
+    launch_args = {}
+    monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: runtime)
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_: None)
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda argv, **kwargs: launch_args.update(argv=argv) or process)
+    service = CodexAccountService(cli_path=tmp_path / "stale-codex.exe", home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().state == "ready")
+        assert launch_args["argv"][:3] == [str(runtime), "--listen", "stdio://"]
+    finally:
+        service.close()
+
+
+def test_bundled_runtime_missing_does_not_fall_back_to_external_cli(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    monkeypatch.setattr(account_module, "resource_path", lambda _relative: tmp_path / "missing.exe")
+    monkeypatch.setattr(account_module, "_resolve_cli", lambda *_: tmp_path / "external.exe")
+    service = CodexAccountService(cli_path=tmp_path / "stale.exe", home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().error_detail is not None)
+        assert service.snapshot().state == "setup_required"
+        assert service.snapshot().error_detail == "codex_runtime_missing"
+    finally:
+        service.close()
+
+
+def test_bundled_runtime_access_denied_is_distinct(monkeypatch, tmp_path: Path) -> None:
+    import ai_mini_monitor.ai.codex_account as account_module
+
+    runtime = tmp_path / "codex-app-server.exe"
+    monkeypatch.setattr(account_module, "_resolve_bundled_runtime", lambda: runtime)
+    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("private path")))
+    service = CodexAccountService(cli_path=None, home=tmp_path / "home")
+    try:
+        service.refresh()
+        _eventually(lambda: service.snapshot().error_detail is not None)
+        assert service.snapshot().state == "setup_required"
+        assert service.snapshot().error_detail == "codex_runtime_access_denied"
+    finally:
+        service.close()
 
 
 def test_structured_http_status_code_auth_failure_is_classified_without_message() -> None:
@@ -266,20 +316,25 @@ def test_fifteen_percent_used_is_eighty_five_remaining_not_named_pool(monkeypatc
         service.close()
 
 
-def test_cli_selection_reuses_service_and_revalidates_off_caller_thread(monkeypatch, tmp_path: Path) -> None:
+def test_legacy_cli_selection_restarts_bundled_service_without_external_probe(monkeypatch, tmp_path: Path) -> None:
     import ai_mini_monitor.ai.codex_account as account_module
 
     chosen = tmp_path / "chosen.exe"
     chosen.write_bytes(b"test executable stand-in")
     processes = [_FakeProcess(), _FakeProcess()]
     resolved = []
+    launched = []
 
     def resolve(path, *_args):
         resolved.append((path, threading.current_thread()))
         return chosen if path == chosen else tmp_path / "initial.exe"
 
     monkeypatch.setattr(account_module, "_resolve_cli", resolve)
-    monkeypatch.setattr(account_module.subprocess, "Popen", lambda *_args, **_kwargs: processes.pop(0))
+    def launch(argv, **_kwargs):
+        launched.append(argv)
+        return processes.pop(0)
+
+    monkeypatch.setattr(account_module.subprocess, "Popen", launch)
     service = CodexAccountService(cli_path=None, home=tmp_path / "home")
     try:
         assert service.refresh()
@@ -289,7 +344,10 @@ def test_cli_selection_reuses_service_and_revalidates_off_caller_thread(monkeypa
         assert service.snapshot().generation == previous_generation + 1
         assert service.snapshot().windows == ()
         _eventually(lambda: service.snapshot().state == "ready")
-        assert resolved[-1] == (chosen, service._worker)
+        assert resolved == []
+        assert [argv[0] for argv in launched] == [
+            str(tmp_path / "codex-app-server.exe"), str(tmp_path / "codex-app-server.exe")
+        ]
         assert not service.set_cli_path(tmp_path / "missing.exe")
     finally:
         service.close()
@@ -354,7 +412,7 @@ def test_invalid_reset_time_does_not_hide_valid_percent(monkeypatch, tmp_path: P
         service.close()
 
 
-def test_isolated_cli_environment_and_one_time_url(monkeypatch, tmp_path: Path) -> None:
+def test_isolated_bundled_environment_and_one_time_url(monkeypatch, tmp_path: Path) -> None:
     """Catches inherited credentials, cwd leakage, and repeated auth URL events."""
     import ai_mini_monitor.ai.codex_account as account_module
 
@@ -375,7 +433,7 @@ def test_isolated_cli_environment_and_one_time_url(monkeypatch, tmp_path: Path) 
     try:
         assert service.begin_login()
         _eventually(lambda: any(event.kind == "auth_url" for event in service.drain_events()))
-        assert captured["argv"][0] == str(executable)
+        assert captured["argv"][0] == str(tmp_path / "codex-app-server.exe")
         assert captured["cwd"] == home
         assert captured["env"]["CODEX_HOME"] == str(home)
         assert "OPENAI_API_KEY" not in captured["env"]

@@ -201,7 +201,7 @@ def run_desktop(
         commands = create_command_queue()
         tray = TrayController(commands)
         account = CodexAccountService(
-            cli_path=Path(current_config.ai.codex_cli_path) if current_config.ai.codex_cli_path else None,
+            cli_path=None,
             home=user_data_dir() / "codex-home",
             refresh_seconds=current_config.ai.usage_refresh_seconds,
         )
@@ -243,6 +243,7 @@ def run_desktop(
     last_update_snapshot: object | None = None
     next_update_check = time.monotonic() + 3600.0
     account_polling = False
+    desired_desktop_rotation = current_config.device.rotation
 
     def sync_account_polling() -> None:
         nonlocal account_polling
@@ -372,10 +373,10 @@ def run_desktop(
     def request_stop() -> ActionResult:
         if "stop" in pending:
             return ActionResult(True, "모니터 중지 중…", pending=True)
-        if not worker.submit("stop", lambda: session.stop(timeout=20.0)):
+        if not worker.submit("stop", lambda: session.stop_monitor(timeout=20.0)):
             return ActionResult(False, "모니터 중지를 요청하지 못했습니다", "작업 큐 종료")
         pending.add("stop")
-        return ActionResult(True, "모니터 중지 중…", "COM과 백그라운드 수집을 함께 종료합니다.", pending=True)
+        return ActionResult(True, "모니터 중지 중…", "COM 전송을 종료하고 PC 센서 표시는 유지합니다.", pending=True)
 
     def request_reconnect() -> ActionResult:
         if not enable_serial:
@@ -427,7 +428,7 @@ def run_desktop(
             if enabled:
                 values = session.runtime_values()
                 taskbar.update_sensor(
-                    values.sensor if values and session.running else None,
+                    values.sensor if values else None,
                     account.snapshot().ai,
                 )
                 taskbar.show(notify=False)
@@ -596,27 +597,6 @@ def run_desktop(
     def request_codex_logout() -> ActionResult:
         return ActionResult(bool(account.logout()), "Mini Monitor 전용 계정 로그아웃 중…")
 
-    def request_codex_disconnect() -> ActionResult:
-        return ActionResult(False, "Codex 계정 방식만 지원합니다", "로그아웃을 사용해 주세요.")
-
-    def request_codex_cli_selected(path: Path) -> ActionResult:
-        nonlocal current_config
-        if not account.set_cli_path(path):
-            return ActionResult(False, "CLI 경로 적용 실패", "경로를 다시 선택해 주세요.")
-        try:
-            with _CONFIG_WRITE_LOCK:
-                draft = _latest_persisted_config(current_config, config_path)
-                draft.ai.codex_cli_path = str(path.resolve(strict=True))
-                draft.validate()
-                save_config(draft, config_path)
-                current_config = draft
-        except (OSError, ValueError):
-            return ActionResult(False, "CLI 경로 저장 실패", "다시 선택해 주세요.")
-        return ActionResult(True, "CLI 확인 중…", "서명과 app-server 지원 여부를 확인합니다.")
-
-    def open_codex_install_guide() -> ActionResult:
-        return ActionResult(bool(webbrowser.open("https://learn.chatgpt.com/docs/codex/cli")), "Codex CLI 설치 안내 열기")
-
     def request_update_check() -> ActionResult:
         try:
             accepted = updater.check(force=True)
@@ -704,9 +684,10 @@ def run_desktop(
             recover_overlay_hidden(error)
 
     def change_orientation(rotation: str) -> None:
-        nonlocal renderer, preview_frame
+        nonlocal renderer, preview_frame, desired_desktop_rotation
         if session.running:
             return
+        desired_desktop_rotation = rotation
         renderer = _renderer_for_rotation(rotation)
         preview_frame = renderer.render(
             DisplaySnapshot(
@@ -719,6 +700,8 @@ def run_desktop(
         )
         setup.update_image(preview_frame)
         update_visible_overlay(preview_frame)
+        if not worker.submit("orientation", lambda: session.reconfigure_desktop(rotation)):
+            LOGGER.warning("desktop orientation update was not admitted")
 
     try:
         initial_provider = _initial_setup_provider(
@@ -765,9 +748,6 @@ def run_desktop(
             on_codex_login=request_codex_login,
             on_codex_cancel=request_codex_cancel,
             on_codex_logout=request_codex_logout,
-            on_codex_disconnect=request_codex_disconnect,
-            on_codex_cli_selected=request_codex_cli_selected,
-            on_codex_install_guide=open_codex_install_guide,
             on_update_check=request_update_check,
             on_update_apply=request_update_apply,
             on_update_dismiss=request_update_dismiss,
@@ -911,8 +891,9 @@ def run_desktop(
                         ),
                     )
                 )
-                setup.update_image(preview_frame)
-                update_visible_overlay(preview_frame)
+                active_frame = session.latest_image() or preview_frame
+                setup.update_image(active_frame)
+                update_visible_overlay(active_frame)
         elif result.kind == "start" and isinstance(result.value, StartWorkResult):
             if result.value.config is not None:
                 merged = result.value.config
@@ -931,7 +912,7 @@ def run_desktop(
             action = ActionResult(
                 result.value.ok,
                 "모니터 중지됨" if result.value.ok else "모니터가 완전히 중지되지 않았습니다",
-                "COM과 수집 작업이 종료되었습니다." if result.value.ok else "프로그램을 종료한 뒤 다시 실행하세요.",
+                "COM 전송이 종료되었습니다. PC 센서 표시는 유지됩니다." if result.value.ok else "프로그램을 종료한 뒤 다시 실행하세요.",
             )
             setup.complete_stop(
                 action,
@@ -949,8 +930,9 @@ def run_desktop(
                             detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
                         ),
                     ))
-                    setup.update_image(preview_frame)
-                    update_visible_overlay(preview_frame)
+                    active_frame = session.latest_image() or preview_frame
+                    setup.update_image(active_frame)
+                    update_visible_overlay(active_frame)
         elif result.kind == "brightness" and isinstance(
             result.value,
             BrightnessWorkResult,
@@ -1038,8 +1020,9 @@ def run_desktop(
                         detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
                     ),
                 ))
-                setup.update_image(preview_frame)
-                update_visible_overlay(preview_frame)
+                active_frame = session.latest_image() or preview_frame
+                setup.update_image(active_frame)
+                update_visible_overlay(active_frame)
 
         now = time.monotonic()
         if now >= next_update_check:
@@ -1076,7 +1059,11 @@ def run_desktop(
             LOGGER.warning("update helper launch failed; app remains running")
 
         image = session.latest_image()
-        if image is not None and session.state in {SessionState.STARTING, SessionState.RUNNING}:
+        if (
+            image is not None
+            and session.state in {SessionState.DESKTOP, SessionState.STARTING, SessionState.RUNNING, SessionState.STOPPING, SessionState.ERROR}
+            and image.size == orientation_spec(desired_desktop_rotation).dimensions
+        ):
             preview_frame = image.copy()
             if setup.visible:
                 setup.update_image(image)
@@ -1086,7 +1073,7 @@ def run_desktop(
         if taskbar is not None and not taskbar.closed and taskbar.visible:
             try:
                 taskbar.update_sensor(
-                    values.sensor if values and session.running else None,
+                    values.sensor if values else None,
                     account_snapshot.ai,
                 )
             except Exception as error:
@@ -1121,12 +1108,12 @@ def run_desktop(
             LOGGER.warning("startup update check failed (%s)", type(error).__name__)
         if current_config.ai.provider == AIProviderKind.CODEX_ACCOUNT.value:
             account.refresh()
+        if not worker.submit("desktop", lambda: session.start_desktop(current_config)):
+            raise RuntimeError("desktop sensor startup was not admitted")
+        pending.add("desktop")
         request_device()
         if minimized:
             setup.hide()
-            # Autostart uses the saved configuration exactly; it never grants
-            # local-session consent on the user's behalf.
-            request_start(_selection_from_config(current_config))
         else:
             setup.show()
         if auto_exit_seconds is not None:

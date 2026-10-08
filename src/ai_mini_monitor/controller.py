@@ -142,7 +142,12 @@ class MonitorController:
         self._ai_wake = threading.Event()
         self._start_cancelled = threading.Event()
         self._power_lock = threading.Lock()
+        self._render_lock = threading.RLock()
+        self._serial_lock = threading.RLock()
+        self._pending_serial: SerialWriter | None = None
+        self._orphan_serial: SerialWriter | None = None
         self._power_suspended = False
+        self._power_suspend_timeout = 2.0
         self._power_resume_gap_guard = False
         self._threads: list[threading.Thread] = []
         self._started = False
@@ -242,6 +247,125 @@ class MonitorController:
             else:
                 # Compatibility for injected test/third-party writers.
                 self.serial.cancel_pending_start()
+        with self._serial_lock:
+            pending = self._pending_serial
+            orphan = self._orphan_serial
+        for writer in (pending, orphan):
+            if writer is None:
+                continue
+            signal_stop = getattr(writer, "signal_stop", None)
+            if callable(signal_stop):
+                signal_stop()
+
+    def reconfigure_display(self, rotation: str) -> None:
+        """Change desktop preview layout without restarting its sensor collector."""
+        if not self._started or self._stop.is_set():
+            raise RuntimeError("desktop collection is not running")
+        selected = orientation_spec(rotation)
+        with self._serial_lock:
+            if self.serial is not None or self._pending_serial is not None:
+                raise RuntimeError("cannot change rotation while USB is active")
+            with self._render_lock:
+                self.orientation = selected
+                self.layout = layout_for_dimensions(*selected.dimensions)
+                self.renderer = DashboardRenderer(layout=self.layout)
+                self.config.device.rotation = rotation
+                image = self.renderer.render(
+                    self.composer.compose(self.store.read(), monotonic_now=time.monotonic())
+                )
+                self._publish_image(image)
+
+    def attach_serial(self, config: AppConfig, *, writer: SerialWriter | None = None) -> None:
+        """Attach one USB writer to an already collecting desktop controller."""
+        config.validate()
+        if not self._started or self._stop.is_set():
+            raise RuntimeError("desktop collection is not running")
+        selected_orientation = orientation_spec(config.device.rotation)
+        if selected_orientation.dimensions != self.layout.size:
+            self.reconfigure_display(config.device.rotation)
+        with self._serial_lock:
+            if self.serial is not None or self._pending_serial is not None or self._orphan_serial is not None:
+                raise RuntimeError("serial writer already active")
+            candidate = writer or SerialWriter(
+                manual_port=config.device.manual_port,
+                status_callback=self._on_serial_event,
+                orientation=selected_orientation.protocol,
+                brightness=config.device.brightness,
+            )
+            self._pending_serial = candidate
+        try:
+            with self._render_lock:
+                initial = self.renderer.render(self.composer.compose(self.store.read(), monotonic_now=time.monotonic()))
+            update = self._frame_update(initial, full_refresh=True)
+            self._register_submission(update, sensor_age_ms=None)
+            candidate.submit(update)
+            with self._stats_lock:
+                self.stats.submitted_updates += 1
+                self.stats.submitted_regions += 1
+                self.stats.full_refresh_submissions += 1
+            if self._stop.is_set():
+                raise RuntimeError("controller start was cancelled")
+            with self._power_lock:
+                if self._power_suspended and not candidate.suspend(timeout=self._power_suspend_timeout):
+                    raise RuntimeError("pre-start suspend was not acknowledged")
+            candidate.start()
+            restored = candidate.wait_for_initial_restore(update.sequence, timeout=self._initial_restore_timeout)
+            if not restored.ready:
+                raise MonitorStartError(restored.status.value)
+            if self._stop.is_set():
+                raise RuntimeError("controller start was cancelled")
+            with self._completion_lock:
+                self._desired_frame = initial.copy()
+            with self._serial_lock:
+                self.serial = candidate
+                self._pending_serial = None
+            self.config.device.brightness = config.device.brightness
+            self.config.device.manual_port = config.device.manual_port
+            self.config.device.rotation = config.device.rotation
+        except Exception:
+            signal_stop = getattr(candidate, "signal_stop", None)
+            if callable(signal_stop):
+                signal_stop()
+            try:
+                complete = bool(candidate.stop(timeout=5.0))
+            except Exception:
+                complete = False
+            with self._serial_lock:
+                self._pending_serial = None
+                if not complete:
+                    self._orphan_serial = candidate
+            if not complete:
+                raise RuntimeError("serial_cleanup_incomplete")
+            raise
+
+    def detach_serial(self, timeout: float = 20.0) -> bool:
+        """Close USB without stopping desktop sensor, AI, or render threads."""
+        if timeout <= 0:
+            raise ValueError("stop timeout must be positive")
+        with self._serial_lock:
+            writer = self.serial
+            if writer is not None:
+                self._orphan_serial = writer
+                signal_stop = getattr(writer, "signal_stop", None)
+                if callable(signal_stop):
+                    signal_stop()
+                self.serial = None
+        if writer is None:
+            return self._orphan_serial is None
+        try:
+            complete = bool(writer.stop(timeout=timeout))
+        except Exception:
+            complete = False
+        if not complete:
+            self.store.update_connection(ConnectionData(ConnectionStatus.DISCONNECTED, detail="USB STOP INCOMPLETE"))
+            return False
+        with self._serial_lock:
+            if self._orphan_serial is writer:
+                self._orphan_serial = None
+        with self._completion_lock:
+            self._desired_frame = None
+        self.store.update_connection(ConnectionData(ConnectionStatus.DISCONNECTED, detail="PRESS MONITOR START"))
+        return True
 
     def _ensure_start_allowed(self) -> None:
         if self._start_cancelled.is_set():
@@ -258,6 +382,18 @@ class MonitorController:
         # request. The remaining budget is still available for worker joins.
         if self.serial is not None:
             serial_stopped = self.serial.stop(timeout=min(5.0, timeout))
+        with self._serial_lock:
+            pending = self._pending_serial
+            orphan = self._orphan_serial
+        if pending is not None:
+            pending_stopped = pending.stop(timeout=min(5.0, timeout))
+            serial_stopped = serial_stopped and pending_stopped
+        if orphan is not None:
+            orphan_stopped = orphan.stop(timeout=min(5.0, timeout))
+            serial_stopped = serial_stopped and orphan_stopped
+            if orphan_stopped:
+                with self._serial_lock:
+                    self._orphan_serial = None
         for thread in self._threads:
             remaining = max(0.0, deadline - time.monotonic())
             thread.join(remaining)
@@ -268,21 +404,21 @@ class MonitorController:
         return complete
 
     def request_reconnect(self) -> None:
-        if self.serial is not None:
-            self.serial.request_reconnect()
+        with self._serial_lock:
+            if self.serial is not None:
+                self.serial.request_reconnect()
 
     def request_brightness(self, brightness: int) -> bool:
         """Update the one active writer's desired brightness in place."""
 
         value = validate_brightness(brightness)
         self.config.device.brightness = value
-        if self.serial is not None:
-            # A False writer result means the same value was already desired;
-            # that duplicate is accepted, while a stopped writer whose
-            # desired value did not change is reported as unavailable.
-            changed = self.serial.request_brightness(value)
-            desired = getattr(self.serial, "brightness_percent", value)
-            return bool(changed or desired == value)
+        with self._serial_lock:
+            if self.serial is not None:
+                # A False writer result means the same value was already desired.
+                changed = self.serial.request_brightness(value)
+                desired = getattr(self.serial, "brightness_percent", value)
+                return bool(changed or desired == value)
         return True
 
     def request_ai_refresh(self) -> None:
@@ -297,9 +433,12 @@ class MonitorController:
             raise ValueError("power suspend timeout must be positive")
         with self._power_lock:
             self._power_suspended = True
-        if self.serial is None:
+            self._power_suspend_timeout = timeout
+        with self._serial_lock:
+            writer = self.serial or self._pending_serial
+        if writer is None:
             return True
-        return self.serial.suspend(timeout=timeout)
+        return writer.suspend(timeout=timeout)
 
     def resume_from_power_event(self) -> bool:
         """Resume once after any of Windows' duplicate resume broadcasts."""
@@ -309,9 +448,11 @@ class MonitorController:
                 return False
             self._power_suspended = False
             self._power_resume_gap_guard = True
-        if self.serial is None:
+        with self._serial_lock:
+            writer = self.serial or self._pending_serial
+        if writer is None:
             return True
-        return self.serial.resume()
+        return writer.resume()
 
     def latest_image(self) -> Image.Image | None:
         with self._latest_lock:
@@ -399,7 +540,9 @@ class MonitorController:
                     if self._stop.wait(next_frame - now):
                         break
                     now = time.monotonic()
-                if self.serial is not None and now - last_iteration > 5.0:
+                with self._serial_lock:
+                    serial = self.serial
+                if serial is not None and now - last_iteration > 5.0:
                     # Keep the monotonic fallback for non-desktop callers, but
                     # suppress it when WM_POWERBROADCAST already initiated the
                     # strict resume restore. This prevents two full restores.
@@ -408,38 +551,47 @@ class MonitorController:
                         resume_already_handled = self._power_resume_gap_guard
                         self._power_resume_gap_guard = False
                     if not power_suspended and not resume_already_handled:
-                        self.serial.request_reconnect()
+                        with self._serial_lock:
+                            if self.serial is serial:
+                                serial.request_reconnect()
                 last_iteration = now
                 next_frame = max(next_frame + frame_period, now)
-                runtime_values = self.store.read()
-                display = self.composer.compose(runtime_values, monotonic_now=now)
-                image = self.renderer.render(display)
-                self._publish_image(image)
+                with self._render_lock:
+                    runtime_values = self.store.read()
+                    display = self.composer.compose(runtime_values, monotonic_now=now)
+                    image = self.renderer.render(display)
+                    self._publish_image(image)
                 with self._stats_lock:
                     self.stats.render_frames += 1
-                if self.serial is not None and now >= next_usb:
-                    dirty = self._dirty_from_desired(image)
-                    if dirty:
-                        update = self._regions_update(image, dirty)
-                        sensor_age_ms = _sensor_age_ms(runtime_values.sensor)
-                        self._register_submission(update, sensor_age_ms=sensor_age_ms)
-                        try:
-                            self.serial.submit(update)
-                        except RuntimeError:
-                            self._discard_submission(update.sequence)
-                            if self._stop.is_set():
-                                break
-                            raise
-                        with self._completion_lock:
-                            self._desired_frame = image.copy()
-                        with self._stats_lock:
-                            self.stats.submitted_updates += 1
-                            self.stats.submitted_regions += len(update.regions)
-                            self.stats.max_pending = max(self.stats.max_pending, self.serial.pending_count)
-                    else:
-                        with self._stats_lock:
-                            self.stats.skipped_unchanged += 1
-                    next_usb = now + usb_period
+                with self._serial_lock:
+                    serial = self.serial
+                    if serial is not None and now >= next_usb:
+                        if image.size != self.layout.size:
+                            # A desktop orientation changed after this frame
+                            # was rendered but before the USB writer attached.
+                            continue
+                        dirty = self._dirty_from_desired(image)
+                        if dirty:
+                            update = self._regions_update(image, dirty)
+                            sensor_age_ms = _sensor_age_ms(runtime_values.sensor)
+                            self._register_submission(update, sensor_age_ms=sensor_age_ms)
+                            try:
+                                serial.submit(update)
+                            except RuntimeError:
+                                self._discard_submission(update.sequence)
+                                if self._stop.is_set():
+                                    break
+                                raise
+                            with self._completion_lock:
+                                self._desired_frame = image.copy()
+                            with self._stats_lock:
+                                self.stats.submitted_updates += 1
+                                self.stats.submitted_regions += len(update.regions)
+                                self.stats.max_pending = max(self.stats.max_pending, serial.pending_count)
+                        else:
+                            with self._stats_lock:
+                                self.stats.skipped_unchanged += 1
+                        next_usb = now + usb_period
                 self._observe_serial_completion()
         except Exception:
             with self._stats_lock:
@@ -498,13 +650,15 @@ class MonitorController:
         )
 
     def _observe_serial_completion(self) -> None:
-        if self.serial is None:
+        with self._serial_lock:
+            serial = self.serial
+        if serial is None:
             return
         with self._completion_lock:
-            sent = self.serial.last_sent_sequence
-            actual_update_count = getattr(self.serial, "sent_update_count", None)
-            actual_region_count = getattr(self.serial, "sent_region_count", None)
-            actual_full_count = getattr(self.serial, "sent_full_refresh_count", None)
+            sent = serial.last_sent_sequence
+            actual_update_count = getattr(serial, "sent_update_count", None)
+            actual_region_count = getattr(serial, "sent_region_count", None)
+            actual_full_count = getattr(serial, "sent_full_refresh_count", None)
             if (
                 actual_update_count is not None
                 and actual_region_count is not None

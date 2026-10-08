@@ -159,6 +159,202 @@ class ImmediateSerial:
         return True
 
 
+def test_desktop_collection_survives_serial_attach_and_detach_without_second_collector() -> None:
+    config = AppConfig()
+    config.sensors.sample_interval_ms = 250
+    collector = FakeCollector()
+    serial = ImmediateSerial()
+    controller = MonitorController(
+        config, enable_serial=False, sensor_collector_factory=lambda: collector,
+    )
+    controller.start()
+    try:
+        deadline = time.monotonic() + 2
+        while collector.count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert collector.count > 0
+        assert controller.serial is None
+        assert serial.start_calls == 0
+
+        controller.attach_serial(config, writer=serial)
+        assert serial.start_calls == 1
+        assert serial.updates[0].full_refresh
+        assert controller.detach_serial(timeout=2.0)
+        assert serial.stopped
+        observed = collector.count
+        deadline = time.monotonic() + 2
+        while collector.count <= observed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert collector.count > observed
+        assert controller.store.read().sensor is not None
+    finally:
+        assert controller.stop()
+    assert collector.closed
+
+
+def test_desktop_rotation_changes_live_frame_and_next_usb_full_frame_without_recollecting() -> None:
+    config = AppConfig()
+    config.sensors.sample_interval_ms = 250
+    collector = FakeCollector()
+    serial = ImmediateSerial()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=lambda: collector)
+    controller.start()
+    try:
+        controller.reconfigure_display("portrait")
+        deadline = time.monotonic() + 2
+        while controller.latest_image().size != (320, 480) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller.latest_image().size == (320, 480)
+        selected = AppConfig()
+        selected.device.rotation = "portrait"
+        controller.attach_serial(selected, writer=serial)
+        assert (serial.updates[0].width, serial.updates[0].height) == (320, 480)
+        assert controller.detach_serial()
+        assert collector.count > 0
+    finally:
+        assert controller.stop()
+
+
+def test_failed_attach_cleanup_never_publishes_stopped_writer_to_desktop_render_loop() -> None:
+    class IncompleteWriter(ImmediateSerial):
+        def __init__(self):
+            super().__init__(InitialRestoreResult(InitialRestoreStatus.PORT_IN_USE, "COM3"))
+            self.stop_calls = 0
+
+        def stop(self, timeout=1.0):
+            self.stop_calls += 1
+            return self.stop_calls > 1
+
+    config = AppConfig()
+    config.sensors.sample_interval_ms = 250
+    collector = FakeCollector()
+    writer = IncompleteWriter()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=lambda: collector)
+    controller.start()
+    try:
+        with pytest.raises(RuntimeError, match="serial_cleanup_incomplete"):
+            controller.attach_serial(config, writer=writer)
+        assert controller.serial is None
+        observed = collector.count
+        deadline = time.monotonic() + 2
+        while collector.count <= observed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert collector.count > observed
+        assert controller.store.read().sensor is not None
+    finally:
+        assert controller.stop()
+
+
+def test_latched_sleep_is_applied_to_pending_usb_before_start_without_stopping_desktop() -> None:
+    config = AppConfig()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=FakeCollector)
+    serial = ImmediateSerial()
+    controller.start()
+    try:
+        assert controller.suspend_for_power_event(timeout=0.25)
+        controller.attach_serial(config, writer=serial)
+        assert serial.suspend_timeouts == [0.25]
+        assert serial.start_calls == 1
+        assert controller.resume_from_power_event()
+        assert serial.resumes == 1
+        assert controller.detach_serial()
+        assert controller.store.read().sensor is not None
+    finally:
+        assert controller.stop()
+
+
+def test_incomplete_usb_detach_keeps_desktop_collector_live_and_writer_unpublished() -> None:
+    class IncompleteWriter(ImmediateSerial):
+        def __init__(self):
+            super().__init__()
+            self.stop_calls = 0
+
+        def stop(self, timeout=1.0):
+            self.stop_calls += 1
+            return self.stop_calls > 1
+
+    config = AppConfig()
+    config.sensors.sample_interval_ms = 250
+    collector = FakeCollector()
+    serial = IncompleteWriter()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=lambda: collector)
+    controller.start()
+    try:
+        controller.attach_serial(config, writer=serial)
+        assert not controller.detach_serial()
+        assert controller.serial is None
+        observed = collector.count
+        deadline = time.monotonic() + 2
+        while collector.count <= observed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert collector.count > observed
+    finally:
+        assert controller.stop()
+
+
+def test_rotation_during_render_does_not_submit_stale_landscape_image_to_portrait_usb() -> None:
+    config = AppConfig()
+    config.sensors.sample_interval_ms = 250
+    config.app.render_fps = 10
+    collector = FakeCollector()
+    serial = ImmediateSerial()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=lambda: collector)
+    original_publish = controller._publish_image
+    changed = threading.Event()
+
+    def change_after_old_frame(image):
+        original_publish(image)
+        if controller.started and not changed.is_set():
+            changed.set()
+            controller.reconfigure_display("portrait")
+            selected = AppConfig()
+            selected.device.rotation = "portrait"
+            controller.attach_serial(selected, writer=serial)
+
+    controller._publish_image = change_after_old_frame
+    controller.start()
+    try:
+        assert changed.wait(2.0)
+        time.sleep(0.3)
+        assert controller.stats_snapshot()["unhandled_worker_errors"] == 0
+        assert controller.store.read().sensor is not None
+        assert (serial.updates[0].width, serial.updates[0].height) == (320, 480)
+    finally:
+        assert controller.stop()
+
+
+def test_usb_detach_latches_stop_before_writer_becomes_invisible_to_power_events() -> None:
+    class BlockingWriter(ImmediateSerial):
+        def __init__(self):
+            super().__init__()
+            self.stopping = threading.Event()
+            self.release = threading.Event()
+
+        def stop(self, timeout=1.0):
+            self.stopping.set()
+            self.release.wait(2.0)
+            return True
+
+    config = AppConfig()
+    controller = MonitorController(config, enable_serial=False, sensor_collector_factory=FakeCollector)
+    serial = BlockingWriter()
+    controller.start()
+    controller.attach_serial(config, writer=serial)
+    result = []
+    thread = threading.Thread(target=lambda: result.append(controller.detach_serial(timeout=2.0)))
+    thread.start()
+    try:
+        assert serial.stopping.wait(2.0)
+        assert serial.start_cancelled  # signal_stop latched before writer left active publication
+        assert controller.suspend_for_power_event(timeout=0.25)
+        assert controller.store.read().sensor is not None
+    finally:
+        serial.release.set()
+        thread.join(2.0)
+        assert controller.stop()
+    assert result == [True]
+
+
 def test_controller_renders_actual_snapshot_without_serial() -> None:
     config = AppConfig()
     config.app.render_fps = 10.0
