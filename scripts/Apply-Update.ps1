@@ -120,9 +120,9 @@ function Restore-PreviousProgram([string]$InstallPath, [string]$BackupPath, [str
     if (-not (Test-Path -LiteralPath $BackupPath -PathType Container)) { return $false }
     if (Test-Path -LiteralPath $InstallPath) {
         $failed = Join-Path $ParentPath ('.mini-monitor-failed-' + [guid]::NewGuid().ToString('N'))
-        Move-Item -LiteralPath $InstallPath -Destination $failed -ErrorAction Stop
+        [IO.Directory]::Move($InstallPath, $failed)
     }
-    Move-Item -LiteralPath $BackupPath -Destination $InstallPath -ErrorAction Stop
+    [IO.Directory]::Move($BackupPath, $InstallPath)
     return $true
 }
 
@@ -156,6 +156,12 @@ if (-not [IO.Path]::GetFileName($backup).StartsWith('.mini-monitor-backup-', [St
 if (Test-Path -LiteralPath $backup) { throw 'Backup target already exists.' }
 if ($record.nonce -cnotmatch '^[0-9a-f]{32}$') { throw 'Invalid update acknowledgement nonce.' }
 Assert-Regular $installParent
+$lockPath = Join-Path $installParent '.mini-monitor-update.lock'
+if (Test-Path -LiteralPath $lockPath) { Assert-Regular $lockPath }
+# All prepared stages for this install share one kernel lock through the swap
+# and acknowledgement, so another helper cannot race its backup or rollback.
+$operationLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate,
+                                  [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 $oldMap = Get-ExpectedMap $record.old_files $false
 $newMap = Get-ExpectedMap $record.new_files $true
 if ([string]$record.old_inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
@@ -227,9 +233,9 @@ Assert-Tree $staged $newMap $false
 
 $newProcess = $null
 try {
-    Move-Item -LiteralPath $install -Destination $backup -ErrorAction Stop
+    [IO.Directory]::Move($install, $backup)
     Save-Journal $record $journal 'old_backed_up'
-    Move-Item -LiteralPath $staged -Destination $install -ErrorAction Stop
+    [IO.Directory]::Move($staged, $install)
     Save-Journal $record $journal 'new_installed'
     if ($env:PYTEST_CURRENT_TEST -and $env:MINI_MONITOR_UPDATE_TEST_FAIL_AFTER_SWAP -eq '1') {
         throw 'Controlled test fault after both renames.'
@@ -247,12 +253,23 @@ try {
             exit 4
         }
     }
+    if (-not (Test-Path -LiteralPath $backup -PathType Container)) {
+        if (Test-Path -LiteralPath $install -PathType Container) {
+            try { Save-Journal $record $journal 'swap_failed' } catch { }
+            Show-UpdateNotice 'The previous program could not be renamed. No program files were replaced.' ''
+        } else {
+            try { Save-Journal $record $journal 'needs_manual_recovery' } catch { }
+            Show-UpdateNotice 'The update failed and the previous program location is missing. Manual recovery is needed.' $backup
+        }
+        exit 3
+    }
     $restored = $false
     try { $restored = Restore-PreviousProgram $install $backup $installParent } catch { }
-    try { Save-Journal $record $journal 'rolled_back_start_failed' } catch { }
     if ($restored) {
+        try { Save-Journal $record $journal 'rolled_back_start_failed' } catch { }
         Show-UpdateNotice 'The update failed before the replacement started. The previous program was restored.' ''
     } else {
+        try { Save-Journal $record $journal 'needs_manual_recovery' } catch { }
         Show-UpdateNotice 'The update failed and needs manual recovery. Close Mini Monitor before restoring the saved backup.' $backup
     }
     exit 3

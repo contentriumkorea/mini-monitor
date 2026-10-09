@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ai_mini_monitor.updater import (
-    MAX_FILES, MAX_UNPACKED, _canonical, _sha256_file,
+    MANIFEST_ASSET, SIGNATURE_ASSET, MAX_FILES, MAX_UNPACKED, _canonical, _sha256_file,
     _validate_member, _validate_release_asset_url, _version_tuple,
 )
 
@@ -200,8 +200,8 @@ def sign_release(
     payload = _canonical(document)
     signature = private.sign(payload)
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest = output_dir / "update-manifest.json"
-    signature_file = output_dir / "update-manifest.sig"
+    manifest = output_dir / MANIFEST_ASSET
+    signature_file = output_dir / SIGNATURE_ASSET
     if manifest.exists() or signature_file.exists():
         raise FileExistsError("signed release metadata already exists")
     with manifest.open("xb") as stream:

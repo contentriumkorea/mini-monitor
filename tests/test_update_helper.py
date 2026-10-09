@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import ctypes
 import json
 import os
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -115,6 +117,97 @@ def _run_helper(
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory rename and sharing semantics")
+def test_locked_nested_file_aborts_swap_without_moving_any_old_file(tmp_path, monkeypatch) -> None:
+    """A live secondary process's DLL must not leave a half-moved install."""
+    import ai_mini_monitor.updater as updater
+
+    install = tmp_path / "Mini-Monitor"
+    nested = install / "_internal"
+    nested.mkdir(parents=True)
+    old_exe = b"old desktop exe"
+    old_dll = b"old nested dll"
+    (install / "Mini-Monitor.exe").write_bytes(old_exe)
+    locked_file = nested / "runtime.dll"
+    locked_file.write_bytes(old_dll)
+    (install / "SHA256SUMS.txt").write_text(
+        f"{_digest(old_exe)}  Mini-Monitor.exe\n{_digest(old_dll)}  _internal/runtime.dll\n",
+        encoding="utf-8",
+    )
+    archive = tmp_path / "new.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("Mini-Monitor/Mini-Monitor.exe", b"new desktop exe")
+    archive_data = archive.read_bytes()
+    manifest = UpdateManifest(
+        "0.2.0", "stable",
+        "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/Mini-Monitor.zip",
+        _digest(archive_data), len(archive_data),
+        (("Mini-Monitor/Mini-Monitor.exe", _digest(b"new desktop exe")),),
+    )
+    monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_data))
+    prepared = stage_update(manifest, install_root=install, config_path=None)
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(str(locked_file), 0x80000000, 0x1, None, 3, 0x80, None)
+    assert handle != ctypes.c_void_p(-1).value, ctypes.get_last_error()
+    try:
+        result = _run_helper(prepared)
+        assert result.returncode == 3, result.stderr
+        assert (install / "Mini-Monitor.exe").read_bytes() == old_exe
+        assert locked_file.read_bytes() == old_dll
+        assert json.loads(prepared.journal_path.read_text(encoding="utf-8"))["state"] == "swap_failed"
+        assert not list(tmp_path.glob(".mini-monitor-backup-*"))
+        assert not list(tmp_path.glob(".mini-monitor-failed-*"))
+    finally:
+        assert ctypes.windll.kernel32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows helper lock semantics")
+def test_independent_stage_cannot_swap_while_install_lock_is_held(tmp_path, monkeypatch) -> None:
+    import ai_mini_monitor.updater as updater
+
+    install = tmp_path / "Mini-Monitor"
+    install.mkdir()
+    old_exe = b"old desktop exe"
+    (install / "Mini-Monitor.exe").write_bytes(old_exe)
+    (install / "SHA256SUMS.txt").write_text(
+        f"{_digest(old_exe)}  Mini-Monitor.exe\n", encoding="utf-8",
+    )
+    archive = tmp_path / "new.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("Mini-Monitor/Mini-Monitor.exe", b"new desktop exe")
+    archive_data = archive.read_bytes()
+    manifest = UpdateManifest(
+        "0.2.0", "stable",
+        "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/Mini-Monitor.zip",
+        _digest(archive_data), len(archive_data),
+        (("Mini-Monitor/Mini-Monitor.exe", _digest(b"new desktop exe")),),
+    )
+    monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_data))
+    first = stage_update(manifest, install_root=install, config_path=None)
+    prepared = stage_update(manifest, install_root=install, config_path=None)
+    assert first.helper_path.parent != prepared.helper_path.parent
+    lock_path = install.parent / ".mini-monitor-update.lock"
+    lock_path.touch()
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(str(lock_path), 0x80000000, 0, None, 3, 0x80, None)
+    assert handle != ctypes.c_void_p(-1).value, ctypes.get_last_error()
+    try:
+        result = _run_helper(prepared)
+        assert result.returncode != 0
+        assert (install / "Mini-Monitor.exe").read_bytes() == old_exe
+        assert json.loads(prepared.journal_path.read_text(encoding="utf-8"))["state"] == "prepared"
+        assert not list(tmp_path.glob(".mini-monitor-backup-*"))
+    finally:
+        assert ctypes.windll.kernel32.CloseHandle(handle)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows update helper")
 @pytest.mark.parametrize(
     ("runtime_version", "lifetime_ms", "expected_code", "expected_state"),
@@ -194,6 +287,94 @@ def test_fault_after_both_renames_restores_old_program(tmp_path, monkeypatch) ->
     assert journal["state"] == "rolled_back_start_failed"
     assert not Path(journal["backup_root"]).exists()
     assert list(tmp_path.glob(".mini-monitor-failed-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows update helper and file-sharing semantics")
+def test_exited_new_app_with_live_child_lock_reports_failed_restore(tmp_path, monkeypatch) -> None:
+    """A failed rollback must preserve both trees and request manual recovery."""
+    import ai_mini_monitor.updater as updater
+
+    install = tmp_path / "Mini-Monitor"
+    install.mkdir()
+    old_exe = b"old desktop exe"
+    (install / "Mini-Monitor.exe").write_bytes(old_exe)
+    (install / "SHA256SUMS.txt").write_text(
+        f"{_digest(old_exe)}  Mini-Monitor.exe\n", encoding="utf-8",
+    )
+    source = tmp_path / "orphan-lock.cs"
+    source.write_text(
+        """using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+class Program {
+    static int Main(string[] args) {
+        var ack = Environment.GetEnvironmentVariable("MINI_MONITOR_UPDATE_ACK_PATH");
+        var ready = ack + ".child-ready";
+        var stop = ack + ".child-stop";
+        if (args.Length == 1 && args[0] == "--hold-file") {
+            var dll = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_internal", "runtime.dll");
+            using (File.Open(dll, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                File.WriteAllText(ready, "locked");
+                var deadline = DateTime.UtcNow.AddSeconds(8);
+                while (!File.Exists(stop) && DateTime.UtcNow < deadline) Thread.Sleep(50);
+            }
+            File.WriteAllText(ack + ".child-done", "released");
+            return 0;
+        }
+        var child = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, "--hold-file");
+        child.UseShellExecute = false;
+        child.CreateNoWindow = true;
+        Process.Start(child);
+        var readyDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (!File.Exists(ready) && DateTime.UtcNow < readyDeadline) Thread.Sleep(20);
+        return File.Exists(ready) ? 0 : 1;
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    compiled = tmp_path / "orphan-lock.exe"
+    compiler = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+    subprocess.run([str(compiler), "/nologo", f"/out:{compiled}", str(source)],
+                   check=True, capture_output=True, text=True)
+    new_exe = compiled.read_bytes()
+    new_dll = b"new nested dll"
+    archive = tmp_path / "new.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("Mini-Monitor/Mini-Monitor.exe", new_exe)
+        package.writestr("Mini-Monitor/_internal/runtime.dll", new_dll)
+    archive_data = archive.read_bytes()
+    manifest = UpdateManifest(
+        "0.2.0", "stable",
+        "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/Mini-Monitor.zip",
+        _digest(archive_data), len(archive_data),
+        (("Mini-Monitor/Mini-Monitor.exe", _digest(new_exe)),
+         ("Mini-Monitor/_internal/runtime.dll", _digest(new_dll))),
+    )
+    monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_data))
+    prepared = stage_update(manifest, install_root=install, config_path=None)
+    ready = Path(str(prepared.helper_path.parent / "startup-ack.json") + ".child-ready")
+    stop = Path(str(prepared.helper_path.parent / "startup-ack.json") + ".child-stop")
+    done = Path(str(prepared.helper_path.parent / "startup-ack.json") + ".child-done")
+    try:
+        result = _run_helper(prepared, timeout_seconds=1)
+        assert result.returncode == 5, result.stderr
+        assert ready.is_file(), "child did not hold the installed file before parent exit"
+        journal = json.loads(prepared.journal_path.read_text(encoding="utf-8"))
+        assert journal["state"] == "needs_manual_recovery"
+        backup = Path(journal["backup_root"])
+        assert (backup / "Mini-Monitor.exe").read_bytes() == old_exe
+        assert (install / "Mini-Monitor.exe").read_bytes() == new_exe
+        assert (install / "_internal" / "runtime.dll").read_bytes() == new_dll
+        assert not list(tmp_path.glob(".mini-monitor-failed-*"))
+    finally:
+        if ready.is_file():
+            stop.write_text("release", encoding="utf-8")
+            deadline = time.monotonic() + 5
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert done.exists(), "fixture child did not release its file lock"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows update helper")

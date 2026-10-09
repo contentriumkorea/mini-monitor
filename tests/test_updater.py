@@ -276,16 +276,36 @@ def _signed_release_fetcher(tmp_path, monkeypatch, signed_release):
     release = {
         "tag_name": "v0.2.0", "draft": False, "prerelease": False,
         "assets": [
-            {"name": "update-manifest.json", "browser_download_url": asset_base + "update-manifest.json"},
-            {"name": "update-manifest.sig", "browser_download_url": asset_base + "update-manifest.sig"},
+            {"name": "update-v2-manifest.json", "browser_download_url": asset_base + "update-v2-manifest.json"},
+            {"name": "update-v2-manifest.sig", "browser_download_url": asset_base + "update-v2-manifest.sig"},
         ],
     }
     responses = {
         API_URL: json.dumps(release).encode(),
-        asset_base + "update-manifest.json": payload,
-        asset_base + "update-manifest.sig": signature,
+        asset_base + "update-v2-manifest.json": payload,
+        asset_base + "update-v2-manifest.sig": signature,
     }
     return lambda url, _limit: responses[url]
+
+
+def test_v2_release_notifies_legacy_clients_but_cannot_run_their_unsafe_helper(tmp_path, monkeypatch, signed_release) -> None:
+    import ai_mini_monitor.updater as updater
+
+    fetcher = _signed_release_fetcher(tmp_path, monkeypatch, signed_release)
+    # These are the names recognized by deployed 0.2.5/0.2.6 clients.
+    monkeypatch.setattr(updater, "MANIFEST_ASSET", "update-manifest.json")
+    monkeypatch.setattr(updater, "SIGNATURE_ASSET", "update-manifest.sig")
+    service = UpdateService(current_version="0.1.0", install_root=tmp_path / "Mini-Monitor",
+                            config_path=None, _fetcher=fetcher, _state_path=tmp_path / "state.json")
+    try:
+        assert service.check(force=True)
+        _eventually(lambda: service.snapshot().state == "manual_required")
+        assert service.snapshot().notification_pending
+        assert service.snapshot().release_url.endswith("/v0.2.0")
+        assert not service.prepare()
+        assert service.snapshot().prepared is None
+    finally:
+        service.close()
 
 
 def test_available_is_not_published_until_check_finishes_persisting(tmp_path, monkeypatch, signed_release) -> None:
@@ -408,12 +428,12 @@ def test_service_checks_stable_release_once_per_version_and_persists_notice(tmp_
     release = {
         "tag_name": "v0.2.0", "draft": False, "prerelease": False,
         "assets": [
-            {"name": "update-manifest.json", "browser_download_url": asset_base + "update-manifest.json"},
-            {"name": "update-manifest.sig", "browser_download_url": asset_base + "update-manifest.sig"},
+            {"name": "update-v2-manifest.json", "browser_download_url": asset_base + "update-v2-manifest.json"},
+            {"name": "update-v2-manifest.sig", "browser_download_url": asset_base + "update-v2-manifest.sig"},
         ],
     }
-    responses = {API_URL: json.dumps(release).encode(), asset_base + "update-manifest.json": payload,
-                 asset_base + "update-manifest.sig": signature}
+    responses = {API_URL: json.dumps(release).encode(), asset_base + "update-v2-manifest.json": payload,
+                 asset_base + "update-v2-manifest.sig": signature}
     fetcher = lambda url, _limit: responses[url]
     state_path = tmp_path / "state.json"
     service = UpdateService(current_version="0.1.0", install_root=tmp_path / "Mini-Monitor",
@@ -451,12 +471,12 @@ def test_discovery_without_delivery_retries_after_restart(tmp_path, monkeypatch,
     release = {
         "tag_name": "v0.2.0", "draft": False, "prerelease": False,
         "assets": [
-            {"name": "update-manifest.json", "browser_download_url": asset_base + "update-manifest.json"},
-            {"name": "update-manifest.sig", "browser_download_url": asset_base + "update-manifest.sig"},
+            {"name": "update-v2-manifest.json", "browser_download_url": asset_base + "update-v2-manifest.json"},
+            {"name": "update-v2-manifest.sig", "browser_download_url": asset_base + "update-v2-manifest.sig"},
         ],
     }
-    responses = {API_URL: json.dumps(release).encode(), asset_base + "update-manifest.json": payload,
-                 asset_base + "update-manifest.sig": signature}
+    responses = {API_URL: json.dumps(release).encode(), asset_base + "update-v2-manifest.json": payload,
+                 asset_base + "update-v2-manifest.sig": signature}
     state_path = tmp_path / "state.json"
     make_service = lambda: UpdateService(
         current_version="0.1.0", install_root=tmp_path / "Mini-Monitor", config_path=None,
@@ -706,6 +726,7 @@ def test_signer_creates_verifiable_manifest_from_archive(tmp_path, monkeypatch) 
         key_path, output, public_path,
     )
     parsed = verify_release_manifest(manifest_path.read_bytes(), signature_path.read_bytes(), old_public)
+    assert {path.name for path in output.iterdir()} == {"update-v2-manifest.json", "update-v2-manifest.sig"}
     assert parsed.version == "0.2.0"
     assert dict(parsed.files)["Mini-Monitor/Mini-Monitor.exe"] == _digest(exe)
 

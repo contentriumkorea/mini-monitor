@@ -34,8 +34,11 @@ from .security.windows_system import pin_powershell_modules, windows_powershell_
 
 REPO = "contentriumkorea/mini-monitor"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
-MANIFEST_ASSET = "update-manifest.json"
-SIGNATURE_ASSET = "update-manifest.sig"
+# A separate asset namespace keeps pre-0.2.7 clients on manual download.
+# They would otherwise use their unsafe bundled helper, even for a new ZIP.
+# Never publish legacy-name aliases for v2 releases.
+MANIFEST_ASSET = "update-v2-manifest.json"
+SIGNATURE_ASSET = "update-v2-manifest.sig"
 PUBLIC_KEY_RESOURCE = "assets/update-public-key.pem"
 HELPER_RESOURCE = "scripts/Apply-Update.ps1"
 MAX_METADATA = 1024 * 1024
