@@ -227,6 +227,59 @@ def windows_taskbar_rects() -> tuple[WorkArea, WorkArea] | None:
     return None
 
 
+def restore_taskbar_z_order(hwnd: int | None, *, _user32=None) -> bool:
+    """Repair shell occlusion without activation, movement or owner changes.
+
+    Explorer can promote its own topmost taskbar above our topmost window.
+    Repainting does not repair that order. Only raise our HWND when the live
+    shell is actually above it; leave unrelated popup windows alone otherwise.
+    A missing/restarting shell or a failed native call is retried next poll,
+    not treated as a rendering failure that disables the user's taskbar bar.
+    """
+
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        user32 = _user32 if _user32 is not None else ctypes.WinDLL("user32", use_last_error=True)
+        user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+        user32.FindWindowW.restype = wintypes.HWND
+        shell = user32.FindWindowW("Shell_TrayWnd", None)
+        if not shell or shell == hwnd:
+            return False
+        order: list[int] = []
+        previous = None
+        shell_predecessor = None
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        @callback_type
+        def collect(handle, _data):
+            nonlocal previous, shell_predecessor
+            if handle == shell:
+                shell_predecessor = previous
+            if handle in (hwnd, shell):
+                order.append(handle)
+            previous = handle
+            return len(order) < 2
+
+        user32.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.EnumWindows(collect, 0)
+        if order != [shell, hwnd]:
+            return False
+        user32.SetWindowPos.argtypes = (
+            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        )
+        user32.SetWindowPos.restype = wintypes.BOOL
+        # Insert immediately above the shell, below its existing predecessors
+        # (context menus/flyouts). HWND_TOPMOST is needed only if shell is first.
+        # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER.
+        # Never reposition Explorer or activate our window.
+        return bool(user32.SetWindowPos(hwnd, shell_predecessor or -1, 0, 0, 0, 0, 0x213))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def choose_initial_position(
     primary: WorkArea,
     desktop: WorkArea,
@@ -374,6 +427,8 @@ class TaskbarWindow(OverlayWindow):
         # Shell geometry is independent of readings. Re-read even when the
         # cached sensor frame is unchanged (monitor/DPI/Explorer changes).
         self._refresh_shell_position()
+        if self.visible and self._presenter is not None:
+            restore_taskbar_z_order(getattr(self._presenter, "hwnd", None))
         readouts = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
         selected_readouts = tuple(readouts[name] for name in self.items)
         signature = (self.items, self.style, selected_readouts)

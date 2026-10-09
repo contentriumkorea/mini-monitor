@@ -212,6 +212,7 @@ class _FakeWindow:
 class _FakePresenter:
     def __init__(self, _window) -> None:
         self.frames: list[tuple[object, int, int]] = []
+        self.hwnd = 999
 
     def present(self, image, *, x: int, y: int) -> None:
         self.frames.append((image.copy(), x, y))
@@ -234,6 +235,7 @@ def _fake_taskbar(monkeypatch):
 
     monkeypatch.setattr(taskbar.tk, "Toplevel", window_factory)
     monkeypatch.setattr(taskbar, "LayeredWindowPresenter", presenter_factory)
+    monkeypatch.setattr(taskbar, "restore_taskbar_z_order", lambda _hwnd: False)
     monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: (WorkArea(-1920, 0, 0, 1080), WorkArea(0, 0, 1920, 1080)))
     return taskbar, windows, presenters
 
@@ -275,6 +277,32 @@ def test_unchanged_sensor_readings_do_not_represent_native_window(monkeypatch) -
     assert len(presenters[-1].frames) == before + 1
     window.update_sensor(None)
     assert len(presenters[-1].frames) == before + 1
+
+
+def test_cached_readings_restore_shell_order_without_redraw_or_focus(monkeypatch) -> None:
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    stack = [999, 111]
+
+    def restore(hwnd):
+        assert hwnd == 999
+        if stack == [111, 999]:
+            stack[:] = [999, 111]
+
+    monkeypatch.setattr(taskbar, "restore_taskbar_z_order", restore, raising=False)
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show(notify=False)
+    sensor = _sensor(30, 40, 50)
+    window.update_sensor(sensor)
+    before = len(presenters[-1].frames)
+    stack[:] = [111, 999]  # Explorer promotes its topmost taskbar after a click.
+    window.update_sensor(sensor)
+    assert stack == [999, 111]
+    assert len(presenters[-1].frames) == before
+    assert windows[0].focused is False
+    window.hide(notify=False)
+    stack[:] = [111, 999]
+    window.update_sensor(sensor)
+    assert stack == [111, 999]  # An explicitly hidden bar must stay hidden.
 
 
 def test_codex_main_remaining_change_refreshes_cached_frame(monkeypatch) -> None:
