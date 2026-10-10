@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import queue
@@ -30,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .resources import resource_path, user_data_dir
 from .security.windows_system import pin_powershell_modules, windows_powershell_paths
+from .security.windows_recycle import recycle_directory as _recycle_directory
 
 
 REPO = "contentriumkorea/mini-monitor"
@@ -52,6 +54,8 @@ _BAD_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|(?:COM|LPT)(?:[1-9]|[¹²³]))(?:\..*)?\Z", re.I)
 _REDIRECT_HOSTS = {"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 _CHECK_INTERVAL = 86_400.0
+_UPDATE_MAINTENANCE_LOCK = threading.Lock()
+_UPDATE_HANDOFF = threading.Event()
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +415,7 @@ def stage_update(manifest: UpdateManifest, *, install_root: Path, config_path: P
             "old_files": [list(item) for item in old_files],
             "new_files": [list(item) for item in manifest.files],
             "helper_sha256": _sha256_file(helper_path),
+            "archive_sha256": manifest.archive_sha256,
             "version": manifest.version,
             "config_path": str(config_path.resolve(strict=False)) if config_path else None,
             "restart_args": _restart_args(sys.argv[1:]),
@@ -425,6 +430,23 @@ def stage_update(manifest: UpdateManifest, *, install_root: Path, config_path: P
 
 
 def launch_update_helper(prepared: PreparedUpdate, *, parent_pid: int) -> bool:
+    # Do not tell the GUI to exit while cleanup still owns the install lock.
+    if not _UPDATE_MAINTENANCE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        launched = _launch_update_helper(prepared, parent_pid=parent_pid)
+        if launched:
+            _UPDATE_HANDOFF.set()
+        return launched
+    finally:
+        _UPDATE_MAINTENANCE_LOCK.release()
+
+
+def update_cleanup_busy() -> bool:
+    return _UPDATE_MAINTENANCE_LOCK.locked()
+
+
+def _launch_update_helper(prepared: PreparedUpdate, *, parent_pid: int) -> bool:
     if os.name != "nt" or not isinstance(parent_pid, int) or parent_pid <= 0:
         return False
     journal = prepared.journal_path.resolve(strict=True)
@@ -554,54 +576,199 @@ def acknowledge_update_startup(*, current_version: str) -> bool:
             temporary.unlink()
 
 
-def cleanup_healthy_update_backup(install_root: Path) -> int:
-    """Delete only a hash-verified old program tree on a later healthy boot.
+def _repair_update_references(root: Path, backup: Path) -> bool:
+    """Run the bundled, hidden link repair before recycling an old target."""
 
-    The update journal remains available as a recovery record. Any unknown or
-    changed backup file makes cleanup fail closed without touching user data.
-    """
-
+    trusted = windows_powershell_paths()
+    script = resource_path("scripts/Repair-UpdateLinks.ps1")
+    if trusted is None or not script.is_file() or _reparse(script):
+        return False
+    powershell, modules = trusted
+    environment = dict(os.environ)
+    pin_powershell_modules(environment, modules)
+    environment["MINI_MONITOR_REPAIR_LINKS"] = base64.b64encode(
+        _canonical({"install_root": str(root), "retired_roots": [str(backup)]})
+    ).decode("ascii")
     try:
-        root = install_root.resolve(strict=True)
-        if root.name != "Mini-Monitor" or _reparse(root) or _reparse(root.parent):
+        result = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(script)], cwd=root, env=environment,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=20,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _cleanup_stage_verified(stage: Path, record: dict[str, Any]) -> bool:
+    allowed = {"update-journal.json", "startup-ack.json", "release.zip", "Apply-Update.ps1"}
+    if any(_reparse(p) or not p.is_file() or p.name not in allowed for p in stage.iterdir()):
+        return False
+    ack = stage / "startup-ack.json"
+    if ack.stat().st_size > MAX_METADATA:
+        return False
+    acknowledgement = json.loads(ack.read_bytes(), object_pairs_hook=_unique_object)
+    if acknowledgement != {"nonce": record["nonce"], "ready": True, "version": record["version"]}:
+        return False
+    if _sha256_file(stage / "Apply-Update.ps1") != record["helper_sha256"]:
+        return False
+    archive = stage / "release.zip"
+    if archive.stat().st_size > MAX_ARCHIVE:
+        return False
+    if record.get("archive_sha256"):
+        return _sha256_file(archive) == record["archive_sha256"]
+    # The 0.2.7 helper does not record the ZIP digest. Its verified payload
+    # inventory still lets the new version safely clean its upgrade stage.
+    expected = {str(name).casefold(): str(digest) for name, digest in record["new_files"]}
+    actual: dict[str, str] = {}
+    with zipfile.ZipFile(archive) as package:
+        if len(package.infolist()) > MAX_FILES or sum(p.file_size for p in package.infolist()) > MAX_UNPACKED:
+            return False
+        for info in package.infolist():
+            if info.is_dir():
+                continue
+            _validate_member(info.filename)
+            key = info.filename.casefold()
+            if key not in expected or key in actual:
+                return False
+            digest = hashlib.sha256()
+            with package.open(info) as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            actual[key] = digest.hexdigest()
+    return actual == expected
+
+
+def _cleanup_backup_verified(backup: Path, record: dict[str, Any]) -> bool:
+    old_files = tuple((str(path), str(digest)) for path, digest in record["old_files"])
+    if (_install_inventory(backup) != old_files
+            or _sha256_file(backup / "SHA256SUMS.txt") != record["old_inventory_sha256"]):
+        return False
+    expected_dirs = {parent.as_posix().casefold() for name, _digest in old_files
+                     for parent in Path(name).parents if parent != Path(".")}
+    return all(path.relative_to(backup).as_posix().casefold() in expected_dirs
+               for path in backup.rglob("*") if path.is_dir())
+
+
+def cleanup_healthy_update_backup(install_root: Path) -> int:
+    if _UPDATE_HANDOFF.is_set() or not _UPDATE_MAINTENANCE_LOCK.acquire(blocking=False):
+        return 0
+    try:
+        return _cleanup_healthy_update_backup(install_root)
+    finally:
+        _UPDATE_MAINTENANCE_LOCK.release()
+
+
+def _cleanup_healthy_update_backup(install_root: Path) -> int:
+    """Recycle only completed, verified update trees under the install parent.
+
+    Failed/incomplete journals and any tree containing unknown user files are
+    retained. The journal itself travels to the Recycle Bin with the stage.
+    """
+    lock = None
+    try:
+        root = _regular_unresolved_root(install_root)
+        if root.name != "Mini-Monitor" or os.name != "nt":
             return 0
+        import msvcrt
+        lock_path = root.parent / ".mini-monitor-update.lock"
+        if _reparse(lock_path):
+            return 0
+        lock = lock_path.open("a+b")
+        if lock_path.stat().st_size == 0:
+            lock.write(b"0")
+            lock.flush()
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        _install_inventory(root)  # Never clean on a damaged/partial new install.
     except (OSError, ValueError):
+        if lock is not None:
+            lock.close()
         return 0
     removed = 0
-    for stage in root.parent.glob(".mini-monitor-update-*"):
+    try:
+        for stage in list(root.parent.iterdir())[:4096]:
+            try:
+                if not re.fullmatch(r"\.mini-monitor-update-[A-Za-z0-9_-]{6,40}", stage.name):
+                    continue
+                _regular_unresolved_root(stage)
+                journal = stage / "update-journal.json"
+                if not journal.is_file() or _reparse(journal) or journal.stat().st_size > MAX_METADATA:
+                    continue
+                record = json.loads(journal.read_bytes(), object_pairs_hook=_unique_object)
+                if (not isinstance(record, dict) or record.get("schema_version") != 1
+                        or record.get("state") not in {"healthy_backup_retained", "backup_recycled"}
+                        or Path(record["install_root"]) != root
+                        or Path(record["staged_root"]) != stage / "Mini-Monitor"
+                        or Path(record["ack_path"]) != stage / "startup-ack.json"):
+                    continue
+                backup = Path(record["backup_root"])
+                if (backup.parent != root.parent
+                        or not re.fullmatch(r"\.mini-monitor-backup-[0-9a-f]{32}", backup.name)):
+                    continue
+                # No wildcard deletion: a personal file, junction, or unknown
+                # subdirectory in a stage protects the entire update pair.
+                if not _cleanup_stage_verified(stage, record):
+                    continue
+                config = record.get("config_path")
+                if config and any(_within(Path(config), path) for path in (root, stage, backup)):
+                    continue
+                if record["state"] == "healthy_backup_retained":
+                    if not _cleanup_backup_verified(backup, record):
+                        continue
+                    if not _repair_update_references(root, backup):
+                        continue
+                    if not _cleanup_stage_verified(stage, record) or not _cleanup_backup_verified(backup, record):
+                        continue
+                    if not _recycle_directory(backup) or backup.exists():
+                        continue
+                    removed += 1
+                    record["state"] = "backup_recycled"
+                    temporary = journal.with_suffix(".tmp")
+                    temporary.write_bytes(_canonical(record))
+                    os.replace(temporary, journal)
+                if not backup.exists() and _cleanup_stage_verified(stage, record):
+                    _recycle_directory(stage)
+            except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+                continue
+    finally:
+        lock.close()  # Closing also releases the byte-range lock.
+    return removed
+
+
+def finish_update_cleanup(install_root: Path, *, wait_for_update: bool = False) -> int:
+    """Background-only: let the helper finish its acknowledgement/lock first."""
+
+    removed = 0
+    for attempt in range(60 if wait_for_update else 1):
+        if _UPDATE_HANDOFF.is_set():
+            return removed
+        removed += cleanup_healthy_update_backup(install_root)
+        if not wait_for_update:
+            return removed
+        pending = False
         try:
-            if not stage.is_dir() or _reparse(stage) or stage.parent.resolve() != root.parent:
-                continue
-            journal = stage / "update-journal.json"
-            if not journal.is_file() or _reparse(journal):
-                continue
-            record = json.loads(journal.read_bytes(), object_pairs_hook=_unique_object)
-            if record.get("state") != "healthy_backup_retained" or Path(record["install_root"]).resolve() != root:
-                continue
-            backup = Path(record["backup_root"])
-            if (not backup.is_dir() or _reparse(backup)
-                    or backup.parent.resolve() != root.parent
-                    or not backup.name.startswith(".mini-monitor-backup-")):
-                continue
-            old_files = tuple((str(path), str(digest)) for path, digest in record["old_files"])
-            if (_install_inventory(backup) != old_files
-                    or _sha256_file(backup / "SHA256SUMS.txt") != record["old_inventory_sha256"]):
-                continue
-            expected = {relative.casefold(): digest for relative, digest in old_files}
-            for path in sorted((p for p in backup.rglob("*") if p.is_file()), reverse=True):
-                relative = path.relative_to(backup).as_posix()
-                if _reparse(path):
-                    raise ValueError("backup changed during cleanup")
-                if relative != "SHA256SUMS.txt" and _sha256_file(path) != expected[relative.casefold()]:
-                    raise ValueError("backup file changed during cleanup")
-                path.unlink()
-            for directory in sorted((p for p in backup.rglob("*") if p.is_dir()),
-                                    key=lambda item: len(item.parts), reverse=True):
-                directory.rmdir()
-            backup.rmdir()
-            removed += 1
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
+            root = _regular_unresolved_root(install_root)
+            for stage in list(root.parent.iterdir())[:4096]:
+                if not re.fullmatch(r"\.mini-monitor-update-[A-Za-z0-9_-]{6,40}", stage.name):
+                    continue
+                journal = stage / "update-journal.json"
+                if _reparse(stage) or _reparse(journal) or not journal.is_file() or journal.stat().st_size > MAX_METADATA:
+                    continue
+                try:
+                    record = json.loads(journal.read_bytes(), object_pairs_hook=_unique_object)
+                    if (isinstance(record, dict) and record.get("install_root") == str(root)
+                            and record.get("state") in {"new_installed", "healthy_backup_retained"}):
+                        pending = True
+                except (OSError, ValueError, TypeError):
+                    continue
+        except (OSError, ValueError):
+            return removed
+        if not pending:
+            return removed
+        if attempt < 59:
+            time.sleep(1)
     return removed
 
 

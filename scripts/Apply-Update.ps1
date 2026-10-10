@@ -160,8 +160,19 @@ $lockPath = Join-Path $installParent '.mini-monitor-update.lock'
 if (Test-Path -LiteralPath $lockPath) { Assert-Regular $lockPath }
 # All prepared stages for this install share one kernel lock through the swap
 # and acknowledgement, so another helper cannot race its backup or rollback.
-$operationLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate,
-                                  [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+$operationLock = $null
+$lockDeadline = [DateTime]::UtcNow.AddSeconds(60)
+while ($null -eq $operationLock) {
+    try {
+        $operationLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate,
+                                       [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        # The previous helper or a cleanup in another process can briefly
+        # retain the install lock after the new GUI has acknowledged startup.
+        if ([DateTime]::UtcNow -ge $lockDeadline) { throw }
+        Start-Sleep -Milliseconds 250
+    }
+}
 $oldMap = Get-ExpectedMap $record.old_files $false
 $newMap = Get-ExpectedMap $record.new_files $true
 if ([string]$record.old_inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or

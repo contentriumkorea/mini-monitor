@@ -736,6 +736,10 @@ def test_bundled_login_removes_cli_troubleshooting_and_keeps_update_dialog() -> 
         window._update_open_button.invoke()
         window.window.update()
         assert window._update_dialog.winfo_ismapped()
+        # A synthetic key event requires Tk keyboard focus; a concurrently
+        # active desktop app must not turn this into a no-op on Windows.
+        window._update_dialog.focus_force()
+        window.window.update()
         window._update_dialog.event_generate("<Escape>")
         window.window.update()
         assert not window._update_dialog.winfo_ismapped()

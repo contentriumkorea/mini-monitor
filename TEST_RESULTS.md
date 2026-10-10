@@ -30,3 +30,20 @@ packaging artifact fingerprint; the final build must pass the fresh artifact gat
 Landscape and portrait credit displays were rendered and inspected at native size.
 Public asset hashes and the live installed 0.2.2-to-0.2.3 update result are recorded
 in the GitHub Release after publication, rather than predicted here.
+
+## 0.2.8 automatic cleanup verification snapshot (2026-10-10)
+
+The cleanup implementation before the release-version bump passed **1,059 tests,
+1 skipped in 146.84 seconds**. The skip was the pre-existing packaging artifact
+fingerprint, not a cleanup test. Coverage includes native recoverable Recycle Bin
+payloads, update success/rollback, temporary and persistent cross-process locks,
+shortcut repair, user-file additions during cleanup, altered archives and empty
+directories, and preservation of synthetic settings/sign-in data. There is no
+cleanup button. Only verified journal-owned completed updates are recycled;
+unknown/user-modified trees and failed recovery backups remain protected.
+
+This source snapshot does not establish final frozen-build acceptance, live
+GitHub update discovery, or installation on this PC. Those gates are measured
+after the build and recorded with the 0.2.8 Release, without modifying this file
+after its build fingerprint is frozen. Physical USB screen appearance and new
+browser sign-in remain user-side checks; neither is automated for this release.

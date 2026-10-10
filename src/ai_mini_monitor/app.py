@@ -64,8 +64,9 @@ from .ui.tray import TrayCommand, TrayController, create_command_queue
 from .updater import (
     UpdateService,
     acknowledge_update_startup,
-    cleanup_healthy_update_backup,
+    finish_update_cleanup,
     launch_update_helper,
+    update_cleanup_busy,
 )
 from .update_recovery import RecoveryNotice, discover_update_recovery
 from .single_instance import DEFAULT_MUTEX_NAME
@@ -806,9 +807,11 @@ def run_desktop(
                 acknowledged=False, frozen=True,
             ):
                 LOGGER.warning("update recovery check could not start")
+        if getattr(sys, "frozen", False) and auto_exit_seconds is None:
             threading.Thread(
-                target=cleanup_healthy_update_backup,
+                target=finish_update_cleanup,
                 args=(Path(sys.executable).resolve().parent,),
+                kwargs={"wait_for_update": update_acknowledged},
                 name="mini-monitor-update-cleanup",
                 daemon=True,
             ).start()
@@ -1046,7 +1049,8 @@ def run_desktop(
                     updater.mark_notification_delivered(update_snapshot.version)
                 else:
                     notice_retry_at[update_snapshot.version] = now + _UPDATE_NOTICE_RETRY_SECONDS
-        if apply_requested and update_snapshot.state == "ready" and update_snapshot.prepared is not None:
+        if (apply_requested and update_snapshot.state == "ready" and update_snapshot.prepared is not None
+                and not update_cleanup_busy()):
             apply_requested = False
             try:
                 launched = launch_update_helper(update_snapshot.prepared, parent_pid=os.getpid())
@@ -1056,6 +1060,8 @@ def run_desktop(
             if launched:
                 request_exit()
                 return
+            if update_cleanup_busy():
+                apply_requested = True  # Retry automatically after cleanup, without quitting.
             LOGGER.warning("update helper launch failed; app remains running")
 
         image = session.latest_image()

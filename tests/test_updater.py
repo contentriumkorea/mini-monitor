@@ -183,6 +183,7 @@ def test_update_helper_uses_os_system_powershell_not_environment(tmp_path, monke
     """Catches an attacker-controlled SystemRoot choosing the update runner."""
     import ctypes
     import ai_mini_monitor.updater as updater
+    monkeypatch.setattr(updater, "_UPDATE_HANDOFF", threading.Event())
 
     buffer = ctypes.create_unicode_buffer(32768)
     assert ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer)) > 0

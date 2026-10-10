@@ -21,7 +21,7 @@ def test_release_versions_and_program_names_match() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     spec = (ROOT / "AI-Mini-Monitor.spec").read_text(encoding="utf-8")
 
-    assert project["project"]["version"] == __version__ == "0.2.7"
+    assert project["project"]["version"] == __version__ == "0.2.8"
     assert re.search(r'console=False,.*?name="Mini-Monitor"', spec, re.DOTALL) or re.search(
         r'name="Mini-Monitor".*?console=False,', spec, re.DOTALL
     )
@@ -38,6 +38,7 @@ def test_release_key_and_helper_are_packaged_resources() -> None:
         "f5a46fe4a0b5992a0dd0c7592c87001b60228644ad4d6fc073d403ea95f43598"
     )
     assert '"scripts/Apply-Update.ps1"' in spec
+    assert '"scripts/Repair-UpdateLinks.ps1"' in spec
     assert 'add_tree(datas, "assets", "assets")' in spec
     assert '"scripts",' in build
     assert '"assets",' in build

@@ -1,5 +1,7 @@
 # Mini Monitor
 
+Version 0.2.8 automatically recycles hash-verified previous-version backups and completed update staging folders after the new app starts successfully and the update helper releases its lock. There is no cleanup button. Existing known shortcuts and opted-in startup paths are repaired first; disabled startup stays disabled. Settings/sign-in data, failed recovery backups, unknown folders and trees containing user files remain untouched. Cleanup failures are retried on a later healthy launch; the Recycle Bin is not emptied.
+
 Mini Monitor is an independent, unofficial GPL-3.0-or-later Windows dashboard, not an OpenAI product. It supports a 3.5-inch USB serial display and an optional desktop overlay. Five cards show CPU, RAM, GPU, VRAM and Codex account limits in 480×320 landscape (2+2+1) or 320×480 portrait orientation. Each card has a right-side gauge that fills upward; waveform graphs and duplicate bottom bars are omitted for readability.
 
 [한국어 설치·사용 안내](README_KO.md) · [Releases](https://github.com/contentriumkorea/mini-monitor/releases) · [Source offer](SOURCE-OFFER.md) · [Test results](TEST_RESULTS.md)

@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -20,7 +21,8 @@ def _digest(data: bytes) -> str:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows update helper")
-def test_failed_new_executable_rolls_back_without_touching_user_data(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("temporary_install_lock", [False, True])
+def test_failed_new_executable_rolls_back_without_touching_user_data(tmp_path, monkeypatch, temporary_install_lock) -> None:
     import ai_mini_monitor.updater as updater
 
     install = tmp_path / "Mini-Monitor"
@@ -43,6 +45,16 @@ def test_failed_new_executable_rolls_back_without_touching_user_data(tmp_path, m
     )
     monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_bytes))
     prepared = stage_update(manifest, install_root=install, config_path=None)
+    lock = None
+    if temporary_install_lock:
+        import msvcrt
+        lock = (tmp_path / ".mini-monitor-update.lock").open("a+b")
+        lock.write(b"0")
+        lock.flush()
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        # A prior updater/cleanup may still hold its cross-process lock.
+        threading.Timer(3, lock.close).start()
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     result = subprocess.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
@@ -87,6 +99,7 @@ def _compiled_test_executable(tmp_path: Path, *, write_ack: bool, version: str, 
 def _run_helper(
     prepared, *, timeout_seconds: int = 60, culture: str | None = None,
     extra_env: dict[str, str] | None = None,
+    process_timeout_seconds: int = 15,
 ) -> subprocess.CompletedProcess[str]:
     journal = json.loads(prepared.journal_path.read_text(encoding="utf-8"))
     journal["ack_timeout_seconds"] = timeout_seconds
@@ -112,7 +125,7 @@ def _run_helper(
          str(script), *prefix, "-JournalPath", str(prepared.journal_path),
          "-JournalSha256", _digest(prepared.journal_path.read_bytes()),
          "-HelperSha256", _digest(prepared.helper_path.read_bytes()), "-ParentPid", "99999999"],
-        cwd=prepared.helper_path.parent, capture_output=True, text=True, timeout=15,
+        cwd=prepared.helper_path.parent, capture_output=True, text=True, timeout=process_timeout_seconds,
         env={**os.environ, "MINI_MONITOR_UPDATE_TEST_NO_NOTICE": "1", **(extra_env or {})},
     )
 
@@ -199,7 +212,9 @@ def test_independent_stage_cannot_swap_while_install_lock_is_held(tmp_path, monk
     handle = create_file(str(lock_path), 0x80000000, 0, None, 3, 0x80, None)
     assert handle != ctypes.c_void_p(-1).value, ctypes.get_last_error()
     try:
-        result = _run_helper(prepared)
+        # Allow the helper's bounded 60-second sharing-lock retry to expire,
+        # rather than the test killing it after the old 15-second deadline.
+        result = _run_helper(prepared, process_timeout_seconds=75)
         assert result.returncode != 0
         assert (install / "Mini-Monitor.exe").read_bytes() == old_exe
         assert json.loads(prepared.journal_path.read_text(encoding="utf-8"))["state"] == "prepared"
@@ -227,15 +242,18 @@ def test_helper_accepts_only_correct_version_ack_or_preserves_backup(
     new_exe = _compiled_test_executable(
         tmp_path, write_ack=bool(runtime_version), version=runtime_version, lifetime_ms=lifetime_ms,
     )
+    inventory = (_digest(new_exe) + "  Mini-Monitor.exe\n").encode()
     archive = tmp_path / "new.zip"
     with zipfile.ZipFile(archive, "w") as package:
         package.writestr("Mini-Monitor/Mini-Monitor.exe", new_exe)
+        package.writestr("Mini-Monitor/SHA256SUMS.txt", inventory)
     archive_bytes = archive.read_bytes()
     manifest = UpdateManifest(
         "0.2.0", "stable",
         "https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.0/Mini-Monitor.zip",
         _digest(archive_bytes), len(archive_bytes),
-        (("Mini-Monitor/Mini-Monitor.exe", _digest(new_exe)),),
+        (("Mini-Monitor/Mini-Monitor.exe", _digest(new_exe)),
+         ("Mini-Monitor/SHA256SUMS.txt", _digest(inventory))),
     )
     monkeypatch.setattr(updater, "_download_archive", lambda _url, target, _size: target.write_bytes(archive_bytes))
     prepared = stage_update(manifest, install_root=install, config_path=None)
@@ -251,6 +269,11 @@ def test_helper_accepts_only_correct_version_ack_or_preserves_backup(
         assert backup.is_dir()
         assert (backup / "Mini-Monitor.exe").read_bytes() == b"old desktop exe"
     if expected_state == "healthy_backup_retained":
+        # The synthetic executable writes an extra argument-capture diagnostic.
+        # It is not an updater-owned file and must not be swept up by cleanup.
+        capture = prepared.journal_path.parent / "startup-ack.json.args"
+        if capture.exists():
+            capture.replace(tmp_path / "captured-args.txt")
         assert updater.cleanup_healthy_update_backup(install) == 1
         assert not backup.exists()
     elif expected_state == "needs_manual_recovery_alive":

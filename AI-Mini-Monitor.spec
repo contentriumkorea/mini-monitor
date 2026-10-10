@@ -45,6 +45,7 @@ binaries = []
 # Immutable runtime assets retain the same resource_path() layout in _MEIPASS.
 add_tree(datas, "assets", "assets")
 add_optional_file(datas, "scripts/Apply-Update.ps1", "scripts")
+add_optional_file(datas, "scripts/Repair-UpdateLinks.ps1", "scripts")
 add_tree(datas, "previews", "previews")
 add_tree(datas, "third_party/source", "third_party/source")
 codex_runtime = ROOT / "third_party/codex-app-server/codex-app-server.exe"
