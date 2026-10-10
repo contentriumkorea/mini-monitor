@@ -79,7 +79,7 @@ def _codex_remaining(ai: AIData | None) -> str:
     if ai.provider not in (AIProviderKind.CODEX_ACCOUNT, AIProviderKind.CODEX_LOCAL):
         return "--"
     value = ai.primary_value
-    if re.fullmatch(r"(?:100|[1-9]?\d)%", value) is None:
+    if re.fullmatch(r"(?:100|[1-9]?\d)%|(?:\d{1,3}(?:,\d{3}){0,3}|--|UNLTD) Credit", value) is None:
         return "--"
     return value
 
@@ -106,6 +106,16 @@ def taskbar_frame_size(items=DEFAULT_TASKBAR_ITEMS, style: str = "icon") -> tupl
     return len(selected) * _STYLE_CELL_WIDTHS[style] - trailing_trim, FRAME_SIZE[1]
 
 
+def _cell_width(name: str, reading: str, style: str) -> int:
+    base = _STYLE_CELL_WIDTHS[style]
+    if not reading.endswith(" Credit"):
+        return base
+    prefix = 26 if style in ("icon", "both") else 4
+    if style in ("text", "both"):
+        prefix += metric_mono(10).getlength(name.upper()) + 8
+    return max(base, int(prefix + metric_mono(14 if style == "icon" else 13).getlength(reading) + 5))
+
+
 def render_taskbar_frame(
     sensor: SensorSnapshot | None,
     ai: AIData | None = None,
@@ -116,15 +126,17 @@ def render_taskbar_frame(
     """Render one compact semantic frame for the existing layered presenter."""
 
     selected = validate_taskbar_options(items, style)
-    width = _STYLE_CELL_WIDTHS[style]
-    size = taskbar_frame_size(selected, style)
     readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
+    widths = [_cell_width(name, readings[name], style) for name in selected]
+    # Trim only the percent cell's unused tail, never a full credit label.
+    trim = _ICON_TRAILING_TRIM if style == "icon" and not readings[selected[-1]].endswith(" Credit") else 0
+    size = (sum(widths) - trim, FRAME_SIZE[1])
     background = Image.new("RGB", size, (8, 8, 8))
     mask = Image.new("L", size, 0)
     foreground = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(foreground)
-    for index, name in enumerate(selected):
-        x = index * width
+    x = 0
+    for name, width in zip(selected, widths):
         if style in ("icon", "both"):
             foreground.alpha_composite(_icon(name), (x + 4, 7))
         if style in ("text", "both"):
@@ -134,6 +146,7 @@ def render_taskbar_frame(
             draw.text((x + 26, 16), readings[name], font=metric_mono(14), fill=(248, 248, 248, 255), anchor="lm")
         else:
             draw.text((x + width - 4, 16), readings[name], font=metric_mono(13), fill=(248, 248, 248, 255), anchor="rm")
+        x += width
     frame = Image.alpha_composite(background.convert("RGBA"), foreground).convert("RGB")
     frame.info[OVERLAY_LAYERS_INFO_KEY] = OverlayLayers(background, foreground, mask)
     return frame

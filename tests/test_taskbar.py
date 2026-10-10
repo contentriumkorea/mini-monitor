@@ -85,6 +85,52 @@ def test_non_codex_ai_percentage_is_not_mislabeled_as_codex() -> None:
     assert taskbar._readouts(None, ai)[4] == "--"
 
 
+@pytest.mark.parametrize("style", ["icon", "text", "both"])
+@pytest.mark.parametrize("balance,want", [("60518.43", "60,518 Credit"), ("123456789012.25", "123,456,789,012 Credit")])
+def test_taskbar_credit_label_expands_without_truncation(style, balance, want):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+    from ai_mini_monitor.rendering.fonts import metric_mono
+
+    taskbar = _taskbar()
+    ai = _display("ready", (CodexLimitWindow(10080, 100, None),), credit_balance=balance)
+    assert taskbar._readouts(None, ai)[4] == want
+    frame = taskbar.render_taskbar_frame(None, ai, items=("cpu", "codex"), style=style)
+    font = metric_mono(14 if style == "icon" else 13)
+    prefix = {"icon": 26, "text": 4 + metric_mono(10).getlength("CODEX") + 8,
+              "both": 26 + metric_mono(10).getlength("CODEX") + 8}[style]
+    assert frame.width >= taskbar._STYLE_CELL_WIDTHS[style] + prefix + font.getlength(want) + 4
+    alpha = get_overlay_layers(frame).foreground.getchannel("A")
+    assert alpha.getbbox()[2] < frame.width
+
+
+@pytest.mark.parametrize("balance", ["0", None])
+def test_taskbar_without_credit_balance_keeps_zero_percent_and_compact_width(balance):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    taskbar = _taskbar()
+    ai = _display("ready", (CodexLimitWindow(10080, 100, None),), credit_balance=balance)
+    assert taskbar._readouts(None, ai)[4] == "0%"
+    assert taskbar.render_taskbar_frame(None, ai).size == (348, 32)
+
+
+def test_credit_balance_and_reset_refresh_cached_taskbar_frame(monkeypatch):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    taskbar, _windows, presenters = _fake_taskbar(monkeypatch)
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show(notify=False)
+    def reading(used, balance):
+        return _display("ready", (CodexLimitWindow(10080, used, None),), credit_balance=balance)
+    window.update_sensor(None, reading(100, "60518"))
+    before = len(presenters[-1].frames)
+    credit_width = window.state.width
+    window.update_sensor(None, reading(100, "60517"))
+    assert len(presenters[-1].frames) == before + 1
+    window.update_sensor(None, reading(15, "60517"))
+    assert len(presenters[-1].frames) == before + 2
+    assert window.state.width < credit_width
+
+
 def test_compact_frame_renders_five_distinct_icon_and_value_regions_without_surface() -> None:
     taskbar = _taskbar()
     unknown = taskbar.render_taskbar_frame(None)

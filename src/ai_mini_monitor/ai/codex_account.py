@@ -19,11 +19,13 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..models import AIData, AIProviderKind, SyncStatus
+from ..formatting import format_credit_balance
 from ..resources import resource_path
 from ..security.windows_system import pin_powershell_modules, windows_powershell_paths
 
@@ -116,13 +118,31 @@ def _display(
             (f"{_duration_label(window.duration_mins)} LEFT", f"{round(window.remaining_percent)}%")
             for window in windows[1:2]
         )
+        # Either account window can exhaust the included allowance. Use the
+        # actual limit, not the rounded display (99.6% used still has quota).
+        exhausted = next((window for window in windows if window.remaining_percent <= 0), None)
+        primary_value = f"{round(main.remaining_percent)}%"
+        primary_label = f"{_duration_label(main.duration_mins)} LEFT"
+        if exhausted is not None:
+            balance_text = format_credit_balance(credit_field[1])
+            has_credits = credits_unlimited or (
+                balance_text not in ("--", "UNLTD")
+                and credit_balance is not None
+                and Decimal(credit_balance) > 0
+            )
+            primary_value = f"{balance_text} Credit" if has_credits else "0%"
+            primary_label = f"{_duration_label(exhausted.duration_mins)} LEFT" + (" 0%" if has_credits else "")
+            fields = tuple(
+                (f"{_duration_label(window.duration_mins)} LEFT", f"{round(window.remaining_percent)}%")
+                for window in windows if window is not exhausted
+            )[:1]
         return AIData(
             provider=AIProviderKind.CODEX_ACCOUNT,
             title="CODEX",
             status=SyncStatus.DELAYED if state == "delayed" else SyncStatus.OK,
-            primary_value=f"{round(main.remaining_percent)}%",
-            primary_label=f"{_duration_label(main.duration_mins)} LEFT",
-            fields=fields + (credit_field,),
+            primary_value=primary_value,
+            primary_label=primary_label,
+            fields=fields if exhausted is not None else fields + (credit_field,),
             last_sync=updated_at,
             budget_ratio=main.used_percent / 100.0,
             budget_label=f"{_duration_label(main.duration_mins)} USED {round(main.used_percent)}%",

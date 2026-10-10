@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
 from math import isfinite
 import re
 
 from PIL import Image, ImageDraw, ImageFont
+
+from ..formatting import format_credit_balance
 
 from ..models import (
     AIData,
@@ -177,18 +178,11 @@ def _metric_percent(metric: Metric) -> str:
 
 
 _PERCENT_VALUE = re.compile(r"([+-]?(?:\d+(?:\.\d+)?|\.\d+))%")
+_CREDIT_VALUE = re.compile(r"(\d{1,3}(?:,\d{3})*|--|UNLTD) Credit")
 
 
 def _metric_temperature(metric: Metric) -> str:
     return "-- °C" if metric.value is None else f"{round(metric.value):d} °C"
-
-
-def _format_credit_balance(value: str) -> str:
-    if value == "UNLIMITED":
-        return "UNLTD"
-    if re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,32})?", value) is None:
-        return "--"
-    return f"{int(Decimal(value)):,}"
 
 
 class DashboardRenderer:
@@ -341,14 +335,15 @@ class DashboardRenderer:
         *,
         anchor: str,
     ) -> None:
-        """Draw a numeric percentage with a compact, bottom-aligned unit suffix.
+        """Draw a percent or credit value with a compact, bottom-aligned unit.
 
         The original key is retained as a virtual group placement so callers
         can keep treating the value as one right- or left-anchored label. The
         actual glyph runs are exposed as ``*_digits`` and ``*_suffix``.
         """
 
-        match = _PERCENT_VALUE.fullmatch(text)
+        match = _PERCENT_VALUE.fullmatch(text) or _CREDIT_VALUE.fullmatch(text)
+        unit = "Credit" if text.endswith(" Credit") else "%"
         if match is None:
             self._text(draw, key, xy, text, metric_mono(digit_size), fill, clip, anchor=anchor)
             return
@@ -371,7 +366,7 @@ class DashboardRenderer:
         )
         suffix_probe = draw.textbbox(
             (xy[0], baseline_y),
-            "%",
+            unit,
             font=suffix_font,
             anchor="rs" if horizontal_anchor == "r" else "ls",
         )
@@ -380,7 +375,7 @@ class DashboardRenderer:
         if horizontal_anchor == "r":
             suffix_probe = draw.textbbox(
                 (xy[0], suffix_y),
-                "%",
+                unit,
                 font=suffix_font,
                 anchor="rs",
             )
@@ -389,7 +384,7 @@ class DashboardRenderer:
                 draw,
                 f"{key}_suffix",
                 (suffix_x, suffix_y),
-                "%",
+                unit,
                 suffix_font,
                 fill,
                 clip,
@@ -420,7 +415,7 @@ class DashboardRenderer:
                 draw,
                 f"{key}_suffix",
                 (number.bbox[2] + gap, suffix_y),
-                "%",
+                unit,
                 suffix_font,
                 fill,
                 clip,
@@ -476,9 +471,9 @@ class DashboardRenderer:
         self, draw: ImageDraw.ImageDraw, key: str, rect: Rect, track: Rect,
         value: str, color: str,
     ) -> TextPlacement:
-        size = self._fit_large_value_size(
-            draw, value, 50, 24, min(112, track.x - rect.x - 30),
-        )
+        credit = _CREDIT_VALUE.fullmatch(value) is not None
+        max_width = track.x - rect.x - 110 if credit else min(112, track.x - rect.x - 30)
+        size = self._fit_large_value_size(draw, value, 50, 6 if credit else 24, max_width)
         self._draw_large_percent(
             draw, key, (track.x - 6, rect.bottom - 10), value,
             size, color, rect, anchor="rs",
@@ -733,7 +728,7 @@ class DashboardRenderer:
         for index, (label, value) in enumerate(fields):
             top = rect.y + 46 + index * 17
             label_placement = self._text(draw, f"ai_field_{index}_label", (info_x, top), label.upper()[:10], inter(10), self.theme.secondary_text, rect)
-            display_value = _format_credit_balance(value) if label.upper() == "CREDITS" else value[:8]
+            display_value = format_credit_balance(value) if label.upper() == "CREDITS" else value[:8]
             value_right = min(info_right, info_x + 130)
             available_width = value_right - label_placement.bbox[2] - 6
             value_font = mono(10)
@@ -841,7 +836,8 @@ class DashboardRenderer:
     ) -> int:
         """Fit the large AI value beside its label without moving its anchor."""
 
-        match = _PERCENT_VALUE.fullmatch(text)
+        match = _PERCENT_VALUE.fullmatch(text) or _CREDIT_VALUE.fullmatch(text)
+        unit = "Credit" if text.endswith(" Credit") else "%"
         for size in range(maximum, minimum - 1, -1):
             if match is None:
                 bbox = draw.textbbox((0, 0), text, font=metric_mono(size), anchor="ls")
@@ -850,7 +846,7 @@ class DashboardRenderer:
                 digits_font = metric_mono(size)
                 suffix_font = metric_mono(max(1, round(size * 0.5)))
                 digits_bbox = draw.textbbox((0, 0), match.group(1), font=digits_font, anchor="ls")
-                suffix_bbox = draw.textbbox((0, 0), "%", font=suffix_font, anchor="ls")
+                suffix_bbox = draw.textbbox((0, 0), unit, font=suffix_font, anchor="ls")
                 width = (
                     digits_bbox[2]
                     - digits_bbox[0]

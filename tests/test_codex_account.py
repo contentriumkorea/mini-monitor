@@ -20,6 +20,45 @@ import pytest
 from ai_mini_monitor.ai.codex_account import CodexAccountService
 
 
+@pytest.mark.parametrize("balance,unlimited,want", [
+    ("60518.43", False, "60,518 Credit"),
+    ("0", False, "0%"),
+    ("0.0000000000", False, "0%"),
+    (None, False, "0%"),
+    ("--", False, "0%"),
+    ("NaN", False, "0%"),
+    ("0.43", False, "0 Credit"),
+    (None, True, "UNLTD Credit"),
+])
+@pytest.mark.parametrize("used", [(100, 38), (21, 100)])
+def test_exhausted_account_limit_switches_to_full_credit_balance(balance, unlimited, want, used):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    windows = (CodexLimitWindow(10080, used[0], None), CodexLimitWindow(300, used[1], None))
+    ai = _display("ready", windows, credit_balance=balance, credits_unlimited=unlimited)
+    assert ai.primary_value == want
+    assert ai.primary_label == ("7D LEFT" if used[0] == 100 else "5H LEFT") + (" 0%" if want.endswith(" Credit") else "")
+
+
+def test_exhausted_credit_balance_drain_returns_to_zero_percent():
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    window = (CodexLimitWindow(10080, 100, None),)
+    assert _display("ready", window, credit_balance="1").primary_value == "1 Credit"
+    assert _display("ready", window, credit_balance="0").primary_value == "0%"
+
+
+def test_rounded_zero_does_not_switch_to_credit_and_reset_restores_percentage():
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    def reading(used):
+        return _display("ready", (CodexLimitWindow(10080, used, None),), credit_balance="60518.43")
+
+    assert reading(99.6).primary_value == "0%"
+    assert reading(100).primary_value == "60,518 Credit"
+    assert reading(15).primary_value == "85%"
+
+
 @pytest.fixture(autouse=True)
 def _fake_bundled_runtime_for_rpc_tests(monkeypatch, request, tmp_path):
     """RPC tests use a fake process at the bundled-runtime boundary."""

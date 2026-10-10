@@ -21,6 +21,39 @@ LAYOUTS = (LANDSCAPE_LAYOUT, PORTRAIT_LAYOUT)
 
 
 @pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("balance,want", [("60518.43", "60,518 Credit"), ("123456789012.25", "123,456,789,012 Credit")])
+def test_exhausted_codex_credit_is_readable_without_overlap_on_dashboard_and_overlay(layout, balance, want):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    ai = _display("ready", (CodexLimitWindow(10080, 100, None),), credit_balance=balance)
+    renderer = DashboardRenderer(layout=layout)
+    frame = renderer.render(replace(_snapshot(), ai=ai))
+    assert renderer.last_placements["ai_primary"].text == want
+    assert renderer.last_placements["ai_primary_suffix"].text == "Credit"
+    assert renderer.last_gauges["ai"].fill is None  # Credits have no percentage denominator.
+    assert renderer.clipping_issues == ()
+    drawn = [p for p in renderer.last_placements.values() if p.drawn and p.clip == layout.ai]
+    for first, second in combinations(drawn, 2):
+        assert (first.bbox[2] <= second.bbox[0] or second.bbox[2] <= first.bbox[0]
+                or first.bbox[3] <= second.bbox[1] or second.bbox[3] <= first.bbox[1]), (first.key, second.key)
+    assert get_overlay_layers(frame).foreground.getchannel("A").getextrema()[1] == 255
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("balance", ["0", None])
+def test_exhausted_codex_without_credits_keeps_zero_percent_on_dashboard_and_overlay(layout, balance):
+    from ai_mini_monitor.ai.codex_account import CodexLimitWindow, _display
+
+    ai = _display("ready", (CodexLimitWindow(10080, 100, None),), credit_balance=balance)
+    renderer = DashboardRenderer(layout=layout)
+    renderer.render(replace(_snapshot(), ai=ai))
+    assert renderer.last_placements["ai_primary"].text == "0%"
+    assert renderer.last_placements["ai_primary_suffix"].text == "%"
+    assert renderer.last_gauges["ai"].ratio == 0
+    assert renderer.clipping_issues == ()
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
 @pytest.mark.parametrize("value", [None, 0, 100])
 def test_all_five_cards_put_details_left_of_large_right_percent_and_gauge(layout: DashboardLayout, value: int | None) -> None:
     renderer = DashboardRenderer(layout=layout)
