@@ -375,6 +375,7 @@ class TaskbarWindow:
         self._visible = self._closed = self._mapped = False
         self._shell_binding = None
         self._shell_binding_width = 0
+        self._shell_binding_dpi = None
         self._shell_suppressed = True
         self._scale_percent = 100
         self._frame_dpi = None
@@ -426,7 +427,6 @@ class TaskbarWindow:
     def _sync(self, *, force: bool = False, notify: bool = True) -> None:
         old_geometry = self._geometry
         dpi = taskbar_dpi_percent()
-        dpi_changed = self._frame_dpi != dpi
         readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(self._sensor, self._ai)))
         signature = (self.items, self.style, tuple(readings[name] for name in self.items))
         dirty = signature != self._last_readouts or dpi != self._frame_dpi
@@ -454,7 +454,7 @@ class TaskbarWindow:
             _, bar, tray = binding
             minimum, maximum = bar.left, tray.left - width - _TRAY_GAP
             previous = self._shell_binding
-            if previous is not None and (previous != binding or dpi_changed):
+            if previous is not None and (previous != binding or self._shell_binding_dpi != dpi):
                 _, old_bar, old_tray = previous
                 old_range = old_tray.left - self._shell_binding_width - _TRAY_GAP - old_bar.left
                 fraction = 1.0 if old_range <= 0 else min(1.0, max(0.0, (x - old_bar.left) / old_range))
@@ -464,6 +464,7 @@ class TaskbarWindow:
             x = min(maximum, max(minimum, x))
             y = bar.top + (bar.height - height) // 2
             self._shell_binding, self._shell_binding_width = binding, width
+            self._shell_binding_dpi = dpi
         # Keep the last VALID binding across shell loss for relative recovery.
         self._geometry = OverlayGeometry(x, y, width, height)
         self._shell_suppressed = binding is None or not taskbar_should_be_visible(self._window.hwnd)

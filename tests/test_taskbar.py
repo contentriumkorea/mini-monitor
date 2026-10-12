@@ -581,6 +581,28 @@ def test_drag_clamps_x_and_keeps_taskbar_y(monkeypatch):
     assert (window.state.x, window.state.y) == (-592, 1040)
 
 
+@pytest.mark.parametrize('left,initial_x,want_x', [(0, 664, 490), (-1920, -1256, -1430)])
+def test_dpi_change_while_shell_missing_preserves_last_valid_fraction(monkeypatch, left, initial_x, want_x):
+    taskbar, windows, _presenters = _fake_taskbar(monkeypatch)
+    shell = (WorkArea(left, 984, left + 1920, 1080), WorkArea(left + 1678, 984, left + 1920, 1080))
+    rects, dpi = [shell], [100]
+    monkeypatch.setattr(taskbar, 'full_monitor_areas', lambda _root: (WorkArea(left, 0, left + 1920, 1080),))
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: rects[0])
+    monkeypatch.setattr(taskbar, 'taskbar_dpi_percent', lambda: dpi[0])
+    window = taskbar.TaskbarWindow(object(), position=(initial_x, 1016))
+    window.show(notify=False)
+    assert window.horizontal_position() == (50.0, initial_x)
+    rects[0] = None
+    dpi[0] = 200
+    window.update_sensor(None)
+    assert not windows[0].mapped and window.visible
+    rects[0] = shell
+    window.update_sensor(None)
+    assert window.state.width == 696
+    assert window.horizontal_position() == (50.0, want_x)
+    assert windows[0].mapped
+
+
 def test_taskbar_window_option_change_resizes_and_refreshes_cached_frame(monkeypatch) -> None:
     taskbar, _windows, presenters = _fake_taskbar(monkeypatch)
     bar = WorkArea(0, 1032, 1920, 1080)
