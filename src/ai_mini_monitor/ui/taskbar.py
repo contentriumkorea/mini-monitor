@@ -3,12 +3,13 @@
 """A small, draggable sensor readout that can sit on the Windows taskbar.
 
 This is an independent layered window.  It never injects into Explorer or
-modifies the shell; the existing overlay presenter owns its native HWND.
+modifies the shell; a native surface owns its HWND and reuses the RGBA presenter.
 """
 
 from __future__ import annotations
 
 import ctypes
+import logging
 from ctypes import wintypes
 from functools import lru_cache
 from math import isfinite
@@ -25,11 +26,14 @@ from ..rendering.fonts import metric_mono
 from ..rendering.renderer import OVERLAY_LAYERS_INFO_KEY, OverlayLayers
 from ..resources import resource_path
 from .layered_window import LayeredWindowPresenter
-from .overlay import OverlayGeometry, OverlayState, OverlayWindow, WorkArea, _fallback_work_areas, default_work_areas
+from .overlay import OverlayGeometry, OverlayState, WorkArea, _fallback_work_areas, default_work_areas, compose_overlay_rgba, _with_native_hit_test_floor
+from .native_taskbar import NativeTaskbarSurface
 from .preview import require_main_thread
+from .taskbar_shell import taskbar_dpi_percent, taskbar_should_be_visible
 
 
 FRAME_SIZE = (348, 32)
+LOGGER = logging.getLogger(__name__)
 _CELL_WIDTH = 72
 _STYLE_CELL_WIDTHS = {"icon": 72, "text": 86, "both": 108}
 _ICON_TRAILING_TRIM = 12
@@ -354,115 +358,192 @@ def clamp_taskbar_position(
     if x + width > safe_right and x < notify.right:
         if safe_right - width >= bar.left:
             return safe_right - width, y
-        above = bar.top - height - _EDGE_MARGIN
-        if above >= primary.top:
-            return x, above
-        below = bar.bottom + _EDGE_MARGIN
-        if below + height <= primary.bottom:
-            return x, below
     return position
 
 
-class TaskbarWindow(OverlayWindow):
-    """Independent, always-on-top taskbar-sized overlay with manual dragging."""
+class TaskbarWindow:
+    """Native readout with logical ON independent from shell visibility."""
 
-    def __init__(
-        self,
-        root: tk.Misc,
-        *,
-        position: tuple[int, int] | None = None,
-        items=DEFAULT_TASKBAR_ITEMS,
-        style: str = "icon",
-        on_state_change: Callable[[OverlayState], None] | None = None,
-    ) -> None:
+    def __init__(self, root: tk.Misc, *, position: tuple[int, int] | None = None,
+                 items=DEFAULT_TASKBAR_ITEMS, style: str = "icon",
+                 on_state_change: Callable[[OverlayState], None] | None = None) -> None:
+        require_main_thread()
+        self._root = root
         self.items = validate_taskbar_options(items, style)
         self.style = style
-        self._shell_binding: tuple[WorkArea, WorkArea, WorkArea] | None = None
-        size = taskbar_frame_size(self.items, self.style)
+        self._on_state_change = on_state_change
+        self._visible = self._closed = self._mapped = False
+        self._shell_binding = None
+        self._shell_binding_width = 0
+        self._shell_suppressed = True
+        self._scale_percent = 100
+        self._frame_dpi = None
+        self._image = None
+        self._last_readouts = None
+        self._sensor = self._ai = None
+        width, height = taskbar_frame_size(self.items, self.style)
         if position is None:
-            primary = full_monitor_areas(root)[0]
-            desktop = default_work_areas(root)[0]
-            position = choose_initial_position(primary, desktop, windows_taskbar_rects(), size)
-        super().__init__(
-            root,
-            title="Mini Monitor · 작업 표시줄 바",
-            frame_size=size,
-            opacity=_SURFACE_OPACITY,
-            scale_percent=100,
-            position=position,
-            on_state_change=on_state_change,
-            work_areas_provider=full_monitor_areas,
-            presenter_factory=LayeredWindowPresenter,
-        )
-        self._last_readouts: tuple[tuple[str, ...], str, tuple[str, ...]] | None = None
-        self._sensor: SensorSnapshot | None = None
-        self._ai: AIData | None = None
-        self.update_sensor(None)
+            position = choose_initial_position(full_monitor_areas(root)[0],
+                default_work_areas(root)[0], windows_taskbar_rects(), (width, height))
+        self._geometry = OverlayGeometry(*position, width, height)
+        self._window = NativeTaskbarSurface(on_drag=self._drag_by)
+        try:
+            self._presenter = LayeredWindowPresenter(self._window)
+            self.update_sensor(None)
+        except BaseException:
+            self._window.destroy()
+            raise
 
-    def _apply_geometry(self, *, render: bool) -> None:
-        primary = full_monitor_areas(self._window)[0]
-        current = self._geometry
+    @property
+    def window(self):
+        return self._window
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def visible(self) -> bool:
+        return self._visible and not self._closed
+
+    @property
+    def state(self) -> OverlayState:
+        g = self._geometry
+        return OverlayState(g.x, g.y, g.width, g.height, 0.0,
+                            self._scale_percent, self.visible)
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("taskbar window is closed")
+
+    def _notify_state_change(self) -> None:
+        if self._on_state_change is not None:
+            try:
+                self._on_state_change(self.state)
+            except Exception as error:
+                LOGGER.warning("taskbar state callback failed (%s)", type(error).__name__)
+
+    def _sync(self, *, force: bool = False, notify: bool = True) -> None:
+        old_geometry = self._geometry
+        dpi = taskbar_dpi_percent()
+        dpi_changed = self._frame_dpi != dpi
+        readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(self._sensor, self._ai)))
+        signature = (self.items, self.style, tuple(readings[name] for name in self.items))
+        dirty = signature != self._last_readouts or dpi != self._frame_dpi
+        if dirty:
+            image = render_taskbar_frame(self._sensor, self._ai,
+                items=self.items, style=self.style, dpi_percent=dpi)
+            self._image = image
+            self._last_readouts, self._frame_dpi = signature, dpi
+        self._scale_percent = dpi
+        width, height = self._image.size
+        x, y = old_geometry.x, old_geometry.y
+        primary = full_monitor_areas(self._root)[0]
         rects = windows_taskbar_rects()
         binding = None
         if rects is not None:
-            bar, notify = rects
-            if (bar.width > bar.height * 3
+            bar, tray = rects
+            if (bar.width > bar.height * 3 and height <= bar.height
                     and primary.left <= bar.left < bar.right <= primary.right
                     and primary.top <= bar.top < bar.bottom <= primary.bottom
-                    and bar.left <= notify.left < notify.right <= bar.right
-                    and bar.top <= notify.top < notify.bottom <= bar.bottom
-                    and notify.left - current.width - _TRAY_GAP >= bar.left):
-                binding = primary, bar, notify
-        x, y = clamp_taskbar_position(
-            (current.x, current.y),
-            (current.width, current.height),
-            primary,
-            rects,
-        )
+                    and bar.left <= tray.left < tray.right <= bar.right
+                    and bar.top <= tray.top < tray.bottom <= bar.bottom
+                    and tray.left - width - _TRAY_GAP >= bar.left):
+                binding = primary, bar, tray
         if binding is not None:
-            _, bar, notify = binding
-            minimum, maximum = bar.left, notify.left - current.width - _TRAY_GAP
+            _, bar, tray = binding
+            minimum, maximum = bar.left, tray.left - width - _TRAY_GAP
             previous = self._shell_binding
-            if previous is not None and binding != previous:
-                _, old_bar, old_notify = previous
-                old_range = old_notify.left - current.width - _TRAY_GAP - old_bar.left
-                fraction = 1.0 if old_range <= 0 else min(1.0, max(0.0, (current.x - old_bar.left) / old_range))
+            if previous is not None and (previous != binding or dpi_changed):
+                _, old_bar, old_tray = previous
+                old_range = old_tray.left - self._shell_binding_width - _TRAY_GAP - old_bar.left
+                fraction = 1.0 if old_range <= 0 else min(1.0, max(0.0, (x - old_bar.left) / old_range))
                 x = minimum + round((maximum - minimum) * fraction)
-            elif previous is None and not (current.y < bar.bottom and current.y + current.height > bar.top):
-                # Legacy absolute coordinates may still be on-screen after a
-                # resolution change, but they are not a valid shell anchor.
+            elif previous is None and not (y < bar.bottom and y + height > bar.top):
                 x = maximum
             x = min(maximum, max(minimum, x))
-            y = bar.top + (bar.height - current.height) // 2
-        self._shell_binding = binding
-        if (x, y) != (current.x, current.y):
-            self._geometry = OverlayGeometry(x, y, current.width, current.height)
-        elif not render and self._initial_work_areas is None:
-            return
-        super()._apply_geometry(render=render)
+            y = bar.top + (bar.height - height) // 2
+            self._shell_binding, self._shell_binding_width = binding, width
+        # Keep the last VALID binding across shell loss for relative recovery.
+        self._geometry = OverlayGeometry(x, y, width, height)
+        self._shell_suppressed = binding is None or not taskbar_should_be_visible(self._window.hwnd)
+        should_map = self.visible and not self._shell_suppressed
+        try:
+            if should_map:
+                if dirty or force or not self._mapped or self._geometry != old_geometry:
+                    rgba = compose_overlay_rgba(self._image, 0.0)
+                    self._presenter.present(_with_native_hit_test_floor(rgba), x=x, y=y)
+                if not self._mapped:
+                    self._window.show()
+                    self._mapped = True
+                restore_taskbar_z_order(self._window.hwnd)
+            else:
+                self._window.hide()
+                self._mapped = False
+        except Exception:
+            self._window.hide()
+            self._mapped = False
+            raise
+        if notify and self._geometry != old_geometry:
+            self._notify_state_change()
 
     def _refresh_shell_position(self) -> None:
-        previous = self._geometry
-        self._apply_geometry(render=False)
-        if self._geometry != previous:
-            self._notify_state_change()
+        self._sync()
 
     def update_sensor(self, sensor: SensorSnapshot | None, ai: AIData | None = None) -> None:
         require_main_thread()
         self._ensure_open()
-        # Shell geometry is independent of readings. Re-read even when the
-        # cached sensor frame is unchanged (monitor/DPI/Explorer changes).
-        self._refresh_shell_position()
-        if self.visible and self._presenter is not None:
-            restore_taskbar_z_order(getattr(self._presenter, "hwnd", None))
-        readouts = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
-        selected_readouts = tuple(readouts[name] for name in self.items)
-        signature = (self.items, self.style, selected_readouts)
+        _readouts(sensor, ai)  # validate before replacing the latest cache
         self._sensor, self._ai = sensor, ai
-        if signature == self._last_readouts:
+        self._sync()
+
+    def show(self, *, notify: bool = True) -> None:
+        require_main_thread()
+        self._ensure_open()
+        previous = self._visible
+        self._visible = True
+        try:
+            self._sync(force=True, notify=False)
+        except Exception:
+            self._visible = previous
+            raise
+        if notify:
+            self._notify_state_change()
+
+    def hide(self, *, notify: bool = True) -> None:
+        require_main_thread()
+        if self._closed:
             return
-        self.update_image(render_taskbar_frame(sensor, ai, items=self.items, style=self.style))
-        self._last_readouts = signature
+        self._window.hide()
+        self._visible = self._mapped = False
+        if notify:
+            self._notify_state_change()
+
+    def destroy(self) -> None:
+        require_main_thread()
+        if not self._closed:
+            self._window.destroy()
+            self._closed = True
+            self._visible = self._mapped = False
+
+    def set_position(self, x: int, y: int, *, notify: bool = True) -> tuple[int, int]:
+        require_main_thread()
+        self._ensure_open()
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in (x, y)):
+            raise ValueError("taskbar position must contain integers")
+        g = self._geometry
+        self._geometry = OverlayGeometry(x, y, g.width, g.height)
+        try:
+            self._sync(force=True, notify=False)
+        except Exception:
+            self._geometry = g
+            raise
+        if notify:
+            self._notify_state_change()
+        return self.state.x, self.state.y
+
+    def _drag_by(self, delta_x: int) -> None:
+        self.set_position(self.state.x + delta_x, self.state.y)
 
     def set_options(self, items, style: str) -> None:
         require_main_thread()
@@ -470,23 +551,24 @@ class TaskbarWindow(OverlayWindow):
         selected = validate_taskbar_options(items, style)
         if (selected, style) == (self.items, self.style):
             return
-        previous = self.items, self.style, self._last_readouts
+        previous = self.items, self.style
         self.items, self.style = selected, style
-        self._last_readouts = None
         try:
-            self.update_sensor(self._sensor, self._ai)
+            self._sync()
         except Exception:
-            self.items, self.style, self._last_readouts = previous
+            self.items, self.style = previous
+            self._last_readouts = None
+            self._sync()
             raise
         self._notify_state_change()
 
     def _horizontal_limits(self) -> tuple[int, int, bool]:
         self._refresh_shell_position()
         state = self.state
-        if self._shell_binding is not None:
+        if self._shell_binding is not None and not self._shell_suppressed:
             _, bar, notify = self._shell_binding
             return bar.left, notify.left - state.width - _TRAY_GAP, True
-        areas = full_monitor_areas(self._window)
+        areas = full_monitor_areas(self._root)
         center_x = state.x + state.width / 2
         center_y = state.y + state.height / 2
         monitor = next(

@@ -61,3 +61,28 @@ def test_taskbar_settings_reject_invalid_values(field, value):
     setattr(config.overlay, field, value)
     with pytest.raises(ValueError):
         config.validate()
+
+
+def test_suppressed_native_bar_persists_on_and_collects_latest_reading(tmp_path, monkeypatch):
+    from test_taskbar import _fake_taskbar, _sensor
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    allowed = [True]
+    monkeypatch.setattr(taskbar, 'taskbar_should_be_visible', lambda _hwnd: allowed[0])
+    path = tmp_path / 'settings.json'
+    config = AppConfig()
+    save_config(config, path)
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show(notify=False)
+    allowed[0] = False
+    window.update_sensor(_sensor(70, 30, 40))
+    app._persist_taskbar_state_config(config, window.state, path)
+    assert load_config(path).overlay.taskbar_enabled and window.visible
+    assert not windows[0].mapped
+    window.update_sensor(_sensor(80, 30, 40))
+    allowed[0] = True
+    window.update_sensor(_sensor(80, 30, 40))
+    assert windows[0].mapped and presenters[-1].frames
+    assert window._last_readouts[2][0] == '80%'
+    window.hide(notify=False)
+    app._persist_taskbar_state_config(config, window.state, path)
+    assert not load_config(path).overlay.taskbar_enabled

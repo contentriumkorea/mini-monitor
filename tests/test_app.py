@@ -1438,6 +1438,48 @@ def test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart
     assert events.index("image") < events.index("ack")
 
 
+@pytest.mark.parametrize('failure', ['create', 'show'])
+def test_native_failure_is_contained_by_taskbar_request(monkeypatch, tmp_path, failure):
+    """Run the existing complete desktop flow after one native boundary failure."""
+    original_setattr = monkeypatch.setattr
+    failed = [False]
+    def intercept(target, name, value, *args, **kwargs):
+        if target is app and name == 'TaskbarWindow':
+            original_factory = value
+            def factory(*factory_args, **factory_kwargs):
+                if failure == 'create' and not failed[0]:
+                    failed[0] = True
+                    raise OSError('native creation fixture')
+                instance = original_factory(*factory_args, **factory_kwargs)
+                original_show = instance.show
+                def show(**show_kwargs):
+                    if failure == 'show' and not failed[0]:
+                        failed[0] = True
+                        raise OSError('native show fixture')
+                    return original_show(**show_kwargs)
+                instance.show = show
+                return instance
+            value = factory
+        elif target is app and name == 'SetupWindow':
+            original_setup = value
+            def setup(**setup_kwargs):
+                instance = original_setup(**setup_kwargs)
+                original_loop = instance.window.mainloop
+                def loop():
+                    result = instance.callbacks['on_taskbar_change'](True)
+                    assert not result.ok and failed[0]
+                    assert not instance.closed
+                    original_loop()  # login, refresh, sampling, update and exit still work
+                instance.window.mainloop = loop
+                return instance
+            value = setup
+        return original_setattr(target, name, value, *args, **kwargs)
+    monkeypatch.setattr = intercept
+    test_desktop_account_login_refresh_and_stop_do_not_require_serial_or_restart_service(
+        monkeypatch, tmp_path, False, False, False, False, False)
+    assert failed[0]
+
+
 def test_autostart_action_reports_failed_readback_without_claiming_success(
     monkeypatch,
 ) -> None:

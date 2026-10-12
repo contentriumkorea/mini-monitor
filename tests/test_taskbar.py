@@ -276,62 +276,166 @@ def test_full_monitor_provider_preserves_negative_monitor_bounds(monkeypatch) ->
 
 
 class _FakeWindow:
-    def __init__(self, _root, *, class_: str) -> None:
-        self.class_name = class_
-        self.title_text = ""
-        self.attributes_set: dict[str, object] = {}
-        self.bindings: dict[str, object] = {}
-        self.geometry_value = ""
-        self.focused = False
+    def __init__(self, *, on_drag) -> None:
+        self.on_drag = on_drag
+        self.hwnd = 999
+        self.mapped = False
         self.destroyed = False
 
-    def title(self, value: str) -> None: self.title_text = value
-    def configure(self, **_kwargs) -> None: pass
-    def overrideredirect(self, _value: bool) -> None: pass
-    def attributes(self, key: str, value: object) -> None: self.attributes_set[key] = value
-    def protocol(self, _name: str, _callback) -> None: pass
-    def bind(self, name: str, callback, *, add: str) -> None: self.bindings[name] = callback
-    def geometry(self, value: str) -> None: self.geometry_value = value
-    def withdraw(self) -> None: pass
-    def deiconify(self) -> None: pass
-    def lift(self) -> None: pass
-    def update_idletasks(self) -> None: pass
+    def show(self) -> None: self.mapped = True
+    def hide(self) -> None: self.mapped = False
+    def winfo_id(self) -> int: return self.hwnd
     def destroy(self) -> None: self.destroyed = True
-    def focus_set(self) -> None: self.focused = True
 
 
 class _FakePresenter:
     def __init__(self, _window) -> None:
+        self.window = _window
         self.frames: list[tuple[object, int, int]] = []
         self.hwnd = 999
 
     def present(self, image, *, x: int, y: int) -> None:
         self.frames.append((image.copy(), x, y))
 
-
 def _fake_taskbar(monkeypatch):
     taskbar = _taskbar()
     windows: list[_FakeWindow] = []
     presenters: list[_FakePresenter] = []
 
-    def window_factory(root, *, class_):
-        window = _FakeWindow(root, class_=class_)
+    def window_factory(*, on_drag):
+        window = _FakeWindow(on_drag=on_drag)
         windows.append(window)
         return window
 
-    def presenter_factory(window):
+    def presenter_factory(window, *, no_activate=False):
         presenter = _FakePresenter(window)
         presenters.append(presenter)
         return presenter
 
-    monkeypatch.setattr(taskbar.tk, "Toplevel", window_factory)
+    monkeypatch.setattr(taskbar, "NativeTaskbarSurface", window_factory, raising=False)
     monkeypatch.setattr(taskbar, "LayeredWindowPresenter", presenter_factory)
     monkeypatch.setattr(taskbar, "restore_taskbar_z_order", lambda _hwnd: False)
+    monkeypatch.setattr(taskbar, "taskbar_dpi_percent", lambda: 100, raising=False)
+    monkeypatch.setattr(taskbar, "taskbar_should_be_visible", lambda _hwnd: True, raising=False)
     monkeypatch.setattr(taskbar, "full_monitor_areas", lambda _root: (WorkArea(-1920, 0, 0, 1080), WorkArea(0, 0, 1920, 1080)))
+    monkeypatch.setattr(taskbar, "windows_taskbar_rects", lambda: (WorkArea(-1920, 1032, 0, 1080), WorkArea(-242, 1032, 0, 1080)))
     return taskbar, windows, presenters
 
 
-def test_taskbar_window_uses_existing_overlay_lifecycle_without_stealing_focus(monkeypatch) -> None:
+@pytest.mark.parametrize('scale,size,y', [(150, (522, 48), 2076), (200, (696, 64), 2068), (250, (870, 80), 2060)])
+def test_taskbar_scales_with_shell_dpi_in_physical_4k_bounds(monkeypatch, scale, size, y):
+    taskbar, _windows, presenters = _fake_taskbar(monkeypatch)
+    monkeypatch.setattr(taskbar, 'taskbar_dpi_percent', lambda: scale)
+    monkeypatch.setattr(taskbar, 'full_monitor_areas', lambda _root: (WorkArea(0, 0, 3840, 2160),))
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: (WorkArea(0, 2052, 3840, 2148), WorkArea(3400, 2052, 3840, 2148)))
+    window = taskbar.TaskbarWindow(object(), position=(0, 0))
+    window.show(notify=False)
+    assert (window.state.width, window.state.height) == size
+    assert window.state.x == 3400 - size[0] - 2
+    assert window.state.y == y
+    assert presenters[-1].frames[-1][0].size == size
+
+
+def test_fullscreen_suspends_actual_window_but_preserves_enabled_state_and_resumes_cached_pixels(monkeypatch):
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    can_show = [True]
+    monkeypatch.setattr(taskbar, 'taskbar_should_be_visible', lambda _hwnd: can_show[0])
+    changes = []
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040), on_state_change=changes.append)
+    sensor = _sensor(30, 40, 50)
+    window.show()
+    window.update_sensor(sensor)
+    can_show[0] = False
+    window.update_sensor(sensor)
+    assert window.visible is True  # Logical ON remains saved; only presentation is hidden.
+    assert windows[0].mapped is False
+    before = len(presenters[-1].frames)
+    window.update_sensor(_sensor(50, 50, 50))
+    assert len(presenters[-1].frames) == before
+    can_show[0] = True
+    window.update_sensor(_sensor(50, 50, 50))
+    assert windows[0].mapped is True
+    assert len(presenters[-1].frames) > before
+    assert all(state.visible for state in changes)
+    window.hide()
+    can_show[0] = False
+    window.update_sensor(sensor)
+    can_show[0] = True
+    window.update_sensor(sensor)
+    assert window.visible is False
+    assert windows[0].mapped is False
+
+
+def test_live_dpi_change_preserves_relative_horizontal_position_and_repaints_same_values(monkeypatch):
+    taskbar, _windows, presenters = _fake_taskbar(monkeypatch)
+    dpi = [100]
+    areas = [WorkArea(0, 0, 1920, 1080)]
+    shell = [WorkArea(0, 1032, 1920, 1080), WorkArea(1678, 1032, 1920, 1080)]
+    monkeypatch.setattr(taskbar, 'taskbar_dpi_percent', lambda: dpi[0])
+    monkeypatch.setattr(taskbar, 'full_monitor_areas', lambda _root: tuple(areas))
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: tuple(shell))
+    window = taskbar.TaskbarWindow(object(), position=(664, 1040))
+    window.show(notify=False)
+    window.update_sensor(None)
+    dpi[0] = 200
+    areas[:] = [WorkArea(0, 0, 3840, 2160)]
+    shell[:] = [WorkArea(0, 2064, 3840, 2160), WorkArea(3400, 2064, 3840, 2160)]
+    window.update_sensor(None)
+    assert (window.state.x, window.state.y, window.state.width, window.state.height) == (1351, 2080, 696, 64)
+    assert window.horizontal_position()[0] == 50
+    assert presenters[-1].frames[-1][0].size == (696, 64)
+
+
+def test_enabled_during_fullscreen_waits_without_flash_or_changing_saved_switch(monkeypatch):
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    can_show = [False]
+    monkeypatch.setattr(taskbar, 'taskbar_should_be_visible', lambda _hwnd: can_show[0])
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show()
+    window.update_sensor(None)
+    assert window.state.visible is True
+    assert windows[0].mapped is False
+    assert not any(p.frames for p in presenters)
+    can_show[0] = True
+    window.update_sensor(None)
+    assert window.state.visible is True
+    assert windows[0].mapped is True
+    assert presenters[-1].frames
+
+
+def test_lost_tray_geometry_suspends_instead_of_becoming_desktop_overlay(monkeypatch):
+    taskbar, windows, _presenters = _fake_taskbar(monkeypatch)
+    shell = [(WorkArea(-1920, 1032, 0, 1080), WorkArea(-242, 1032, 0, 1080))]
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: shell[0])
+    window = taskbar.TaskbarWindow(object(), position=(-590, 1040))
+    window.show(notify=False)
+    shell[0] = None
+    window.update_sensor(None)
+    assert window.visible is True
+    assert windows[0].mapped is False
+    shell[0] = (WorkArea(-1920, 1032, 0, 1080), WorkArea(-242, 1032, 0, 1080))
+    window.update_sensor(None)
+    assert windows[0].mapped is True
+
+
+@pytest.mark.parametrize('bar,notify', [
+    (WorkArea(0, 984, 1920, 1080), WorkArea(650, 984, 1920, 1080)),
+    (WorkArea(0, 1060, 1920, 1080), WorkArea(1600, 1060, 1920, 1080)),
+])
+def test_no_usable_taskbar_surface_never_floats_above_apps(monkeypatch, bar, notify):
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    monkeypatch.setattr(taskbar, 'taskbar_dpi_percent', lambda: 200)
+    monkeypatch.setattr(taskbar, 'full_monitor_areas', lambda _root: (WorkArea(0, 0, 1920, 1080),))
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: (bar, notify))
+    window = taskbar.TaskbarWindow(object(), position=(500, 990))
+    window.show(notify=False)
+    window.update_sensor(None)
+    assert window.visible is True
+    assert windows[0].mapped is False
+    assert not any(p.frames for p in presenters)
+
+
+def test_taskbar_native_lifecycle_releases_surface(monkeypatch) -> None:
     taskbar, windows, presenters = _fake_taskbar(monkeypatch)
 
     window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
@@ -342,9 +446,7 @@ def test_taskbar_window_uses_existing_overlay_lifecycle_without_stealing_focus(m
     window.update_sensor(_sensor(0, 100, None))
     assert window.visible is True
     assert window.state.opacity == 0
-    assert windows[0].attributes_set["-topmost"] is True
-    assert windows[0].title_text == "Mini Monitor · 작업 표시줄 바"
-    assert windows[0].focused is False
+    assert windows[0].mapped is True
     assert presenters[-1].frames[-1][1:] == (-1800, 1040)
     window.hide(notify=False)
     assert window.visible is False
@@ -389,7 +491,6 @@ def test_cached_readings_restore_shell_order_without_redraw_or_focus(monkeypatch
     window.update_sensor(sensor)
     assert stack == [999, 111]
     assert len(presenters[-1].frames) == before
-    assert windows[0].focused is False
     window.hide(notify=False)
     stack[:] = [111, 999]
     window.update_sensor(sensor)
@@ -436,15 +537,48 @@ def test_saved_or_dragged_taskbar_position_stays_left_of_primary_notification_ar
     assert clamp((1980, 1040), (360, 32), primary, (bar, notify)) == (1980, 1040)
 
 
-def test_narrow_taskbar_moves_above_or_below_when_bar_cannot_fit_left_of_notification_area() -> None:
+def test_narrow_taskbar_never_moves_above_or_below_apps() -> None:
     taskbar = _taskbar()
     primary = WorkArea(0, 0, 800, 1080)
     bottom_bar = WorkArea(0, 1032, 800, 1080)
     bottom_notify = WorkArea(430, 1032, 800, 1080)
-    assert taskbar.clamp_taskbar_position((260, 1040), (540, 32), primary, (bottom_bar, bottom_notify)) == (260, 984)
+    assert taskbar.clamp_taskbar_position((260, 1040), (540, 32), primary, (bottom_bar, bottom_notify)) == (260, 1040)
     top_bar = WorkArea(0, 0, 800, 48)
     top_notify = WorkArea(430, 0, 800, 48)
-    assert taskbar.clamp_taskbar_position((260, 8), (540, 32), primary, (top_bar, top_notify)) == (260, 64)
+    assert taskbar.clamp_taskbar_position((260, 8), (540, 32), primary, (top_bar, top_notify)) == (260, 8)
+
+
+def test_hidden_credit_and_options_resume_latest_frame_or_remain_suppressed(monkeypatch):
+    taskbar, windows, presenters = _fake_taskbar(monkeypatch)
+    allowed = [True]
+    rects = [WorkArea(-1920, 1032, 0, 1080), WorkArea(-242, 1032, 0, 1080)]
+    monkeypatch.setattr(taskbar, 'taskbar_should_be_visible', lambda _hwnd: allowed[0])
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: tuple(rects))
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show(notify=False)
+    window.set_horizontal_percent(50, notify=False)
+    allowed[0] = False
+    window.update_sensor(None, _codex('999,999,999 Credit'))
+    window.set_options(('cpu', 'codex'), 'both')
+    rects[1] = WorkArea(-1800, 1032, 0, 1080)
+    allowed[0] = True
+    window.update_sensor(None, _codex('60,518 Credit'))
+    assert not windows[0].mapped and window.visible
+    rects[1] = WorkArea(-242, 1032, 0, 1080)
+    window.update_sensor(None, _codex('60,518 Credit'))
+    assert windows[0].mapped
+    assert window._last_readouts[2] == ('--', '60,518 Credit')
+    assert presenters[-1].frames[-1][0].width == window.state.width
+
+
+def test_drag_clamps_x_and_keeps_taskbar_y(monkeypatch):
+    taskbar, windows, _presenters = _fake_taskbar(monkeypatch)
+    window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
+    window.show(notify=False)
+    windows[0].on_drag(-99999)
+    assert (window.state.x, window.state.y) == (-1920, 1040)
+    windows[0].on_drag(99999)
+    assert (window.state.x, window.state.y) == (-592, 1040)
 
 
 def test_taskbar_window_option_change_resizes_and_refreshes_cached_frame(monkeypatch) -> None:
