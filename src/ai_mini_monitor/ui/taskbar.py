@@ -49,11 +49,12 @@ def percent_text(metric: Metric) -> str:
     return f"{round(min(value, 100)):d}%"
 
 
-@lru_cache(maxsize=5)
-def _icon(name: str) -> Image.Image:
+@lru_cache(maxsize=40)
+def _icon(name: str, dpi_percent: int = 100) -> Image.Image:
     path = resource_path(f"assets/icons/{name}.png")
+    side = round(18 * _dpi_scale(dpi_percent))
     with Image.open(path) as source:
-        icon = source.convert("RGBA").resize((18, 18), Image.Resampling.LANCZOS)
+        icon = source.convert("RGBA").resize((side, side), Image.Resampling.LANCZOS)
     if name == "codex":
         white = Image.new("RGBA", icon.size, (255, 255, 255, 255))
         white.putalpha(icon.getchannel("A"))
@@ -98,22 +99,31 @@ def _readouts(sensor: SensorSnapshot | None, ai: AIData | None = None) -> tuple[
     )
 
 
-def taskbar_frame_size(items=DEFAULT_TASKBAR_ITEMS, style: str = "icon") -> tuple[int, int]:
+def _dpi_scale(dpi_percent: int) -> float:
+    if isinstance(dpi_percent, bool) or not isinstance(dpi_percent, int) or not 100 <= dpi_percent <= 800:
+        raise ValueError('DPI percent must be an integer from 100 to 800')
+    return dpi_percent / 100
+
+
+def taskbar_frame_size(items=DEFAULT_TASKBAR_ITEMS, style: str = "icon", *, dpi_percent: int = 100) -> tuple[int, int]:
     selected = validate_taskbar_options(items, style)
     # The icon readout fits even "100%" in 60px. Trim only the last cell's
     # unused transparent tail so its visible content can sit closer to the tray.
     trailing_trim = _ICON_TRAILING_TRIM if style == "icon" else 0
-    return len(selected) * _STYLE_CELL_WIDTHS[style] - trailing_trim, FRAME_SIZE[1]
+    scale = _dpi_scale(dpi_percent)
+    return (len(selected) * round(_STYLE_CELL_WIDTHS[style] * scale) - round(trailing_trim * scale),
+            round(FRAME_SIZE[1] * scale))
 
 
-def _cell_width(name: str, reading: str, style: str) -> int:
-    base = _STYLE_CELL_WIDTHS[style]
+def _cell_width(name: str, reading: str, style: str, dpi_percent: int = 100) -> int:
+    scale = _dpi_scale(dpi_percent)
+    base = round(_STYLE_CELL_WIDTHS[style] * scale)
     if not reading.endswith(" Credit"):
         return base
-    prefix = 26 if style in ("icon", "both") else 4
+    prefix = round((26 if style in ("icon", "both") else 4) * scale)
     if style in ("text", "both"):
-        prefix += metric_mono(10).getlength(name.upper()) + 8
-    return max(base, int(prefix + metric_mono(14 if style == "icon" else 13).getlength(reading) + 5))
+        prefix += metric_mono(round(10 * scale)).getlength(name.upper()) + round(8 * scale)
+    return max(base, int(prefix + metric_mono(round((14 if style == "icon" else 13) * scale)).getlength(reading) + round(5 * scale)))
 
 
 def render_taskbar_frame(
@@ -122,15 +132,18 @@ def render_taskbar_frame(
     *,
     items=DEFAULT_TASKBAR_ITEMS,
     style: str = "icon",
+    dpi_percent: int = 100,
 ) -> Image.Image:
     """Render one compact semantic frame for the existing layered presenter."""
 
     selected = validate_taskbar_options(items, style)
+    scale = _dpi_scale(dpi_percent)
+    px = lambda value: round(value * scale)
     readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
-    widths = [_cell_width(name, readings[name], style) for name in selected]
+    widths = [_cell_width(name, readings[name], style, dpi_percent) for name in selected]
     # Trim only the percent cell's unused tail, never a full credit label.
     trim = _ICON_TRAILING_TRIM if style == "icon" and not readings[selected[-1]].endswith(" Credit") else 0
-    size = (sum(widths) - trim, FRAME_SIZE[1])
+    size = (sum(widths) - px(trim), px(FRAME_SIZE[1]))
     background = Image.new("RGB", size, (8, 8, 8))
     mask = Image.new("L", size, 0)
     foreground = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -138,14 +151,14 @@ def render_taskbar_frame(
     x = 0
     for name, width in zip(selected, widths):
         if style in ("icon", "both"):
-            foreground.alpha_composite(_icon(name), (x + 4, 7))
+            foreground.alpha_composite(_icon(name, dpi_percent), (x + px(4), px(7)))
         if style in ("text", "both"):
-            label_x = x + (26 if style == "both" else 4)
-            draw.text((label_x, 16), name.upper(), font=metric_mono(10), fill=(190, 190, 190, 255), anchor="lm")
+            label_x = x + px(26 if style == "both" else 4)
+            draw.text((label_x, px(16)), name.upper(), font=metric_mono(px(10)), fill=(190, 190, 190, 255), anchor="lm")
         if style == "icon":
-            draw.text((x + 26, 16), readings[name], font=metric_mono(14), fill=(248, 248, 248, 255), anchor="lm")
+            draw.text((x + px(26), px(16)), readings[name], font=metric_mono(px(14)), fill=(248, 248, 248, 255), anchor="lm")
         else:
-            draw.text((x + width - 4, 16), readings[name], font=metric_mono(13), fill=(248, 248, 248, 255), anchor="rm")
+            draw.text((x + width - px(4), px(16)), readings[name], font=metric_mono(px(13)), fill=(248, 248, 248, 255), anchor="rm")
         x += width
     frame = Image.alpha_composite(background.convert("RGBA"), foreground).convert("RGB")
     frame.info[OVERLAY_LAYERS_INFO_KEY] = OverlayLayers(background, foreground, mask)

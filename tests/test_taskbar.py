@@ -47,6 +47,51 @@ def _codex(value: str, *, used_ratio: float | None = None) -> AIData:
     return AIData(provider=AIProviderKind.CODEX_ACCOUNT, primary_value=value, budget_ratio=used_ratio)
 
 
+@pytest.mark.parametrize('dpi,size,font_size,icon_size', [
+    (100, (348, 32), 14, 18), (150, (522, 48), 21, 27),
+    (200, (696, 64), 28, 36), (250, (870, 80), 35, 45),
+])
+def test_taskbar_renderer_draws_at_native_dpi(monkeypatch, dpi, size, font_size, icon_size):
+    taskbar = _taskbar()
+    fonts, icons = [], []
+    real_font, real_icon = taskbar.metric_mono, taskbar._icon
+    def font_spy(size):
+        fonts.append(size)
+        return real_font(size)
+    def icon_spy(*args, **kwargs):
+        result = real_icon(*args, **kwargs)
+        icons.append(result.size)
+        return result
+    monkeypatch.setattr(taskbar, 'metric_mono', font_spy)
+    monkeypatch.setattr(taskbar, '_icon', icon_spy)
+    frame = taskbar.render_taskbar_frame(_sensor(100, 100, 100), _codex('100%'), dpi_percent=dpi)
+    assert frame.size == taskbar.taskbar_frame_size(dpi_percent=dpi) == size
+    assert font_size in fonts
+    assert icons == [(icon_size, icon_size)] * 5
+    rgba = compose_overlay_rgba(frame, 0)
+    assert rgba.getpixel((0, 0))[3] == 0
+    assert rgba.getchannel('A').getextrema()[1] == 255
+
+
+@pytest.mark.parametrize('dpi', [150, 200, 250])
+@pytest.mark.parametrize('style', ['icon', 'text', 'both'])
+@pytest.mark.parametrize('value', ['60,518 Credit', '999,999,999 Credit'])
+def test_high_dpi_credit_text_not_clipped(dpi, style, value):
+    taskbar = _taskbar()
+    frame = taskbar.render_taskbar_frame(None, _codex(value), items=('codex',), style=style, dpi_percent=dpi)
+    alpha = get_overlay_layers(frame).foreground.getchannel('A')
+    assert alpha.getbbox()[2] < frame.width
+    assert alpha.getbbox()[3] < frame.height
+    assert alpha.getextrema()[1] == 255
+    assert frame.width > 108 * dpi / 100
+
+
+@pytest.mark.parametrize('dpi', [True, 99, 801, 150.5, float('nan'), None])
+def test_renderer_rejects_invalid_dpi(dpi):
+    with pytest.raises(ValueError, match='DPI'):
+        _taskbar().render_taskbar_frame(None, dpi_percent=dpi)
+
+
 @pytest.mark.parametrize("value,want", [(None, "--"), (0, "0%"), (47.6, "48%"), (100, "100%"), (180, "100%"), (float("nan"), "--"), (-1, "--")])
 def test_percentage_label_never_turns_missing_sensor_into_zero(value: float | None, want: str) -> None:
     taskbar = _taskbar()
