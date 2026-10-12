@@ -1,5 +1,15 @@
 # Mini Monitor
 
+## [Windows 다운로드 · Mini-Monitor.zip](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)
+
+**다운로드 → ZIP 전체 압축 해제 → `Mini-Monitor.exe` 실행**
+
+Windows 10/11 64비트용입니다. 현재 배포본은 별도 설치 마법사 없이 사용하는 ZIP 패키지입니다. 압축을 푼 `Mini-Monitor` 폴더 전체를 함께 보관하세요. EXE만 따로 옮기면 실행되지 않습니다.
+
+[최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
+
+---
+
 Mini Monitor는 OpenAI의 공식 제품이 아닌 독립 오픈소스 프로그램입니다. Windows PC의 CPU·GPU·RAM·VRAM과 공식 Codex 로그인으로 얻은 계정 한도를 3.5인치 USB 화면 또는 선택적 PC 상태창에 보여 줍니다. 가로 480×320과 세로 320×480 화면을 지원합니다. 실제 장치에 데이터를 보내는 동작은 사용자가 `모니터 시작`을 누른 뒤에만 시작됩니다.
 
 ![가로 대시보드 합성 미리보기](previews/native-refresh/normal.png)

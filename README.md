@@ -1,5 +1,15 @@
 # Mini Monitor
 
+## [Windows 다운로드 · Mini-Monitor.zip](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)
+
+**다운로드 → ZIP 전체 압축 해제 → `Mini-Monitor.exe` 실행**
+
+Windows 10/11 64비트용입니다. 현재 배포본은 별도 설치 마법사 없이 사용하는 ZIP 패키지입니다. 압축을 푼 `Mini-Monitor` 폴더 전체를 함께 보관하세요. EXE만 따로 옮기면 실행되지 않습니다.
+
+[한국어 설치·사용 안내](README_KO.md) · [최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
+
+---
+
 Version 0.2.10 uses a taskbar-only native Win32 window. Fonts and PNG icons are rendered directly at the primary taskbar DPI, including 150%, 200% and 250% scaling. The bar hides while a foreground fullscreen app covers that monitor, the taskbar is auto-hidden, Explorer is unavailable, or the safe taskbar area is too small. Its enabled setting and sampling remain active; it resumes with current readings without taking keyboard focus. Fullscreen apps on another monitor do not unnecessarily hide the primary bar. Display changes preserve the relative horizontal position. Setup, account sign-in, USB output and the PC overlay retain their existing behavior.
 
 Automated DPI/shell-state tests and isolated real Windows focus/lifetime tests cover these rules. They do not establish physical validation on every 4K laptop or fullscreen game; verify those environments after updating. This release does not change Windows scaling settings or modify Explorer.
