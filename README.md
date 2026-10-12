@@ -1,5 +1,9 @@
 # Mini Monitor
 
+Version 0.2.10 uses a taskbar-only native Win32 window. Fonts and PNG icons are rendered directly at the primary taskbar DPI, including 150%, 200% and 250% scaling. The bar hides while a foreground fullscreen app covers that monitor, the taskbar is auto-hidden, Explorer is unavailable, or the safe taskbar area is too small. Its enabled setting and sampling remain active; it resumes with current readings without taking keyboard focus. Fullscreen apps on another monitor do not unnecessarily hide the primary bar. Display changes preserve the relative horizontal position. Setup, account sign-in, USB output and the PC overlay retain their existing behavior.
+
+Automated DPI/shell-state tests and isolated real Windows focus/lifetime tests cover these rules. They do not establish physical validation on every 4K laptop or fullscreen game; verify those environments after updating. This release does not change Windows scaling settings or modify Explorer.
+
 Version 0.2.8 automatically recycles hash-verified previous-version backups and completed update staging folders after the new app starts successfully and the update helper releases its lock. There is no cleanup button. Existing known shortcuts and opted-in startup paths are repaired first; disabled startup stays disabled. Settings/sign-in data, failed recovery backups, unknown folders and trees containing user files remain untouched. Cleanup failures are retried on a later healthy launch; the Recycle Bin is not emptied.
 
 Mini Monitor is an independent, unofficial GPL-3.0-or-later Windows dashboard, not an OpenAI product. It supports a 3.5-inch USB serial display and an optional desktop overlay. Five cards show CPU, RAM, GPU, VRAM and Codex account limits in 480×320 landscape (2+2+1) or 320×480 portrait orientation. Each card has a right-side gauge that fills upward; waveform graphs and duplicate bottom bars are omitted for readability.
