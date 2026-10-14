@@ -1,7 +1,7 @@
 # Mini Monitor offline Windows installer
 
 This locally built installer wraps the unchanged, verified 0.2.10 release ZIP.
-It is not published to GitHub. Build with `scripts/Build-Installer.ps1` using
+GitHub Actions builds, tests and publishes it to the 0.2.10 release. Build locally with `scripts/Build-Installer.ps1` using
 the Windows .NET Framework 4.8 C# compiler; no external setup tool is required.
 The ZIP hash is pinned in the build script and installer. A future payload
 requires updating both version and hash deliberately.

@@ -1,10 +1,12 @@
 # Mini Monitor
 
-## [Windows 다운로드 · Mini-Monitor.zip](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)
+## [Windows 설치파일 다운로드 · Mini-Monitor-Setup.exe](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor-Setup.exe)
 
-**다운로드 → ZIP 전체 압축 해제 → `Mini-Monitor.exe` 실행**
+**설치파일 다운로드 → 실행 → 설치 → Mini Monitor 실행**
 
-Windows 10/11 64비트용입니다. 현재 배포본은 별도 설치 마법사 없이 사용하는 ZIP 패키지입니다. 압축을 푼 `Mini-Monitor` 폴더 전체를 함께 보관하세요. EXE만 따로 옮기면 실행되지 않습니다.
+Windows 10/11 64비트용 오프라인 설치 프로그램입니다. 기존 Mini Monitor를 종료한 뒤 설치하세요. 시작 메뉴와 Windows 앱 제거 목록에 등록하며 기존 설정·로그인을 보존합니다. 실행파일은 미서명입니다.
+
+[포터블 ZIP 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)도 제공합니다. ZIP은 폴더 전체를 압축 해제해야 하며, EXE만 따로 옮기면 실행되지 않습니다. 설치파일과 앱의 버전은 모두 0.2.10으로, 이미 0.2.10을 사용 중이면 추가 업데이트 알림은 없습니다.
 
 [한국어 설치·사용 안내](README_KO.md) · [최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
 
