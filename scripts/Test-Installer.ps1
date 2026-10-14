@@ -13,7 +13,8 @@ $qa = Join-Path $repo ('build/installer-qa/' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $qa | Out-Null
 $target = Join-Path $qa 'Mini-Monitor'
 $group = 'Mini Monitor QA ' + [Guid]::NewGuid().ToString('N')
-$setup = Join-Path $repo 'build/installer/Mini-Monitor-Setup.exe'
+$setup = Join-Path $qa 'Mini-Monitor-Setup.exe'
+Copy-Item -LiteralPath (Join-Path $repo 'build/installer/Mini-Monitor-Setup.exe') -Destination $setup
 function Invoke-Setup([int]$Expected) {
     $process = Start-Process -FilePath $setup -ArgumentList @('--quiet',('"--dir=' + $target + '"'),('"--group=' + $group + '"')) -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne $Expected) { throw "Setup returned $($process.ExitCode), expected $Expected. QA: $qa" }

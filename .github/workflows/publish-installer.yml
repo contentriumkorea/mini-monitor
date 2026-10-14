@@ -1,4 +1,4 @@
-name: Publish Windows installer
+name: Publish fixed online installer
 on:
   push:
     branches: [main]
@@ -12,20 +12,14 @@ concurrency:
 jobs:
   installer:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Fetch verified portable payload
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force build/release-v0.2.10 | Out-Null
-          Invoke-WebRequest 'https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.10/Mini-Monitor.zip' -OutFile build/release-v0.2.10/Mini-Monitor.zip
-          if ((Get-FileHash build/release-v0.2.10/Mini-Monitor.zip).Hash -ne 'FA8B81EC80244E20AE7946AD4FE3F28BD49B5557299FB04E72030BEB1140F129') { throw 'Payload mismatch' }
-      - name: Build offline installer
+      - name: Build fixed bootstrap (no application payload)
         shell: pwsh
         run: ./scripts/Build-Installer.ps1
       - name: Prepare verification runtime
@@ -34,19 +28,26 @@ jobs:
           python -m venv .venv
           .venv/Scripts/python.exe -m pip install cryptography==50.0.2
           if ($LASTEXITCODE -ne 0) { throw 'Verification dependency installation failed' }
-      - name: Test installation, rollback and removal
+      - name: Verify signed acquisition and latest public metadata
+        shell: pwsh
+        run: ./scripts/Test-OnlineInstaller.ps1 -Live
+      - name: Test real online installation, rollback and removal
         shell: pwsh
         run: ./scripts/Test-Installer.ps1
-      - name: Publish installer without replacing update assets
+      - name: Publish permanent installer separately (not Latest)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload v0.2.10 build/installer/Mini-Monitor-Setup.exe --repo contentriumkorea/mini-monitor
-          if ($LASTEXITCODE -ne 0) { throw 'Installer upload failed; existing assets are never overwritten' }
-          $release = gh release view v0.2.10 --repo contentriumkorea/mini-monitor --json body | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Release read failed' }
-          $intro = "## [Windows 설치파일 다운로드 · Mini-Monitor-Setup.exe](https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.10/Mini-Monitor-Setup.exe)" + [Environment]::NewLine + [Environment]::NewLine + "설치 마법사를 실행하면 시작 메뉴와 앱 제거 목록에 등록됩니다. 기존 Mini Monitor를 종료한 뒤 설치하세요. 설정과 로그인은 보존됩니다. 실행파일은 미서명입니다." + [Environment]::NewLine + [Environment]::NewLine + "앱 버전은 0.2.10으로 동일합니다. 0.2.9에서는 업데이트 알림이 표시되며, 이미 0.2.10인 경우 새 알림은 없습니다. 기존 ZIP과 서명된 자동 업데이트 파일은 그대로 유지됩니다." + [Environment]::NewLine + [Environment]::NewLine
-          [IO.File]::WriteAllText((Join-Path $PWD 'build/installer/release-notes.md'), $intro + $release.body, [Text.UTF8Encoding]::new($false))
-          gh release edit v0.2.10 --repo contentriumkorea/mini-monitor --notes-file build/installer/release-notes.md
-          if ($LASTEXITCODE -ne 0) { throw 'Release notes update failed' }
+          $before = gh api repos/contentriumkorea/mini-monitor/releases/latest --jq .tag_name
+          if ($LASTEXITCODE -ne 0 -or $before -notmatch '^v\d+\.\d+\.\d+$') { throw 'Latest must be a stable application release' }
+          $request = Get-Content installer/release-request.json -Raw | ConvertFrom-Json
+          if ($request.tag -ne 'installer-v1') { throw 'Unexpected installer release request' }
+          gh release create installer-v1 --repo contentriumkorea/mini-monitor --target $env:GITHUB_SHA --draft --title 'Mini Monitor 온라인 설치기' --notes-file installer/RELEASE-NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create installer draft; existing releases are never overwritten' }
+          gh release upload installer-v1 build/installer/Mini-Monitor-Setup.exe --repo contentriumkorea/mini-monitor
+          if ($LASTEXITCODE -ne 0) { throw 'Installer upload failed; draft retained' }
+          gh release edit installer-v1 --repo contentriumkorea/mini-monitor --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Installer publication failed' }
+          $after = gh api repos/contentriumkorea/mini-monitor/releases/latest --jq .tag_name
+          if ($LASTEXITCODE -ne 0 -or $after -ne $before) { throw 'Application Latest changed unexpectedly' }
