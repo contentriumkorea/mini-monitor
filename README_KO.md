@@ -1,10 +1,12 @@
 # Mini Monitor
 
-## [Windows 다운로드 · Mini-Monitor.zip](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)
+## [Windows 설치파일 다운로드 · Mini-Monitor-Setup.exe](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor-Setup.exe)
 
-**다운로드 → ZIP 전체 압축 해제 → `Mini-Monitor.exe` 실행**
+**설치파일 다운로드 → 실행 → 설치 → Mini Monitor 실행**
 
-Windows 10/11 64비트용입니다. 현재 배포본은 별도 설치 마법사 없이 사용하는 ZIP 패키지입니다. 압축을 푼 `Mini-Monitor` 폴더 전체를 함께 보관하세요. EXE만 따로 옮기면 실행되지 않습니다.
+Windows 10/11 64비트용 오프라인 설치 프로그램입니다. 기존 Mini Monitor를 종료한 뒤 설치하세요. 시작 메뉴와 Windows 앱 제거 목록에 등록하며 기존 설정·로그인을 보존합니다. 실행파일은 미서명입니다.
+
+[포터블 ZIP 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)도 제공합니다. ZIP은 폴더 전체를 압축 해제해야 하며, EXE만 따로 옮기면 실행되지 않습니다. 설치파일과 앱의 버전은 모두 0.2.10으로, 이미 0.2.10을 사용 중이면 추가 업데이트 알림은 없습니다.
 
 [최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
 
@@ -19,7 +21,7 @@ Mini Monitor는 OpenAI의 공식 제품이 아닌 독립 오픈소스 프로그�
 
 ## 설치 및 첫 실행
 
-1. [Releases](https://github.com/contentriumkorea/mini-monitor/releases)에서 최신 stable `Mini-Monitor.zip`을 받습니다. `Mini-Monitor` 폴더 전체를 원하는 위치에 압축 해제하세요. EXE만 따로 옮기면 실행되지 않습니다.
+1. 위의 `Mini-Monitor-Setup.exe` 설치파일을 받아 실행하고 `설치`를 누릅니다. 기존 앱이 켜져 있으면 먼저 종료하세요. 설치가 끝나면 `실행` 버튼 또는 시작 메뉴의 Mini Monitor로 시작합니다. 포터블 방식을 원하면 ZIP을 받아 폴더 전체를 압축 해제하세요.
 2. `Mini-Monitor.exe`를 실행합니다. 처음에는 설정창만 열리며 직렬 화면에 데이터를 전송하지 않습니다. Windows가 미서명 앱 경고를 표시할 수 있으니, 게시처와 [해시](https://github.com/contentriumkorea/mini-monitor/releases)를 직접 확인한 뒤 실행 여부를 결정하세요. 이 EXE는 Authenticode 코드 서명이 없습니다. 업데이트 메타데이터의 Ed25519 서명은 EXE 코드 서명과 다릅니다.
 3. Codex 사용량과 크레딧을 보려면 설정창의 `ChatGPT로 로그인`에서 웹 브라우저 인증을 진행합니다. 공식 Codex app-server 실행 환경이 포함되어 별도 CLI 설치가 필요하지 않습니다. Mini Monitor는 다른 앱의 로그인 자료를 읽거나 복사하지 않고 앱 전용 `codex-home`을 사용합니다. 사용자 인증 정보는 배포본에 들어 있지 않습니다.
 4. USB 화면을 사용하려면 화면 방향과 밝기를 확인한 다음 지원 USB 장치를 연결하고 `모니터 시작`을 누릅니다. 다른 프로그램이 같은 COM 포트를 사용 중이라면 먼저 해당 프로그램에서 포트를 닫으세요. PC에서만 보려면 `PC 상태창 켜기` 또는 `작업 표시줄 바 켜기`만 누르면 됩니다. 앱 실행 시 센서 수집을 별도로 시작해 설정창 미리보기에도 실시간 값을 표시하며, 이 수집은 USB 포트를 열거나 전송하지 않습니다. USB 모니터를 중지해도 PC 화면의 실시간 값은 계속 표시됩니다.
