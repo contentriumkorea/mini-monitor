@@ -1,0 +1,10 @@
+{
+  "package": "NetSparkleUpdater.Chaos.NaCl",
+  "version": "0.9.4",
+  "url": "https://api.nuget.org/v3-flatcontainer/netsparkleupdater.chaos.nacl/0.9.4/netsparkleupdater.chaos.nacl.0.9.4.nupkg",
+  "sha256": "8a80ba72c0aef70eefb5c6f0349569d566cd13132dd82333f0e45e3c61aa148b",
+  "assembly": "lib/net462/Chaos.NaCl.dll",
+  "license": "LICENSE.md",
+  "upstream": "https://github.com/NetSparkleUpdater/Chaos.NaCl"
+}
+
