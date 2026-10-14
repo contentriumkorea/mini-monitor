@@ -28,3 +28,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Uninstaller compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Setup compilation failed.' }
 if ((Get-Item -LiteralPath "$output/Mini-Monitor-Setup.exe").Length -gt 1MB) { throw 'Online installer exceeds 1 MiB size budget.' }
 Get-FileHash -LiteralPath "$output/Mini-Monitor-Setup.exe" -Algorithm SHA256
+

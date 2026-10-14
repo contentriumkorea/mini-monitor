@@ -60,3 +60,4 @@ if ($afterHash -ne $configHash) { throw 'User configuration changed' }
 foreach ($id in $existingProcesses) { if (-not (Get-Process -Id $id -ErrorAction SilentlyContinue)) { throw 'Existing user app was stopped' } }
 Write-Output 'PASS uninstall / user settings / startup registration / running user app preserved'
 Write-Output "QA artifacts: $qa"
+
