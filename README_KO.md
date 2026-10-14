@@ -85,3 +85,4 @@ Windows 작업표시줄을 클릭해 바가 뒤로 가려지면 다음 UI 갱신
 ## 소스·라이선스·지원
 
 소스는 [GitHub 저장소](https://github.com/contentriumkorea/mini-monitor)와 배포 폴더의 `source/`에 있습니다. GPL-3.0-or-later 및 제3자 고지·라이선스는 `LICENSE`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_COMPONENTS.json`, `LICENSES/`, `SOURCE-OFFER.md`를 보세요. 실제 검증 범위는 `TEST_RESULTS.md`에 기록합니다. 문제가 있다면 재현 단계, 앱 버전, Windows 버전을 [Issues](https://github.com/contentriumkorea/mini-monitor/issues)에 남겨 주세요. 토큰, 로그인 URL, 계정 이메일, 원본 진단 로그는 게시하지 마세요.
+
