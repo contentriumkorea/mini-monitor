@@ -1,0 +1,52 @@
+name: Publish Windows installer
+on:
+  push:
+    branches: [main]
+    paths: [installer/release-request.json]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mini-monitor-installer-release
+  cancel-in-progress: false
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Fetch verified portable payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/release-v0.2.10 | Out-Null
+          Invoke-WebRequest 'https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.10/Mini-Monitor.zip' -OutFile build/release-v0.2.10/Mini-Monitor.zip
+          if ((Get-FileHash build/release-v0.2.10/Mini-Monitor.zip).Hash -ne 'FA8B81EC80244E20AE7946AD4FE3F28BD49B5557299FB04E72030BEB1140F129') { throw 'Payload mismatch' }
+      - name: Build offline installer
+        shell: pwsh
+        run: ./scripts/Build-Installer.ps1
+      - name: Prepare verification runtime
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .venv/Scripts/python.exe -m pip install cryptography==50.0.2
+          if ($LASTEXITCODE -ne 0) { throw 'Verification dependency installation failed' }
+      - name: Test installation, rollback and removal
+        shell: pwsh
+        run: ./scripts/Test-Installer.ps1
+      - name: Publish installer without replacing update assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v0.2.10 build/installer/Mini-Monitor-Setup.exe --repo contentriumkorea/mini-monitor
+          if ($LASTEXITCODE -ne 0) { throw 'Installer upload failed; existing assets are never overwritten' }
+          $release = gh release view v0.2.10 --repo contentriumkorea/mini-monitor --json body | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Release read failed' }
+          $intro = "## [Windows 설치파일 다운로드 · Mini-Monitor-Setup.exe](https://github.com/contentriumkorea/mini-monitor/releases/download/v0.2.10/Mini-Monitor-Setup.exe)" + [Environment]::NewLine + [Environment]::NewLine + "설치 마법사를 실행하면 시작 메뉴와 앱 제거 목록에 등록됩니다. 기존 Mini Monitor를 종료한 뒤 설치하세요. 설정과 로그인은 보존됩니다. 실행파일은 미서명입니다." + [Environment]::NewLine + [Environment]::NewLine + "앱 버전은 0.2.10으로 동일합니다. 0.2.9에서는 업데이트 알림이 표시되며, 이미 0.2.10인 경우 새 알림은 없습니다. 기존 ZIP과 서명된 자동 업데이트 파일은 그대로 유지됩니다." + [Environment]::NewLine + [Environment]::NewLine
+          [IO.File]::WriteAllText((Join-Path $PWD 'build/installer/release-notes.md'), $intro + $release.body, [Text.UTF8Encoding]::new($false))
+          gh release edit v0.2.10 --repo contentriumkorea/mini-monitor --notes-file build/installer/release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release notes update failed' }
