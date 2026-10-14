@@ -1,12 +1,14 @@
 # Mini Monitor
 
-## [Windows 설치파일 다운로드 · Mini-Monitor-Setup.exe](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor-Setup.exe)
+## [Windows 설치파일 다운로드 · 474 KB](https://github.com/contentriumkorea/mini-monitor/releases/download/installer-v1/Mini-Monitor-Setup.exe)
 
 **설치파일 다운로드 → 실행 → 설치 → Mini Monitor 실행**
 
-Windows 10/11 64비트용 오프라인 설치 프로그램입니다. 기존 Mini Monitor를 종료한 뒤 설치하세요. 시작 메뉴와 Windows 앱 제거 목록에 등록하며 기존 설정·로그인을 보존합니다. 실행파일은 미서명입니다.
+Windows 10/11 64비트용 **경량 온라인 설치 프로그램**입니다. 이 작은 설치파일 하나를 보관해 두면, 실행할 때마다 최신 정식 버전을 자동으로 찾아 설치하거나 업데이트합니다. 인터넷 연결이 필요하며 앱 본체는 설치 중 별도로 내려받습니다. 기존 Mini Monitor를 먼저 종료하세요. 시작 메뉴·앱 제거 목록에 등록하고 설정·로그인을 보존합니다. 실행파일은 미서명입니다.
 
-[포터블 ZIP 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)도 제공합니다. ZIP은 폴더 전체를 압축 해제해야 하며, EXE만 따로 옮기면 실행되지 않습니다. 설치파일과 앱의 버전은 모두 0.2.10으로, 이미 0.2.10을 사용 중이면 추가 업데이트 알림은 없습니다.
+**설치기와 앱 업데이트는 별도로 배포합니다.** 설치기는 `installer-v1`의 고정 파일이며, 이후 앱 릴리스에는 프로그램 ZIP·서명된 파일 목록·서명 파일만 배포합니다. 설치기 자체의 보안·호환성 수정이 아닌 한 설치파일을 다시 만들지 않습니다. 이미 최신 앱이면 설치기로 동일 버전을 다시 설치해 등록을 복구할 수도 있습니다.
+
+[포터블 ZIP 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)는 직접 압축 해제하는 사용자를 위한 앱 본체입니다. 폴더 전체가 필요하며 EXE만 따로 옮기면 실행되지 않습니다. 현재 앱 버전은 0.2.10으로 유지되므로, 이미 0.2.10이면 새 앱 업데이트 알림은 없습니다. 과거 v0.2.10 릴리스의 대용량 Setup은 이전 오프라인 설치기입니다. **새 설치는 위의 474 KB 링크를 사용하세요.**
 
 [한국어 설치·사용 안내](README_KO.md) · [최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
 
