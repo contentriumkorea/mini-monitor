@@ -25,6 +25,10 @@ class ReleaseClientTests {
     static int checks;
     static void Assert(bool ok, string name) { if (!ok) throw new Exception("FAIL " + name); checks++; Console.WriteLine("PASS " + name); }
     static void Reject(Action action, string name) { try { action(); } catch (IOException) { Assert(true, name); return; } throw new Exception("FAIL accepted " + name); }
+    static void Health(string root, string version) {
+        try { typeof(Engine).GetMethod("CheckHealth", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] {root, version}); }
+        catch(TargetInvocationException ex) { throw ex.InnerException; }
+    }
     static Tuple<byte[],byte[]> Fixture(string version, bool badHealth = false) {
         byte[] cli = File.ReadAllBytes(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"FixtureCli.exe"));
         var files = new SortedDictionary<string,byte[]>(StringComparer.Ordinal) {
@@ -47,6 +51,14 @@ class ReleaseClientTests {
             return 1;
         }
         try {
+            string healthRoot = Path.Combine(args[1],"health-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(Path.Combine(healthRoot,"source"));
+            File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"FixtureCli.exe"), Path.Combine(healthRoot,"Mini-Monitor-CLI.exe"));
+            File.WriteAllText(Path.Combine(healthRoot,"source","pyproject.toml"),"version = \"10.2.10\"");
+            Reject(() => Health(healthRoot,"0.2.10"),"exact version required, suffix is not enough");
+            File.WriteAllText(Path.Combine(healthRoot,"wait.txt"),"test");
+            Reject(() => Health(healthRoot,"10.2.10"),"real CLI timeout reported");
+            Assert(!System.Diagnostics.Process.GetProcessesByName("Mini-Monitor-CLI").Any(p => { using(p) { try { return p.MainModule.FileName.StartsWith(healthRoot,StringComparison.OrdinalIgnoreCase); } catch(InvalidOperationException) { return false; } } }),"timed-out child exited before rollback");
+            Directory.Move(healthRoot,healthRoot+"-recovered");
             if (Engine.RegisteredRoot() != null) throw new Exception("Use isolated account: installer registration exists");
             var transport = new Transport();
             var client = new ReleaseClient(transport, Chaos.NaCl.Ed25519.PublicKeyFromSeed(Seed));
@@ -66,6 +78,23 @@ class ReleaseClientTests {
                 Assert(File.ReadAllText(Path.Combine(stage, "Mini-Monitor", "source", "pyproject.toml")).Contains(version), "signed extracted payload " + version);
                 Engine.Install(installRoot, group, false, s => {}, CancellationToken.None, client);
                 Assert(File.ReadAllText(Path.Combine(installRoot,"source","pyproject.toml")).Contains(version), "same setup installs " + version);
+                foreach (string extra in new[] { "Mini-Monitor/unexpected.txt", "Mini-Monitor/MINI-MONITOR.EXE", "Mini-Monitor/../escape.txt" }) {
+                    byte[] altered;
+                    using (var memory = new MemoryStream()) {
+                        memory.Write(fixture.Item2,0,fixture.Item2.Length); memory.Position=0;
+                        using(var archive = new ZipArchive(memory,ZipArchiveMode.Update,true)) using(var added=archive.CreateEntry(extra).Open()) added.WriteByte(1);
+                        altered=memory.ToArray();
+                    }
+                    byte[] updated = Bytes(Encoding.UTF8.GetString(fixture.Item1).Replace(Hash(fixture.Item2),Hash(altered)).Replace("\"archive_size\":"+fixture.Item2.Length,"\"archive_size\":"+altered.Length));
+                    var alteredInfo=client.Verify(updated,Sign(updated)); transport.Responses[prefix+"Mini-Monitor.zip"]=altered;
+                    string badStage=Path.Combine(args[1],Guid.NewGuid().ToString("N")); Directory.CreateDirectory(badStage);
+                    Reject(()=>client.DownloadAndExtract(alteredInfo,badStage,CancellationToken.None,s=>{}),"reject ZIP extra/alias/escape " + extra);
+                }
+                transport.Responses[prefix+"Mini-Monitor.zip"]=fixture.Item2;
+                using(var during = new CancellationTokenSource()) {
+                    try { Engine.Install(installRoot,group,false,s=>{if(s.StartsWith("프로그램 다운로드")) during.Cancel();},during.Token,client); throw new Exception("mid-download cancel ignored"); }
+                    catch(OperationCanceledException) { Assert(File.ReadAllText(Path.Combine(installRoot,"source","pyproject.toml")).Contains(version),"cancel during download preserves installed files"); }
+                }
                 var badSignature = Sign(fixture.Item1); badSignature[0] ^= 1;
                 Reject(() => client.Verify(fixture.Item1, badSignature), "signature tampering");
                 foreach (var replace in new[] {

@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -70,6 +71,20 @@ public sealed class ReleaseClient {
     public const string LatestUrl = "https://api.github.com/repos/contentriumkorea/mini-monitor/releases/latest";
     const long MaxArchive = 1073741824, MaxUnpacked = 3221225472;
     readonly IReleaseTransport transport; readonly byte[] publicKey;
+    static readonly Func<byte[],byte[],byte[],bool> VerifySignature = LoadEmbeddedVerifier();
+    static Func<byte[],byte[],byte[],bool> LoadEmbeddedVerifier() {
+        // Byte-load the pinned resource explicitly. Normal assembly probing must
+        // never select a weak-named lookalike DLL next to a downloaded Setup.exe.
+        using (var input = typeof(ReleaseClient).Assembly.GetManifestResourceStream("Chaos.NaCl.dll")) {
+            if (input == null) throw new IOException("내장 서명 검증기가 없습니다.");
+            using (var bytes = new MemoryStream()) {
+                input.CopyTo(bytes);
+                var assembly = Assembly.Load(bytes.ToArray());
+                var method = assembly.GetType("Chaos.NaCl.Ed25519", true).GetMethod("Verify", new[] {typeof(byte[]),typeof(byte[]),typeof(byte[])});
+                return (Func<byte[],byte[],byte[],bool>)Delegate.CreateDelegate(typeof(Func<byte[],byte[],byte[],bool>), method);
+            }
+        }
+    }
     public ReleaseClient() : this(new GitHubTransport(), Convert.FromBase64String("03H3C4UrykHZq8ivGMHVV0QwOZyhuHKfZYkwo48RH0U=")) { }
     public ReleaseClient(IReleaseTransport transport, byte[] publicKey) { this.transport = transport; this.publicKey = (byte[])publicKey.Clone(); }
     static IOException Invalid() { return new IOException("릴리스 서명 또는 파일 목록이 올바르지 않습니다."); }
@@ -113,7 +128,7 @@ public sealed class ReleaseClient {
     }
     public ReleaseInfo Verify(byte[] raw, byte[] signature) {
         try {
-            if (raw.Length == 0 || raw.Length > 1048576 || signature.Length != 64 || !Chaos.NaCl.Ed25519.Verify(signature, raw, publicKey)) throw Invalid();
+            if (raw.Length == 0 || raw.Length > 1048576 || signature.Length != 64 || !VerifySignature(signature, raw, publicKey)) throw Invalid();
             var obj = Json(raw) as Dictionary<string,object>;
             if (obj == null || obj.Count != 7 || !new[] { "schema_version", "version", "channel", "archive_url", "archive_sha256", "archive_size", "files" }.All(obj.ContainsKey)) throw Invalid();
             if (!raw.SequenceEqual(new UTF8Encoding(false, true).GetBytes(Canonical(obj)))) throw Invalid();

@@ -31,6 +31,9 @@ jobs:
       - name: Verify signed acquisition and latest public metadata
         shell: pwsh
         run: ./scripts/Test-OnlineInstaller.ps1 -Live
+      - name: Reject adjacent replacement signature verifier
+        shell: pwsh
+        run: ./scripts/Test-VerifierIsolation.ps1
       - name: Test real online installation, rollback and removal
         shell: pwsh
         run: ./scripts/Test-Installer.ps1

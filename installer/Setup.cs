@@ -234,8 +234,13 @@ public static class Engine {
         using (var process = Process.Start(start)) {
             // Drain both pipes concurrently, avoiding a deadlock if a failed executable logs errors.
             var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(30000)) { try { process.Kill(); } catch (InvalidOperationException) {} throw new IOException("새 프로그램 실행 확인 시간이 초과되어 이전 버전을 복구합니다."); }
-            if (process.ExitCode != 0 || !output.Result.Trim().EndsWith(version, StringComparison.Ordinal)) throw new IOException("새 프로그램 실행 확인에 실패하여 이전 버전을 복구합니다.");
+            if (!process.WaitForExit(30000)) {
+                try { process.Kill(); } catch (InvalidOperationException) { }
+                // Kill is asynchronous. Never start rollback while this child is still alive.
+                process.WaitForExit();
+                throw new IOException("새 프로그램 실행 확인 시간이 초과되어 이전 버전을 복구합니다.");
+            }
+            if (process.ExitCode != 0 || output.Result.Trim() != "Mini Monitor " + version) throw new IOException("새 프로그램 실행 확인에 실패하여 이전 버전을 복구합니다.");
         }
     }
     static void RemoveEmpty(string root) {
@@ -318,13 +323,6 @@ public static class Program {
     sealed class LockHandle : IDisposable { Mutex handle; public LockHandle(Mutex m) { handle = m; } public void Dispose() { handle.ReleaseMutex(); handle.Dispose(); } }
     public static IDisposable AcquireLock() { var m = new Mutex(false, @"Local\MiniMonitor-Setup-0B36579F"); bool acquired; try { acquired = m.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; } if (!acquired) { m.Dispose(); throw new IOException("다른 설치 작업이 진행 중입니다."); } return new LockHandle(m); }
     [STAThread] public static int Main(string[] args) {
-        AppDomain.CurrentDomain.AssemblyResolve += (sender, requested) => {
-            if (new AssemblyName(requested.Name).Name != "Chaos.NaCl") return null;
-            using (var input = Assembly.GetExecutingAssembly().GetManifestResourceStream("Chaos.NaCl.dll")) {
-                if (input == null) return null;
-                using (var data = new MemoryStream()) { input.CopyTo(data); return Assembly.Load(data.ToArray()); }
-            }
-        };
         AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
         AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
         bool quiet = args.Contains("--quiet"), uninstall = args.Contains("--uninstall");
