@@ -277,6 +277,19 @@ def test_hidden_frame_updates_allocate_no_presenter_or_composite(fake_tk) -> Non
     assert len(fake_tk[1][0].frames) == 1
 
 
+def test_repeated_frame_does_not_reallocate_native_upload(fake_tk):
+    overlay = make_overlay(fake_tk)
+    frame = _frame()
+    overlay.update_image(frame)
+    overlay.show(notify=False)
+    before = len(fake_tk[1][0].frames)
+    for _ in range(20):
+        overlay.update_image(frame.copy())
+    assert len(fake_tk[1][0].frames) == before
+    overlay.update_image(_frame(value=12))
+    assert len(fake_tk[1][0].frames) == before + 1
+
+
 def test_rgb_without_semantic_layers_is_rejected(fake_tk) -> None:
     overlay = make_overlay(fake_tk)
 

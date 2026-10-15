@@ -148,3 +148,42 @@ def test_repeated_render_and_destroy_does_not_accumulate_gdi():
         window.hide()
         window.destroy()
     assert user.GetGuiResources(process, 0) == before
+
+
+@isolated_windows
+def test_taskbar_drag_through_tcl_message_loop_defers_tk_callback(monkeypatch):
+    import tkinter as tk
+    from ai_mini_monitor.ui import taskbar
+    from ai_mini_monitor.ui.overlay import WorkArea
+    root = tk.Tk()
+    root.withdraw()
+    label = tk.Label(root)
+    saved = []
+    def persist(state):
+        label.configure(text=str(state.x))
+        saved.append(state.x)
+    monkeypatch.setattr(taskbar, 'full_monitor_areas', lambda _: (WorkArea(-32000, -32000, -28000, -28000),))
+    monkeypatch.setattr(taskbar, 'windows_taskbar_rects', lambda: (
+        WorkArea(-32000, -28048, -28000, -28000), WorkArea(-28400, -28048, -28000, -28000)))
+    monkeypatch.setattr(taskbar, 'taskbar_should_be_visible', lambda _: True)
+    monkeypatch.setattr(taskbar, 'restore_taskbar_z_order', lambda _: False)
+    monkeypatch.setattr(taskbar, 'taskbar_dpi_percent', lambda: 100)
+    window = taskbar.TaskbarWindow(root, position=(-31000, -28040), on_state_change=persist)
+    user = api()
+    user.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t)
+    user.PostMessageW.restype = wintypes.BOOL
+    try:
+        window.show(notify=False)
+        for _ in range(20):
+            saved.clear()
+            user.PostMessageW(window.window.hwnd, 0x201, 1, 10)
+            user.PostMessageW(window.window.hwnd, 0x200, 1, 20)
+            user.PostMessageW(window.window.hwnd, 0x202, 0, 20)
+            root.update()
+            assert not saved
+            window.update_sensor(None)
+            assert len(saved) == 1
+            assert label.cget('text') == str(window.state.x)
+    finally:
+        window.destroy()
+        root.destroy()

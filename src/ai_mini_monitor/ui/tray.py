@@ -123,12 +123,18 @@ class TrayController:
 
     def set_status(self, status: object) -> None:
         with self._lock:
-            self._status = str(status).strip() or "UNKNOWN"
+            value = str(status).strip() or "UNKNOWN"
+            if value == self._status:
+                return
+            self._status = value
         self._refresh_menu()
 
     def set_provider(self, provider: object) -> None:
         with self._lock:
-            self._provider = str(provider).strip() or "NOT CONFIGURED"
+            value = str(provider).strip() or "NOT CONFIGURED"
+            if value == self._provider:
+                return
+            self._provider = value
         self._refresh_menu()
 
     def notify_update(self, version: str) -> bool:

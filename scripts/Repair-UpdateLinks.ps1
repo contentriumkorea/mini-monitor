@@ -50,7 +50,14 @@ if ($MyInvocation.InvocationName -ne '.') {
             }
         }
         $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-        $command = Get-ItemPropertyValue -LiteralPath $runKey -Name 'AI Mini Monitor' -ErrorAction SilentlyContinue
+        # Auto-start is optional. Get-ItemPropertyValue throws for an absent
+        # value even with SilentlyContinue under Windows PowerShell 5.1.
+        $command = $null
+        $runProperties = Get-ItemProperty -LiteralPath $runKey -ErrorAction SilentlyContinue
+        if ($null -ne $runProperties) {
+            $runProperty = $runProperties.PSObject.Properties['AI Mini Monitor']
+            if ($null -ne $runProperty) { $command = $runProperty.Value }
+        }
         $replacement = Repair-MonitorRunCommand $command $newExe $oldExecutables
         if ($replacement -and $replacement -ne $command) {
             Set-ItemProperty -LiteralPath $runKey -Name 'AI Mini Monitor' -Value $replacement

@@ -371,9 +371,28 @@ def test_controller_renders_actual_snapshot_without_serial() -> None:
     image = controller.latest_image()
     stats = controller.stats_snapshot()
     assert image is not None and image.size == (480, 320)
-    assert stats["render_frames"] >= 4
+    # Render on fresh 250 ms samples, not the 100 ms USB/shell polling tick.
+    assert stats["render_frames"] >= 2
     assert stats["unhandled_worker_errors"] == 0
     assert fake.closed
+
+
+def test_render_loop_reuses_frame_until_runtime_changes():
+    controller = MonitorController(AppConfig(), enable_serial=False)
+    frames = []
+    controller.image_callback = lambda image: frames.append(image)
+    thread = threading.Thread(target=controller._render_loop)
+    thread.start()
+    try:
+        time.sleep(0.4)
+        assert len(frames) == 1
+        controller.store.update_ai(AIData(primary_value="42%"))
+        time.sleep(0.2)
+        assert len(frames) == 2
+        assert frames[0].tobytes() != frames[1].tobytes()
+    finally:
+        controller._stop.set()
+        thread.join(2)
 
 
 @pytest.mark.parametrize(

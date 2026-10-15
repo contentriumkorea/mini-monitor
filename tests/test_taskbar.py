@@ -275,6 +275,38 @@ def test_full_monitor_provider_preserves_negative_monitor_bounds(monkeypatch) ->
     assert taskbar.full_monitor_areas(object()) == expected
 
 
+def test_drag_defers_ui_and_disk_callbacks_and_coalesces_mouse_moves(monkeypatch):
+    taskbar, windows, _presenters = _fake_taskbar(monkeypatch)
+    saved = []
+    window = taskbar.TaskbarWindow(object(), position=(-1500, 1040), on_state_change=saved.append)
+    window.show(notify=False)
+    before = window.state.x
+    saved.clear()
+    for _ in range(20):
+        windows[0].on_drag(1)
+    assert saved == []  # Never enter Tk or save configuration inside WNDPROC.
+    window.update_sensor(None)
+    assert window.state.x == before + 20
+    assert len(saved) == 1
+    window.update_sensor(None)
+    assert len(saved) == 1
+
+
+def test_hiding_or_explicit_position_change_discards_queued_drag(monkeypatch):
+    taskbar, windows, _presenters = _fake_taskbar(monkeypatch)
+    window = taskbar.TaskbarWindow(object(), position=(-1500, 1040))
+    window.show(notify=False)
+    windows[0].on_drag(20)
+    window.hide(notify=False)
+    window.show(notify=False)
+    window.update_sensor(None)
+    assert window.state.x == -1500
+    windows[0].on_drag(20)
+    window.set_position(-1400, 1040, notify=False)
+    window.update_sensor(None)
+    assert window.state.x == -1400
+
+
 class _FakeWindow:
     def __init__(self, *, on_drag) -> None:
         self.on_drag = on_drag
@@ -576,8 +608,10 @@ def test_drag_clamps_x_and_keeps_taskbar_y(monkeypatch):
     window = taskbar.TaskbarWindow(object(), position=(-1800, 1040))
     window.show(notify=False)
     windows[0].on_drag(-99999)
+    window.update_sensor(None)
     assert (window.state.x, window.state.y) == (-1920, 1040)
     windows[0].on_drag(99999)
+    window.update_sensor(None)
     assert (window.state.x, window.state.y) == (-592, 1040)
 
 

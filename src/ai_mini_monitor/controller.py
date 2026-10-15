@@ -533,6 +533,7 @@ class MonitorController:
         next_frame = time.monotonic()
         next_usb = next_frame
         last_iteration = next_frame
+        last_render_input = None
         try:
             while not self._stop.is_set():
                 now = time.monotonic()
@@ -558,11 +559,15 @@ class MonitorController:
                 next_frame = max(next_frame + frame_period, now)
                 with self._render_lock:
                     runtime_values = self.store.read()
-                    display = self.composer.compose(runtime_values, monotonic_now=now)
-                    image = self.renderer.render(display)
-                    self._publish_image(image)
-                with self._stats_lock:
-                    self.stats.render_frames += 1
+                    render_input = (runtime_values.sensor_revision, runtime_values.ai,
+                                    runtime_values.connection, self.renderer)
+                    if render_input != last_render_input:
+                        display = self.composer.compose(runtime_values, monotonic_now=now)
+                        image = self.renderer.render(display)
+                        self._publish_image(image)
+                        last_render_input = render_input
+                        with self._stats_lock:
+                            self.stats.render_frames += 1
                 with self._serial_lock:
                     serial = self.serial
                     if serial is not None and now >= next_usb:

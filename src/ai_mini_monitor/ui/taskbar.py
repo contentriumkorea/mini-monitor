@@ -382,6 +382,7 @@ class TaskbarWindow:
         self._image = None
         self._last_readouts = None
         self._sensor = self._ai = None
+        self._pending_drag = 0
         width, height = taskbar_frame_size(self.items, self.style)
         if position is None:
             position = choose_initial_position(full_monitor_areas(root)[0],
@@ -496,6 +497,11 @@ class TaskbarWindow:
         self._ensure_open()
         _readouts(sensor, ai)  # validate before replacing the latest cache
         self._sensor, self._ai = sensor, ai
+        delta = self._pending_drag
+        self._pending_drag = 0
+        if delta:
+            self.set_position(self.state.x + delta, self.state.y)
+            return
         self._sync()
 
     def show(self, *, notify: bool = True) -> None:
@@ -515,6 +521,7 @@ class TaskbarWindow:
         require_main_thread()
         if self._closed:
             return
+        self._pending_drag = 0
         self._window.hide()
         self._visible = self._mapped = False
         if notify:
@@ -532,6 +539,7 @@ class TaskbarWindow:
         self._ensure_open()
         if any(isinstance(v, bool) or not isinstance(v, int) for v in (x, y)):
             raise ValueError("taskbar position must contain integers")
+        self._pending_drag = 0
         g = self._geometry
         self._geometry = OverlayGeometry(x, y, g.width, g.height)
         try:
@@ -544,7 +552,10 @@ class TaskbarWindow:
         return self.state.x, self.state.y
 
     def _drag_by(self, delta_x: int) -> None:
-        self.set_position(self.state.x + delta_x, self.state.y)
+        # WNDPROC can run inside Tcl's native event dispatch. Re-entering Tk
+        # here (through the persistence callback) can abort the interpreter.
+        # Drain/coalesce on the existing Python UI poll, outside WNDPROC.
+        self._pending_drag += delta_x
 
     def set_options(self, items, style: str) -> None:
         require_main_thread()

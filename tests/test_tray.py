@@ -15,6 +15,19 @@ class FakeMenuItem:
         self.default = default
 
 
+def test_unchanged_status_does_not_rebuild_native_menu():
+    controller = TrayController()
+    updates = []
+    controller._icon = SimpleNamespace(update_menu=lambda: updates.append(1))
+    for _ in range(50):
+        controller.set_status("ONLINE")
+        controller.set_provider("CODEX")
+    assert len(updates) == 2
+    assert controller._status_text(None) == "Status: ONLINE"
+    controller.set_status("DISCONNECTED")
+    assert len(updates) == 3
+
+
 class FakeMenu:
     SEPARATOR = object()
 

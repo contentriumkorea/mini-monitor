@@ -495,6 +495,8 @@ class OverlayWindow:
         layers = get_overlay_layers(image)
         if layers.size != image.size:
             raise ValueError("overlay layer size does not match the framebuffer")
+        if layers == self._layers:
+            return
         snapshot = self._presentation_snapshot()
         try:
             if layers.size != self._native_size:

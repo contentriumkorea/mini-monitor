@@ -725,6 +725,8 @@ class SetupWindow:
         self._ensure_open()
         if not isinstance(image, Image.Image):
             raise TypeError("setup preview must be a Pillow Image")
+        if image == self._preview_source:
+            return
         rgb = image.convert("RGB")
         if rgb.size not in {(480, 320), (320, 480)}:
             raise ValueError("setup preview must be exactly 480x320 or 320x480")

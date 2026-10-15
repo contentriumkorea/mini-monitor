@@ -101,6 +101,20 @@ def _descendants(widget: tk.Widget):
         yield from _descendants(child)
 
 
+def test_identical_preview_keeps_existing_tk_photo():
+    window = make_window()
+    try:
+        image = Image.new("RGB", (480, 320), "black")
+        window.update_image(image)
+        photo = window._photo
+        window.update_image(image.copy())
+        assert window._photo is photo
+        window.update_image(Image.new("RGB", (480, 320), "white"))
+        assert window._photo is not photo
+    finally:
+        window.close()
+
+
 @pytest.mark.parametrize(
     ("balance", "unlimited", "expected"),
     [("12.50", False, "크레딧 12.5"), ("60519.1234567890", False, "크레딧 60,519.12"), ("0", False, "크레딧 0"), (None, True, "크레딧 무제한"), (None, False, "크레딧 확인 불가"), ("", False, "크레딧 확인 불가")],
