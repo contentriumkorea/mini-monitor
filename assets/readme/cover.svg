@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+<title id="title">Mini Monitor — PC 상태를 한눈에</title><desc id="desc">CPU, RAM, GPU, VRAM, CODEX를 상징하는 다섯 세로 게이지. 실제 측정값이 아닌 소개용 그래픽입니다.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#1c1c1c"/><stop offset="1" stop-color="#080808"/></linearGradient><linearGradient id="bar" x2="0" y2="1"><stop stop-color="#f5f5f5"/><stop offset="1" stop-color="#858585"/></linearGradient></defs>
+<rect width="1200" height="500" rx="24" fill="url(#bg)"/><rect x="1" y="1" width="1198" height="498" rx="24" fill="none" stroke="#373737"/>
+<g font-family="Segoe UI, Arial, sans-serif"><text x="66" y="76" fill="#a9a9a9" font-size="19" letter-spacing="4">YOUR PC. AT A GLANCE.</text>
+<text x="62" y="162" fill="#fafafa" font-size="78" font-weight="700" letter-spacing="-3">Mini Monitor</text>
+<text x="66" y="214" fill="#c6c6c6" font-size="25" font-family="Malgun Gothic, sans-serif">작은 화면에 담은 PC의 모든 순간</text>
+<g fill="#bbb" font-size="18"><text x="68" y="425">USB DISPLAY</text><text x="251" y="425">PC OVERLAY</text><text x="435" y="425">TASKBAR</text></g>
+<path d="M66 384H560" stroke="#484848"/>
+<g transform="translate(650 65)">
+<rect width="484" height="368" rx="24" fill="#111" stroke="#444"/>
+<circle cx="28" cy="28" r="5" fill="#ddd"/><text x="45" y="34" fill="#ddd" font-size="15" letter-spacing="2">FIVE SIGNALS. ONE VIEW.</text>
+<g transform="translate(26 65)"><rect width="68" height="225" rx="12" fill="#292929"/><rect y="75" width="68" height="150" rx="12" fill="url(#bar)"/><text x="34" y="260" text-anchor="middle" fill="#ddd" font-size="16" font-weight="600">CPU</text></g><g transform="translate(117 65)"><rect width="68" height="225" rx="12" fill="#292929"/><rect y="100" width="68" height="125" rx="12" fill="url(#bar)"/><text x="34" y="260" text-anchor="middle" fill="#ddd" font-size="16" font-weight="600">RAM</text></g><g transform="translate(208 65)"><rect width="68" height="225" rx="12" fill="#292929"/><rect y="155" width="68" height="70" rx="12" fill="url(#bar)"/><text x="34" y="260" text-anchor="middle" fill="#ddd" font-size="16" font-weight="600">GPU</text></g><g transform="translate(299 65)"><rect width="68" height="225" rx="12" fill="#292929"/><rect y="120" width="68" height="105" rx="12" fill="url(#bar)"/><text x="34" y="260" text-anchor="middle" fill="#ddd" font-size="16" font-weight="600">VRAM</text></g><g transform="translate(390 65)"><rect width="68" height="225" rx="12" fill="#292929"/><rect y="45" width="68" height="180" rx="12" fill="url(#bar)"/><text x="34" y="260" text-anchor="middle" fill="#ddd" font-size="16" font-weight="600">CODEX</text></g>
+</g></g></svg>
