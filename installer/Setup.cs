@@ -19,8 +19,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Mini Monitor Setup")]
 [assembly: AssemblyProduct("Mini Monitor")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace MiniMonitorInstaller {
@@ -293,7 +293,7 @@ class Wizard : Form {
         path.SetBounds(28,150,445,28); path.Text = Engine.RegisteredRoot() ?? Engine.DefaultRoot; path.ReadOnly = removing;
         browse.Text = "변경"; browse.SetBounds(485,148,85,32); browse.Enabled = !removing && Engine.RegisteredRoot() == null;
         browse.Click += delegate { using (var picker = new FolderBrowserDialog { Description = "Mini-Monitor 폴더를 만들 상위 폴더를 선택하세요." }) if (picker.ShowDialog(this) == DialogResult.OK) path.Text = Path.Combine(picker.SelectedPath, "Mini-Monitor"); };
-        desktop.Text = "바탕화면 바로가기 만들기"; desktop.SetBounds(28,190,400,28); desktop.Visible = !removing;
+        desktop.Text = "바탕화면 바로가기 만들기"; desktop.SetBounds(28,190,400,28); desktop.Visible = !removing; desktop.Checked = true;
         status.SetBounds(28,230,542,26); status.Text = removing ? "실행 중인 Mini Monitor를 먼저 종료하세요." : "현재 사용자 계정에 설치합니다. 자동 실행 설정은 유지됩니다.";
         progress.SetBounds(28,266,300,6); progress.Visible = false;
         action.Text = removing ? "제거" : "설치 / 갱신"; action.SetBounds(350,278,112,34);
@@ -336,7 +336,7 @@ public static class Program {
             if (quiet) {
                 using (var gate = AcquireLock()) {
                     if (uninstall) Engine.Uninstall(s => { });
-                    else Engine.Install(args.First(a => a.StartsWith("--dir=")).Substring(6), args.Where(a => a.StartsWith("--group=")).Select(a => a.Substring(8)).FirstOrDefault() ?? "Mini Monitor", false, s => { });
+                    else Engine.Install(args.First(a => a.StartsWith("--dir=")).Substring(6), args.Where(a => a.StartsWith("--group=")).Select(a => a.Substring(8)).FirstOrDefault() ?? "Mini Monitor", true, s => { });
                 }
             } else { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new Wizard(uninstall)); }
             return 0;

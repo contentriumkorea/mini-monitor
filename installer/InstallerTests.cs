@@ -14,6 +14,15 @@ class InstallerTests {
         AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
         AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
         try {
+            if (args[0] == "--defaults") {
+                var type = typeof(Engine).Assembly.GetType("MiniMonitorInstaller.Wizard");
+                using (var form = (Form)Activator.CreateInstance(type, new object[] { false })) {
+                    var desktop = form.Controls.OfType<CheckBox>().Single();
+                    if (!desktop.Checked) throw new Exception("Desktop shortcut must be enabled by default");
+                }
+                Console.WriteLine("PASS default desktop shortcut selected");
+                return 0;
+            }
             if (args[0] == "--render") {
                 Application.EnableVisualStyles();
                 var type = typeof(Engine).Assembly.GetType("MiniMonitorInstaller.Wizard");

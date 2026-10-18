@@ -13,7 +13,7 @@ to repair registration; newer installed versions are never downgraded, even when
 in-app updates leave the registry DisplayVersion stale.
 
 Per-user installation defaults to `%LOCALAPPDATA%\Programs\Mini-Monitor`.
-Start menu, optional desktop shortcut and Windows Apps removal entry are created.
+Start menu, default-enabled desktop shortcut and Windows Apps removal entry are created.
 Login/settings/startup choices remain unchanged. Unknown/modified files block
 replacement/removal. The app must be closed; it is not force-killed. Only setup's
 own short-lived CLI health-check child may be killed after its 30-second timeout.
@@ -29,7 +29,7 @@ Removal keeps user data; its copied temporary EXE is left to Windows temp cleanu
 ## Separate release lanes
 
 - **Installer engine only:** explicit `installer/release-request.json` change or
-  workflow dispatch builds/tests/publishes `installer-v1`, with `latest=false`.
+  workflow dispatch builds/tests/publishes the requested installer revision (currently `installer-v2`), with `latest=false`.
   Normal app releases must not touch the request file. Assets are not overwritten;
   engine security/compatibility fixes require a deliberate new bootstrap release.
 - **Application only:** sign with existing `scripts/sign_release.py` on the

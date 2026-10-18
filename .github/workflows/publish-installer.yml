@@ -45,12 +45,12 @@ jobs:
           $before = gh api repos/contentriumkorea/mini-monitor/releases/latest --jq .tag_name
           if ($LASTEXITCODE -ne 0 -or $before -notmatch '^v\d+\.\d+\.\d+$') { throw 'Latest must be a stable application release' }
           $request = Get-Content installer/release-request.json -Raw | ConvertFrom-Json
-          if ($request.tag -ne 'installer-v1') { throw 'Unexpected installer release request' }
-          gh release create installer-v1 --repo contentriumkorea/mini-monitor --target $env:GITHUB_SHA --draft --title 'Mini Monitor 온라인 설치기' --notes-file installer/RELEASE-NOTES.md
+          if ($request.tag -notmatch '^installer-v[1-9][0-9]*$') { throw 'Unexpected installer release request' }
+          gh release create $request.tag --repo contentriumkorea/mini-monitor --target $env:GITHUB_SHA --draft --title 'Mini Monitor 온라인 설치기' --notes-file installer/RELEASE-NOTES.md
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create installer draft; existing releases are never overwritten' }
-          gh release upload installer-v1 build/installer/Mini-Monitor-Setup.exe --repo contentriumkorea/mini-monitor
+          gh release upload $request.tag build/installer/Mini-Monitor-Setup.exe --repo contentriumkorea/mini-monitor
           if ($LASTEXITCODE -ne 0) { throw 'Installer upload failed; draft retained' }
-          gh release edit installer-v1 --repo contentriumkorea/mini-monitor --draft=false --latest=false
+          gh release edit $request.tag --repo contentriumkorea/mini-monitor --draft=false --latest=false
           if ($LASTEXITCODE -ne 0) { throw 'Installer publication failed' }
           $after = gh api repos/contentriumkorea/mini-monitor/releases/latest --jq .tag_name
           if ($LASTEXITCODE -ne 0 -or $after -ne $before) { throw 'Application Latest changed unexpectedly' }

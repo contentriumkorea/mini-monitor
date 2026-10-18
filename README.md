@@ -1,48 +1,42 @@
 # Mini Monitor
 
-## [Windows 설치파일 다운로드 · 474 KB](https://github.com/contentriumkorea/mini-monitor/releases/download/installer-v1/Mini-Monitor-Setup.exe)
+## [Windows 설치파일 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/download/installer-v2/Mini-Monitor-Setup.exe)
 
-**설치파일 다운로드 → 실행 → 설치 → Mini Monitor 실행**
+**설치파일 다운로드 → 기존 Mini Monitor 종료 → 설치 / 갱신 → 실행**
 
-Windows 10/11 64비트용 **경량 온라인 설치 프로그램**입니다. 이 작은 설치파일 하나를 보관해 두면, 실행할 때마다 최신 정식 버전을 자동으로 찾아 설치하거나 업데이트합니다. 인터넷 연결이 필요하며 앱 본체는 설치 중 별도로 내려받습니다. 기존 Mini Monitor를 먼저 종료하세요. 시작 메뉴·앱 제거 목록에 등록하고 설정·로그인을 보존합니다. 실행파일은 미서명입니다.
+약 0.5 MB의 경량 온라인 설치파일입니다. Windows 10/11 x64 PC에서 최신 정식 버전을 자동으로 내려받아 검증한 뒤 설치합니다. 인터넷 연결이 필요하며 시험판은 설치하지 않습니다. 같은 설치파일을 나중에 다시 사용해도 그때의 최신 정식 버전을 가져옵니다.
 
-**설치기와 앱 업데이트는 별도로 배포합니다.** 설치기는 `installer-v1`의 고정 파일이며, 이후 앱 릴리스에는 프로그램 ZIP·서명된 파일 목록·서명 파일만 배포합니다. 설치기 자체의 보안·호환성 수정이 아닌 한 설치파일을 다시 만들지 않습니다. 이미 최신 앱이면 설치기로 동일 버전을 다시 설치해 등록을 복구할 수도 있습니다.
+바탕화면 바로가기는 기본 선택되어 있으며, 시작 메뉴와 Windows 앱 제거 목록에 등록합니다. 로그인·설정·자동 실행 선택은 보존됩니다. 오류가 발생하면 안내된 원인을 해결하고 다시 시도하세요.
 
-[포터블 ZIP 다운로드](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)는 직접 압축 해제하는 사용자를 위한 앱 본체입니다. 폴더 전체가 필요하며 EXE만 따로 옮기면 실행되지 않습니다. 현재 앱 버전은 0.2.10으로 유지되므로, 이미 0.2.10이면 새 앱 업데이트 알림은 없습니다. 과거 v0.2.10 릴리스의 대용량 Setup은 이전 오프라인 설치기입니다. **새 설치는 위의 474 KB 링크를 사용하세요.**
+[사용 안내](README_KO.md) · [최신 앱 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest) · [문제 신고](https://github.com/contentriumkorea/mini-monitor/issues)
 
-[한국어 설치·사용 안내](README_KO.md) · [최신 버전 및 변경사항](https://github.com/contentriumkorea/mini-monitor/releases/latest)
+## 주요 기능
 
----
+CPU·RAM·GPU·VRAM과 Codex 계정의 남은 사용량·크레딧을 한눈에 확인합니다. Mini Monitor는 OpenAI 공식 제품이 아닌 독립 프로그램입니다.
 
-Version 0.2.10 uses a taskbar-only native Win32 window. Fonts and PNG icons are rendered directly at the primary taskbar DPI, including 150%, 200% and 250% scaling. The bar hides while a foreground fullscreen app covers that monitor, the taskbar is auto-hidden, Explorer is unavailable, or the safe taskbar area is too small. Its enabled setting and sampling remain active; it resumes with current readings without taking keyboard focus. Fullscreen apps on another monitor do not unnecessarily hide the primary bar. Display changes preserve the relative horizontal position. Setup, account sign-in, USB output and the PC overlay retain their existing behavior.
+![화면 예시 — 합성 수치](previews/native-refresh/normal.png)
 
-Automated DPI/shell-state tests and isolated real Windows focus/lifetime tests cover these rules. They do not establish physical validation on every 4K laptop or fullscreen game; verify those environments after updating. This release does not change Windows scaling settings or modify Explorer.
+- **미니 모니터:** 지원 3.5인치 USB 화면에 큰 숫자와 세로 게이지로 표시합니다. 가로·세로 보기, 180° 회전과 밝기를 조절합니다.
+- **PC 상태창:** 위치·크기·배경 투명도를 조절하고 글자와 숫자는 선명하게 유지합니다.
+- **작업표시줄 바:** 원하는 항목만 선택하고 아이콘·텍스트 표시 방식을 고릅니다. 좌우 위치를 조절하며 전체화면 사용 중에는 숨깁니다.
+- **Codex 계정:** 앱에서 로그인해 사용량과 크레딧을 조회합니다. 다른 앱의 로그인 자료나 로컬 사용 기록은 읽지 않습니다.
+- **독립적인 제어:** USB 모니터를 시작하지 않아도 PC 상태창과 작업표시줄 바의 수치가 갱신됩니다.
 
-Version 0.2.8 automatically recycles hash-verified previous-version backups and completed update staging folders after the new app starts successfully and the update helper releases its lock. There is no cleanup button. Existing known shortcuts and opted-in startup paths are repaired first; disabled startup stays disabled. Settings/sign-in data, failed recovery backups, unknown folders and trees containing user files remain untouched. Cleanup failures are retried on a later healthy launch; the Recycle Bin is not emptied.
+## 업데이트와 제거
 
-Mini Monitor is an independent, unofficial GPL-3.0-or-later Windows dashboard, not an OpenAI product. It supports a 3.5-inch USB serial display and an optional desktop overlay. Five cards show CPU, RAM, GPU, VRAM and Codex account limits in 480×320 landscape (2+2+1) or 320×480 portrait orientation. Each card has a right-side gauge that fills upward; waveform graphs and duplicate bottom bars are omitted for readability.
+설치기와 앱 업데이트는 별도로 유지합니다. 이후 앱 배포마다 설치기를 다시 내려받을 필요는 없습니다. 설치기 자체 수정이 필요할 때만 설치기를 교체합니다.
 
-[한국어 설치·사용 안내](README_KO.md) · [Releases](https://github.com/contentriumkorea/mini-monitor/releases) · [Source offer](SOURCE-OFFER.md) · [Test results](TEST_RESULTS.md)
+설치된 앱은 새 정식 버전을 확인해 알리고, 사용자가 업데이트를 선택하면 내려받은 파일을 검증한 뒤 적용합니다. 설정창에서 즉시 확인할 수도 있습니다. 정상 업데이트 후 확인된 구버전 잔여 파일은 자동 정리하며, 사용자 파일이나 복구가 필요한 백업은 임의 삭제하지 않습니다.
 
-AI data uses Codex account sign-in only. Local session scanning, API organization usage and foreground-app activity collection are no longer offered. Credit balance is shown separately from quota remaining; unavailable balances are never inferred as zero. Setup uses a neutral black/gray palette; the small display emphasizes VRAM and omits status badge text.
+제거하려면 앱을 완전히 종료한 뒤 **Windows 설정 → 앱 → 설치된 앱 → Mini Monitor → 제거**를 선택하세요. 제어판에서도 제거할 수 있습니다. 프로그램·등록 정보·생성한 바로가기를 정리하고 로그인과 개인 설정은 보존합니다.
 
-The optional draggable taskbar bar shows CPU, RAM, GPU, VRAM and Codex as PNG icons plus percentages, with a fully transparent background and opaque readouts. The app starts shared local hardware collection independently of USB transmission, so the setup preview, desktop overlay and taskbar bar work without USB Start. USB Start/Stop controls only the physical mini monitor; desktop readings continue after USB Stop. Codex uses the same account snapshot as setup. It is an independent overlay, not an Explorer/taskbar modification.
+**0.2.6 이하 구버전:** 이전 앱의 업데이트를 반복하지 말고 종료 후 위 설치파일을 사용하세요. 기존 프로그램·복구 백업·로그인·설정 폴더를 먼저 삭제하지 마세요. 수정되었거나 출처를 알 수 없는 폴더는 안전을 위해 자동 교체하지 않을 수 있습니다.
 
-Taskbar settings let you select individual metrics (at least one), using icons, text labels, or both. Preferences persist across restarts. Placement avoids the primary taskbar notification area when restoring, dragging, or resizing the bar.
+## 안내 및 라이선스
 
-On Windows, the bar docks to the actual primary taskbar and stays left of its notification area. Display and shell geometry changes are checked even when readings are unchanged. The horizontal slider covers only the safe taskbar range; arrow buttons fine-tune by one pixel and reset restores the shell-anchored position. Position changes save immediately, independently of metric selection Apply/Cancel, and do not turn on a hidden bar.
+실행파일에 Windows 게시자 코드 서명이 없어 경고가 나타날 수 있습니다. 공식 저장소에서 받은 파일인지 확인하세요. 다운로드 파일 검증과 Windows 게시자 확인은 별개입니다.
 
-If clicking the Windows taskbar promotes it above the readout, the next UI poll restores the readout immediately above the taskbar, retaining existing popup order, keyboard focus, position and size. This does not require a taskbar transparency utility and never changes Explorer's windows. A user-hidden bar remains hidden.
+센서나 장치에 따라 일부 정보가 없을 수 있습니다. 모든 4K 노트북과 전체화면 게임에서 검증된 것은 아닙니다. 직접 압축 해제하는 방식은 [앱 전체 ZIP](https://github.com/contentriumkorea/mini-monitor/releases/latest/download/Mini-Monitor.zip)을 사용하세요. ZIP은 설치파일이 아니며 전체 폴더를 함께 유지해야 합니다.
 
-Setup opens at approximately 960×720 with compact device and account controls. Updates open separately; obsolete CLI selection, installation help, and connection-troubleshooting buttons have been removed because account sign-in uses the bundled runtime. Login errors are shown directly in the account card. Internal scrolling remains a fallback for small screens and high display scaling.
-
-![Synthetic landscape dashboard](previews/native-refresh/normal.png)
-
-**Upgrade from 0.2.6 or earlier manually:** the old bundled updater can partially move the installed directory when a file is in use. Publishing a new archive cannot replace a helper already running in an older client. Exit the old app and extract the entire 0.2.7-or-newer ZIP into a fresh folder; do not repeat the old in-app update. Preserve the old program, backup folders and `%LOCALAPPDATA%\AI-Mini-Monitor` settings/sign-in data. Adjust shortcuts or startup paths if the executable location changes. Version 0.2.7 uses atomic same-volume directory renames and reports failed recovery accurately. Download/staging checks alone do not establish successful installation or relaunch.
-
-Releases from 0.2.7 use only `update-v2-manifest.json` and `update-v2-manifest.sig`. Legacy clients still notify and link to manual download, but cannot apply these releases with their unsafe helper. Never publish legacy-name metadata aliases: that would re-enable unsafe upgrades, including version skips. Do not apply or retry an already-prepared legacy update; exit the old app before starting the manual baseline installation. A new release does not stop a legacy helper that has already started.
-
-Download the stable `Mini-Monitor.zip` release and keep its entire `Mini-Monitor` folder together. Run `Mini-Monitor.exe` to open setup without starting serial transmission. `Mini-Monitor-CLI.exe` provides read-only diagnostics and synthetic preview generation. The official Codex app-server runtime is included for browser sign-in, so a separate CLI installation is not required. Mini Monitor uses its own login storage and never copies another app's authentication or reads local usage sessions. The Windows executable is not Authenticode-signed; the signed update metadata is a separate integrity mechanism.
-
-Only devices matching USB VID `1A86`, PID `5722` and serial `USB35INCHIPSV2` may receive serial output. An older AI-Mini-Monitor build or the withdrawn 0.2.0 build needs a direct manual baseline upgrade to the latest 0.2.7-or-newer release; 0.2.0 cannot discover this update in-app. Mini Monitor checks for stable updates at startup and periodically while running, with a 24-hour network-check gate; the setup button can check on demand. Applying subsequent v2 updates in 0.2.7 or newer requires an explicit click. Physical USB output and live account login require separate testing on your own hardware/account.
+GPL-3.0-or-later: [라이선스](LICENSE) · [제3자 고지](THIRD_PARTY_NOTICES.md) · [구성요소별 라이선스](LICENSES/) · [소스 제공 안내](SOURCE-OFFER.md). 소스는 이 저장소와 배포본의 `source/`에서 제공합니다.
 

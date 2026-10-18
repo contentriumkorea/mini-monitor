@@ -1,8 +1,8 @@
 {
-  "tag": "installer-v1",
-  "installer_version": "1.0.0",
+  "tag": "installer-v2",
+  "installer_version": "1.1.0",
   "asset": "Mini-Monitor-Setup.exe",
-  "requested_at": "2026-10-14",
+  "requested_at": "2026-10-18",
   "preserve_existing_update_assets": true,
   "make_latest": false,
   "mode": "online"
