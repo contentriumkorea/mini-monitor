@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+import calendar
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
@@ -33,6 +34,22 @@ def validate_budget(config: OpenAIBudgetConfig) -> None:
         raise ValueError("시작일을 YYYY-MM-DD 형식으로 입력해 주세요") from None
     if start.isoformat() != config.start_date or start > datetime.now(timezone.utc).date():
         raise ValueError("시작일은 미래가 아닌 YYYY-MM-DD 날짜여야 합니다")
+
+
+def monthly_period(start_date: str, now: datetime) -> tuple[date, date]:
+    """UTC calendar month, always anchored to the original day (end exclusive)."""
+    anchor = date.fromisoformat(start_date)
+    today = now.astimezone(timezone.utc).date()
+    month = today.year * 12 + today.month - 1
+
+    def boundary(index: int) -> date:
+        year, zero_month = divmod(index, 12)
+        number = zero_month + 1
+        return date(year, number, min(anchor.day, calendar.monthrange(year, number)[1]))
+
+    if boundary(month) > today:
+        month -= 1
+    return boundary(month), boundary(month + 1)
 
 
 def _bad_response() -> OpenAIUsageError:
@@ -106,6 +123,8 @@ class BudgetSnapshot:
     spent: Decimal | None = None
     state: str = "disabled"
     last_success: datetime | None = None
+    period_start: date | None = None
+    period_end: date | None = None
 
     @property
     def ai(self) -> AIData | None:
@@ -143,7 +162,21 @@ class OpenAIBudgetService:
 
     def snapshot(self) -> BudgetSnapshot:
         with self._cv:
+            self._roll_period_locked()
             return copy.deepcopy(self._snapshot)
+
+    def _roll_period_locked(self) -> None:
+        if self._closed or not self._snapshot.config.enabled:
+            return
+        start, end = monthly_period(self._snapshot.config.start_date, datetime.now(timezone.utc))
+        if self._snapshot.period_start != start:
+            previous_period = self._snapshot.period_start
+            self._generation += 1
+            self._snapshot = BudgetSnapshot(self._snapshot.config, state="pending",
+                                            period_start=start, period_end=end)
+            if previous_period is not None:
+                self._due = time.monotonic()
+            self._cv.notify_all()
 
     def configure(self, config: OpenAIBudgetConfig) -> None:
         validate_budget(config)
@@ -155,6 +188,7 @@ class OpenAIBudgetService:
 
     def refresh(self) -> bool:
         with self._cv:
+            self._roll_period_locked()
             if self._closed or not self._snapshot.config.enabled or time.monotonic() - self._last_attempt < 60:
                 return False
             self._due = time.monotonic()
@@ -172,19 +206,20 @@ class OpenAIBudgetService:
         while True:
             with self._cv:
                 while not self._closed:
+                    self._roll_period_locked()
                     if self._snapshot.config.enabled:
                         wait = self._due - time.monotonic()
                         if wait <= 0:
                             break
-                        self._cv.wait(wait)
+                        self._cv.wait(min(wait, 60))
                     else:
                         self._cv.wait()
                 if self._closed:
                     return
                 generation = self._generation
-                config = copy.deepcopy(self._snapshot.config)
                 previous_success = self._snapshot.last_success
-                self._snapshot = BudgetSnapshot(config, state="pending", last_success=previous_success)
+                self._snapshot = replace(self._snapshot, spent=None, state="pending")
+                period_start = self._snapshot.period_start
                 self._last_attempt = time.monotonic()
                 self._due = self._last_attempt + 600
             spent = None
@@ -197,7 +232,7 @@ class OpenAIBudgetService:
                 else:
                     client = self._client_factory(key)
                     key = None
-                    spent = client.fetch_spend(config.start_date, datetime.now(timezone.utc),
+                    spent = client.fetch_spend(period_start.isoformat(), datetime.now(timezone.utc),
                                                cancelled=lambda: self._cancelled(generation))
                     success = datetime.now(timezone.utc)
             except OpenAIUsageError as error:
@@ -207,9 +242,11 @@ class OpenAIBudgetService:
                 # No exception text: a dependency may include credentials or paths.
                 state = "unavailable"
             with self._cv:
+                self._roll_period_locked()
                 if not self._closed and self._generation == generation:
-                    self._snapshot = BudgetSnapshot(config, spent, state, success)
+                    self._snapshot = replace(self._snapshot, spent=spent, state=state, last_success=success)
 
     def _cancelled(self, generation: int) -> bool:
         with self._cv:
+            self._roll_period_locked()
             return self._closed or generation != self._generation

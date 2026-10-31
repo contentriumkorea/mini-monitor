@@ -34,11 +34,11 @@ class OpenAIBudgetDialog:
         frame.columnconfigure(1, weight=1)
         self.enabled_check = ttk.Checkbutton(frame, text="OpenAI API 사용률 표시", variable=self.enabled, style=checkbutton_style)
         self.enabled_check.grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(frame, text="총액 (USD)", style="CardText.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(frame, text="월 총액 (USD)", style="CardText.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Entry(frame, textvariable=self.total, width=18).grid(row=1, column=1, sticky="ew", pady=(10, 0))
         ttk.Label(frame, text="시작일 (UTC)", style="CardText.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(frame, textvariable=self.start, width=18).grid(row=2, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(frame, text="YYYY-MM-DD 00:00 UTC부터 현재까지 · 조직 전체 비용\n총액·추가 충전은 직접 수정합니다. 매월 초기화되지 않습니다.",
+        ttk.Label(frame, text="시작일 기준 매월 00:00 UTC에 새 집계 · 조직 전체 비용\n월 총액 유지 · 없는 날짜는 말일 적용 · 잔액 이월 없음",
                   style="CardText.TLabel", wraplength=440).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 12))
         ttk.Label(frame, text="관리자 API 키", style="CardText.TLabel").grid(row=4, column=0, sticky="w")
         self.key_entry = ttk.Entry(frame, textvariable=self.key, show="●", width=30)
@@ -114,6 +114,8 @@ class OpenAIBudgetDialog:
         message = {"pending": "조회 대기", "key_required": "관리자 API 키 입력 필요", "auth": "관리자 키 또는 조직 조회 권한 확인 필요", "rate_limited": "요청 제한 · 다음 주기에 재시도", "network": "연결 실패 · 다음 주기에 재시도", "invalid_response": "비용 응답을 확인할 수 없음", "unavailable": "키 저장소 또는 조회 상태 확인 필요"}.get(snapshot.state, "")
         fields = dict(ai.fields)
         text = f"사용 {fields['USED']} / 총액 {fields['TOTAL']} · {ai.primary_value}"
+        if snapshot.period_start and snapshot.period_end:
+            text += f"\n집계 시작 {snapshot.period_start} · 다음 초기화 {snapshot.period_end} (UTC)"
         if message: text += "\n" + message
         if snapshot.last_success:
             text += "\n마지막 성공: " + snapshot.last_success.astimezone().strftime("%m-%d %H:%M:%S")
