@@ -25,21 +25,22 @@ MAX_OVERLAY_SCALE_PERCENT = 200
 MIN_OVERLAY_COORDINATE = -(2**31)
 MAX_OVERLAY_COORDINATE = (2**31) - 1
 DEFAULT_TASKBAR_ITEMS = ("cpu", "ram", "gpu", "vram", "codex")
+TASKBAR_ITEMS = (*DEFAULT_TASKBAR_ITEMS, "api")
 TASKBAR_STYLES = ("icon", "text", "both")
 
 
 def validate_taskbar_options(items: object, style: object) -> tuple[str, ...]:
-    """Validate and return the five-item display order, filtered to selections."""
+    """Validate and return the canonical display order, filtered to selections."""
 
     if not isinstance(items, (list, tuple)) or not items:
         raise ValueError("overlay.taskbar_items must select at least one item")
-    if any(not isinstance(item, str) or item not in DEFAULT_TASKBAR_ITEMS for item in items):
+    if any(not isinstance(item, str) or item not in TASKBAR_ITEMS for item in items):
         raise ValueError("overlay.taskbar_items contains an unknown item")
     if len(set(items)) != len(items):
         raise ValueError("overlay.taskbar_items cannot contain duplicates")
     if not isinstance(style, str) or style not in TASKBAR_STYLES:
         raise ValueError("overlay.taskbar_style must be icon, text, or both")
-    return tuple(item for item in DEFAULT_TASKBAR_ITEMS if item in items)
+    return tuple(item for item in TASKBAR_ITEMS if item in items)
 
 
 def validate_brightness(value: object) -> int:
@@ -84,6 +85,13 @@ class AIConfig:
 
 
 @dataclass(slots=True)
+class OpenAIBudgetConfig:
+    enabled: bool = False
+    total_usd: str = ""
+    start_date: str = ""
+
+
+@dataclass(slots=True)
 class OverlayConfig:
     enabled: bool = False
     opacity: float = DEFAULT_OVERLAY_OPACITY
@@ -111,8 +119,11 @@ class AppConfig:
     ai: AIConfig = field(default_factory=AIConfig)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     app: AppOptions = field(default_factory=AppOptions)
+    openai: OpenAIBudgetConfig = field(default_factory=OpenAIBudgetConfig)
 
     def validate(self) -> None:
+        from .ai.openai_budget import validate_budget
+        validate_budget(self.openai)
         if not isinstance(self.device.auto_detect, bool):
             raise ValueError("device.auto_detect must be true or false")
         if self.device.manual_port is not None and (
@@ -234,6 +245,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         ai=AIConfig(**ai_payload),
         overlay=OverlayConfig(**_section(payload, "overlay")),
         app=AppOptions(**_section(payload, "app")),
+        openai=OpenAIBudgetConfig(**_section(payload, "openai")),
     )
     config.validate()
     return config

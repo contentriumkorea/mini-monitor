@@ -55,6 +55,13 @@ def percent_text(metric: Metric) -> str:
 
 @lru_cache(maxsize=40)
 def _icon(name: str, dpi_percent: int = 100) -> Image.Image:
+    if name == "api":
+        side = round(18 * _dpi_scale(dpi_percent))
+        icon = Image.new("RGBA", (side, side))
+        draw = ImageDraw.Draw(icon)
+        draw.ellipse((1, 1, side - 2, side - 2), outline="white", width=max(1, side // 12))
+        draw.text((side // 2, side // 2), "$", font=metric_mono(round(side * .7)), fill="white", anchor="mm")
+        return icon
     path = resource_path(f"assets/icons/{name}.png")
     side = round(18 * _dpi_scale(dpi_percent))
     with Image.open(path) as source:
@@ -87,6 +94,12 @@ def _codex_remaining(ai: AIData | None) -> str:
     if re.fullmatch(r"(?:100|[1-9]?\d)%|(?:\d{1,3}(?:,\d{3}){0,3}|--|UNLTD) Credit", value) is None:
         return "--"
     return value
+
+
+def _api_used(api: AIData | None) -> str:
+    if api is None or api.provider != AIProviderKind.OPENAI_API:
+        return "--"
+    return api.primary_value if re.fullmatch(r"\d+(?:\.\d)?%", api.primary_value) else "--"
 
 
 def _readouts(sensor: SensorSnapshot | None, ai: AIData | None = None) -> tuple[str, str, str, str, str]:
@@ -122,7 +135,7 @@ def taskbar_frame_size(items=DEFAULT_TASKBAR_ITEMS, style: str = "icon", *, dpi_
 def _cell_width(name: str, reading: str, style: str, dpi_percent: int = 100) -> int:
     scale = _dpi_scale(dpi_percent)
     base = round(_STYLE_CELL_WIDTHS[style] * scale)
-    if not reading.endswith(" Credit"):
+    if not reading.endswith(" Credit") and name != "api":
         return base
     prefix = round((26 if style in ("icon", "both") else 4) * scale)
     if style in ("text", "both"):
@@ -137,6 +150,7 @@ def render_taskbar_frame(
     items=DEFAULT_TASKBAR_ITEMS,
     style: str = "icon",
     dpi_percent: int = 100,
+    api: AIData | None = None,
 ) -> Image.Image:
     """Render one compact semantic frame for the existing layered presenter."""
 
@@ -144,9 +158,10 @@ def render_taskbar_frame(
     scale = _dpi_scale(dpi_percent)
     px = lambda value: round(value * scale)
     readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(sensor, ai)))
+    readings["api"] = _api_used(api)
     widths = [_cell_width(name, readings[name], style, dpi_percent) for name in selected]
     # Trim only the percent cell's unused tail, never a full credit label.
-    trim = _ICON_TRAILING_TRIM if style == "icon" and not readings[selected[-1]].endswith(" Credit") else 0
+    trim = _ICON_TRAILING_TRIM if style == "icon" and selected[-1] != "api" and not readings[selected[-1]].endswith(" Credit") else 0
     size = (sum(widths) - px(trim), px(FRAME_SIZE[1]))
     background = Image.new("RGB", size, (8, 8, 8))
     mask = Image.new("L", size, 0)
@@ -382,6 +397,7 @@ class TaskbarWindow:
         self._image = None
         self._last_readouts = None
         self._sensor = self._ai = None
+        self._api = None
         self._pending_drag = 0
         width, height = taskbar_frame_size(self.items, self.style)
         if position is None:
@@ -429,11 +445,12 @@ class TaskbarWindow:
         old_geometry = self._geometry
         dpi = taskbar_dpi_percent()
         readings = dict(zip(DEFAULT_TASKBAR_ITEMS, _readouts(self._sensor, self._ai)))
+        readings["api"] = _api_used(self._api)
         signature = (self.items, self.style, tuple(readings[name] for name in self.items))
         dirty = signature != self._last_readouts or dpi != self._frame_dpi
         if dirty:
             image = render_taskbar_frame(self._sensor, self._ai,
-                items=self.items, style=self.style, dpi_percent=dpi)
+                items=self.items, style=self.style, dpi_percent=dpi, api=self._api)
             self._image = image
             self._last_readouts, self._frame_dpi = signature, dpi
         self._scale_percent = dpi
@@ -492,11 +509,12 @@ class TaskbarWindow:
     def _refresh_shell_position(self) -> None:
         self._sync()
 
-    def update_sensor(self, sensor: SensorSnapshot | None, ai: AIData | None = None) -> None:
+    def update_sensor(self, sensor: SensorSnapshot | None, ai: AIData | None = None, *, api: AIData | None = None) -> None:
         require_main_thread()
         self._ensure_open()
         _readouts(sensor, ai)  # validate before replacing the latest cache
         self._sensor, self._ai = sensor, ai
+        self._api = api
         delta = self._pending_drag
         self._pending_drag = 0
         if delta:

@@ -479,7 +479,7 @@ def test_taskbar_toggle_failure_keeps_old_state_and_shows_feedback() -> None:
         window.close()
 
 
-def test_taskbar_options_open_with_five_independent_checks_and_saved_style() -> None:
+def test_taskbar_options_open_with_independent_checks_and_saved_style() -> None:
     window = make_window(
         taskbar_items=("ram", "codex"),
         taskbar_style="text",
@@ -489,7 +489,7 @@ def test_taskbar_options_open_with_five_independent_checks_and_saved_style() -> 
         window._taskbar_options_button.invoke()
         dialog = window._taskbar_options_dialog
         assert dialog is not None and dialog.grab_current() is dialog
-        assert tuple(window._taskbar_item_checks) == ("cpu", "ram", "gpu", "vram", "codex")
+        assert tuple(window._taskbar_item_checks) == ("cpu", "ram", "gpu", "vram", "codex", "api")
         assert {name for name, var in window._taskbar_item_vars.items() if var.get()} == {"ram", "codex"}
         assert str(window._taskbar_style_combo.cget("state")) == "readonly"
         assert window._taskbar_style_var.get() == "텍스트"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 SCREEN_WIDTH = 480
@@ -61,6 +61,7 @@ class DashboardLayout:
     memory: Rect
     vram: Rect
     ai: Rect
+    api: Rect | None = None
 
     @property
     def size(self) -> tuple[int, int]:
@@ -68,7 +69,7 @@ class DashboardLayout:
 
     @property
     def card_rects(self) -> dict[str, Rect]:
-        return {
+        rects = {
             "connection": self.connection,
             "cpu": self.cpu,
             "memory": self.memory,
@@ -76,6 +77,19 @@ class DashboardLayout:
             "vram": self.vram,
             "ai": self.ai,
         }
+        if self.api is not None:
+            rects["api"] = self.api
+        return rects
+
+
+def with_api_card(layout: DashboardLayout) -> DashboardLayout:
+    """Split the existing AI surface; preserve USB partial-update boundaries."""
+    if layout.api is not None:
+        return layout
+    rect = layout.ai
+    width = (rect.width - CARD_GAP) // 2
+    return replace(layout, ai=Rect(rect.x, rect.y, width, rect.height),
+                   api=Rect(rect.x + width + CARD_GAP, rect.y, rect.width - width - CARD_GAP, rect.height))
 
 
 LANDSCAPE_LAYOUT = DashboardLayout(

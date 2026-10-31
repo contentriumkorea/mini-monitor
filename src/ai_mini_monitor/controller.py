@@ -112,6 +112,7 @@ class MonitorController:
         sensor_collector_factory: Callable[[], SystemSensorCollector] | None = None,
         serial_writer: SerialWriter | None = None,
         codex_account_snapshot: Callable[[], CodexAccountSnapshot] | None = None,
+        api_snapshot: Callable[[], AIData | None] | None = None,
         initial_restore_timeout: float = INITIAL_RESTORE_TIMEOUT_SECONDS,
     ) -> None:
         config.validate()
@@ -162,6 +163,7 @@ class MonitorController:
             lambda: SystemSensorCollector(self.config.sensors)
         )
         self._codex_account_snapshot = codex_account_snapshot
+        self._api_snapshot = api_snapshot
         self._initial_restore_timeout = restore_timeout
 
         if enable_serial:
@@ -520,11 +522,12 @@ class MonitorController:
                 primary_value="SETUP",
                 primary_label="REQUIRED",
             ))
-            self._stop.wait()
-            return
         while not self._stop.is_set():
             self._ai_wake.clear()
-            self.store.update_ai(snapshot().ai)
+            if snapshot is not None:
+                self.store.update_ai(snapshot().ai)
+            if self._api_snapshot is not None:
+                self.store.update_api(self._api_snapshot())
             self._ai_wake.wait(0.5)
 
     def _render_loop(self) -> None:
@@ -560,7 +563,7 @@ class MonitorController:
                 with self._render_lock:
                     runtime_values = self.store.read()
                     render_input = (runtime_values.sensor_revision, runtime_values.ai,
-                                    runtime_values.connection, self.renderer)
+                                    runtime_values.api, runtime_values.connection, self.renderer)
                     if render_input != last_render_input:
                         display = self.composer.compose(runtime_values, monotonic_now=now)
                         image = self.renderer.render(display)

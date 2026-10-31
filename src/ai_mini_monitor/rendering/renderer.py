@@ -24,6 +24,7 @@ from .layout import (
     MEMORY,
     DashboardLayout,
     Rect,
+    with_api_card,
 )
 from .theme import DEFAULT_THEME, Theme
 
@@ -198,6 +199,8 @@ class DashboardRenderer:
         self.memory_gauge = _memory_gauge(layout.memory)
         self.vram_gauge = _metric_gauge(layout.vram)
         self.ai_gauge = _metric_gauge(layout.ai)
+        self.api_gauge = _metric_gauge(layout.api) if layout.api is not None else None
+        self._api_renderer = None
         (
             self._static_background,
             self._static_foreground,
@@ -235,7 +238,9 @@ class DashboardRenderer:
             )
         foreground = Image.new("RGBA", self.layout.size, (0, 0, 0, 0))
         foreground_draw = ImageDraw.Draw(foreground)
-        for track in (self.cpu_gauge, self.memory_gauge, self.gpu_gauge, self.vram_gauge, self.ai_gauge):
+        for track in (self.cpu_gauge, self.memory_gauge, self.gpu_gauge, self.vram_gauge, self.ai_gauge, self.api_gauge):
+            if track is None:
+                continue
             foreground_draw.rounded_rectangle(
                 (track.x, track.y, track.right - 1, track.bottom - 1),
                 radius=4,
@@ -251,6 +256,15 @@ class DashboardRenderer:
         return self._static.copy()
 
     def render(self, snapshot: DisplaySnapshot) -> Image.Image:
+        if snapshot.api is not None and self.layout.api is None:
+            if self._api_renderer is None:
+                self._api_renderer = DashboardRenderer(self.theme, with_api_card(self.layout))
+            image = self._api_renderer.render(snapshot)
+            self.last_placements = self._api_renderer.last_placements
+            self.last_gauges = self._api_renderer.last_gauges
+            self.last_sparklines = self._api_renderer.last_sparklines
+            self.last_budget_bar = None
+            return image
         foreground = self._static_foreground.copy()
         draw = ImageDraw.Draw(foreground)
         self.last_placements = {}
@@ -279,7 +293,12 @@ class DashboardRenderer:
         )
         self._draw_memory(draw, snapshot)
         self._draw_vram(draw, snapshot)
-        self._draw_ai(draw, snapshot.ai)
+        if self.layout.api is not None:
+            self._draw_compact_ai(draw, snapshot.ai, self.layout.ai, self.ai_gauge, "ai")
+            if snapshot.api is not None:
+                self._draw_compact_ai(draw, snapshot.api, self.layout.api, self.api_gauge, "api")
+        else:
+            self._draw_ai(draw, snapshot.ai)
         image = Image.alpha_composite(
             self._static_background.convert("RGBA"),
             foreground,
@@ -695,6 +714,32 @@ class DashboardRenderer:
             )
 
         self.last_gauges[key] = GaugePlacement(key, track, fill, ratio, state)
+
+    def _draw_compact_ai(self, draw, ai: AIData, rect: Rect, track: Rect, key: str) -> None:
+        self._draw_card_heading(draw, key + "_title", rect, ai.title, self.theme.ai_accent, underline=False)
+        max_width = max(28, min(106, rect.width * .45))
+        size = self._fit_large_value_size(draw, ai.primary_value, 46, 1, max_width)
+        self._draw_large_percent(draw, key + "_primary", (track.x - 5, rect.bottom - 10),
+                                 ai.primary_value, size, self.theme.primary_text, rect, anchor="rs")
+        value = self.last_placements[key + "_primary"]
+        left = rect.x + 10
+        right = max(left + 8, value.bbox[0] - 4)
+        fields = [(label, text) for label, text in ai.fields if "RESET" not in label.upper()][:2]
+        if key == "ai" and not fields:
+            fields = [("LIMIT", ai.primary_label)]
+        for index, (label, text) in enumerate(fields):
+            top = rect.y + 30 + index * 23
+            self._text(draw, f"{key}_field_{index}_label", (left, top), label, inter(7), self.theme.secondary_text, rect)
+            size = 10
+            while size > 1 and mono(size).getlength(text) > right - left:
+                size -= 1
+            self._text(draw, f"{key}_field_{index}_value", (left, top + 9), text, mono(size), self.theme.ai_accent, rect)
+        if key == "api":
+            percent = ai.budget_ratio * 100 if ai.budget_ratio is not None else None
+        else:
+            match = _PERCENT_VALUE.fullmatch(ai.primary_value)
+            percent = float(match.group(1)) if match else None
+        self._draw_percent_gauge(draw, key, track, Metric(percent, "%"), self.theme.ai_accent, remaining=key == "ai")
 
     def _draw_ai(self, draw: ImageDraw.ImageDraw, ai: AIData) -> None:
         rect = self.layout.ai

@@ -21,8 +21,11 @@ from PIL import Image
 from . import __version__
 from . import autostart
 from .ai.codex_account import CodexAccountService, CodexAccountSnapshot
+from .ai.openai_budget import OpenAIBudgetService, validate_budget
+from .security.dpapi import DPAPISecretStore
 from .config import (
     AppConfig,
+    OpenAIBudgetConfig,
     default_config_path,
     load_config,
     save_config,
@@ -124,8 +127,12 @@ def _close_partial_desktop_services(
     worker: SerialTaskWorker | None,
     account: CodexAccountService | None = None,
     updater: UpdateService | None = None,
+    budget: OpenAIBudgetService | None = None,
 ) -> None:
     """Best-effort cleanup for failures before the main runtime ``try``."""
+
+    if budget is not None:
+        budget.close()
 
     if worker is not None:
         try:
@@ -198,6 +205,7 @@ def run_desktop(
     worker: SerialTaskWorker | None = None
     account: CodexAccountService | None = None
     updater: UpdateService | None = None
+    budget: OpenAIBudgetService | None = None
     try:
         commands = create_command_queue()
         tray = TrayController(commands)
@@ -211,7 +219,9 @@ def run_desktop(
             install_root=Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None,
             config_path=config_path,
         )
-        session = DesktopSession(enable_serial=enable_serial, codex_account_snapshot=account.snapshot)
+        budget = OpenAIBudgetService(current_config.openai)
+        session = DesktopSession(enable_serial=enable_serial, codex_account_snapshot=account.snapshot,
+                                 api_snapshot=lambda: budget.snapshot().ai)
         worker = SerialTaskWorker()
         renderer = _renderer_for_rotation(current_config.device.rotation)
         preview_ai = _initial_ai(current_config, account.snapshot())
@@ -225,7 +235,7 @@ def run_desktop(
     except Exception:
         LOGGER.exception("desktop services failed during initialization")
         try:
-            _close_partial_desktop_services(tray, session, worker, account, updater)
+            _close_partial_desktop_services(tray, session, worker, account, updater, budget)
         finally:
             guard.release()
         return 1
@@ -244,7 +254,24 @@ def run_desktop(
     last_update_snapshot: object | None = None
     next_update_check = time.monotonic() + 3600.0
     account_polling = False
+    api_dialog = None
+    last_budget_snapshot = None
     desired_desktop_rotation = current_config.device.rotation
+
+    def save_api_settings(settings: OpenAIBudgetConfig, key: str) -> None:
+        nonlocal current_config
+        if exiting:
+            raise RuntimeError("closing")
+        current_config = _save_api_configuration(current_config, settings, key, DPAPISecretStore(), config_path)
+        budget.configure(current_config.openai)
+
+    def open_api_settings() -> None:
+        nonlocal api_dialog
+        from .ui.openai_budget import OpenAIBudgetDialog
+        if api_dialog is None:
+            api_dialog = OpenAIBudgetDialog(setup.window, on_save=save_api_settings, on_refresh=budget.refresh, checkbutton_style=setup._checkbutton_style)
+        api_dialog.show(current_config.openai, key_configured=DPAPISecretStore().configured())
+        api_dialog.update(budget.snapshot())
 
     def sync_account_polling() -> None:
         nonlocal account_polling
@@ -753,6 +780,7 @@ def run_desktop(
             on_update_apply=request_update_apply,
             on_update_dismiss=request_update_dismiss,
             on_update_open_release=open_update_release,
+            on_openai_budget=open_api_settings,
         )
         overlay_position = (
             (current_config.overlay.x, current_config.overlay.y)
@@ -833,7 +861,7 @@ def run_desktop(
                     setup.close()
                 except (RuntimeError, tk.TclError):
                     pass
-            _close_partial_desktop_services(tray, session, worker, account, updater)
+            _close_partial_desktop_services(tray, session, worker, account, updater, budget)
         finally:
             guard.release()
         return 1
@@ -983,6 +1011,7 @@ def run_desktop(
     def poll() -> None:
         nonlocal preview_frame, preview_ai, last_account_snapshot
         nonlocal last_update_snapshot, apply_requested, next_update_check
+        nonlocal last_budget_snapshot
         if exiting:
             return
         try:
@@ -1010,6 +1039,11 @@ def run_desktop(
                     LOGGER.warning("could not open Codex authorization browser")
 
         sync_account_polling()
+        budget_snapshot = budget.snapshot()
+        if budget_snapshot != last_budget_snapshot:
+            last_budget_snapshot = budget_snapshot
+            if api_dialog is not None:
+                api_dialog.update(budget_snapshot)
         account_snapshot = account.snapshot()
         if account_snapshot != last_account_snapshot:
             last_account_snapshot = account_snapshot
@@ -1018,6 +1052,7 @@ def run_desktop(
                 preview_ai = account_snapshot.ai
                 preview_frame = renderer.render(DisplaySnapshot(
                     ai=preview_ai,
+                    api=budget_snapshot.ai,
                     connection=ConnectionData(
                         ConnectionStatus.DISCONNECTED,
                         detail="PRESS MONITOR START" if enable_serial else "PREVIEW ONLY",
@@ -1081,6 +1116,7 @@ def run_desktop(
                 taskbar.update_sensor(
                     values.sensor if values else None,
                     account_snapshot.ai,
+                    api=budget_snapshot.ai,
                 )
             except Exception as error:
                 LOGGER.warning("taskbar render failed (%s)", type(error).__name__)
@@ -1134,6 +1170,7 @@ def run_desktop(
         LOGGER.exception("desktop application failed")
         return 1
     finally:
+        budget.close()
         worker.begin_shutdown()
         session.begin_shutdown()
         try:
@@ -1561,9 +1598,31 @@ def _merge_current_overlay_config(
     with _CONFIG_WRITE_LOCK:
         merged = copy.deepcopy(worker_config)
         merged.overlay = copy.deepcopy(current_config.overlay)
+        merged.openai = copy.deepcopy(current_config.openai)
         merged.validate()
         save_config(merged, config_path)
         return merged
+
+
+def _save_api_configuration(base: AppConfig, settings: OpenAIBudgetConfig, key: str,
+                            store: DPAPISecretStore, config_path: Path | None) -> AppConfig:
+    validate_budget(settings)
+    if key and (not key.isascii() or any(char.isspace() for char in key) or not 16 <= len(key) <= 1024):
+        raise ValueError("관리자 API 키 형식을 확인하세요")
+    if settings.enabled and not key and not store.configured():
+        raise ValueError("관리자 API 키를 입력하세요")
+    with _CONFIG_WRITE_LOCK:
+        draft = _latest_persisted_config(base, config_path)
+        previous = copy.deepcopy(draft)
+        draft.openai = copy.deepcopy(settings)
+        save_config(draft, config_path)
+        try:
+            if key:
+                store.set(key)
+        except Exception:
+            save_config(previous, config_path)
+            raise
+        return draft
 
 
 def _config_target(config_path: Path | None) -> Path:
@@ -1592,7 +1651,9 @@ def _save_worker_config_preserving_overlay(
         committed = copy.deepcopy(worker_config)
         target = _config_target(config_path)
         if target.exists():
-            committed.overlay = copy.deepcopy(load_config(target).overlay)
+            latest = load_config(target)
+            committed.overlay = copy.deepcopy(latest.overlay)
+            committed.openai = copy.deepcopy(latest.openai)
         committed.validate()
         save_config(committed, config_path)
         return committed

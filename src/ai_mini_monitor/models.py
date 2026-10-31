@@ -83,6 +83,7 @@ class DisplaySnapshot:
     gpu_vram_used_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
     gpu_vram_total_gib: Metric = field(default_factory=lambda: Metric(None, "GiB", "sensor unavailable"))
     gpu_power_w: Metric = field(default_factory=lambda: Metric(None, "W", "sensor unavailable"))
+    api: AIData | None = None
 
 
 @dataclass(frozen=True, slots=True)

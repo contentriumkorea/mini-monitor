@@ -21,6 +21,7 @@ from ..config import (
     DEFAULT_OVERLAY_OPACITY,
     DEFAULT_OVERLAY_SCALE_PERCENT,
     DEFAULT_TASKBAR_ITEMS,
+    TASKBAR_ITEMS,
     MAX_OVERLAY_OPACITY,
     MAX_OVERLAY_SCALE_PERCENT,
     MIN_OVERLAY_OPACITY,
@@ -403,6 +404,7 @@ class SetupWindow:
         on_update_apply: Action | None = None,
         on_update_dismiss: Action | None = None,
         on_update_open_release: Action | None = None,
+        on_openai_budget: Callable[[], None] | None = None,
     ) -> None:
         require_main_thread()
         initial_brightness = validate_brightness(brightness)
@@ -460,6 +462,7 @@ class SetupWindow:
         self._on_update_apply = on_update_apply
         self._on_update_dismiss = on_update_dismiss
         self._on_update_open_release = on_update_open_release
+        self._on_openai_budget = on_openai_budget
         self._on_exit = on_exit
         self._enable_serial = enable_serial
         self._openai_key_configured = bool(openai_key_configured)
@@ -1501,7 +1504,11 @@ class SetupWindow:
         self._update_open_button = ttk.Button(
             card, text="업데이트", style="Secondary.TButton", command=self._show_update_dialog,
         )
-        self._update_open_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._update_open_button.grid(row=8, column=0, columnspan=2 if self._on_openai_budget is None else 1, sticky="ew", pady=(4, 0))
+        self._api_budget_button = None
+        if self._on_openai_budget is not None:
+            self._api_budget_button = ttk.Button(card, text="API 사용량 설정", style="Secondary.TButton", command=self._on_openai_budget)
+            self._api_budget_button.grid(row=8, column=1, sticky="ew", padx=(6, 0), pady=(4, 0))
         self._codex_cancel_button.state(["disabled"])
         self._codex_logout_button.state(["disabled"])
         if self._on_codex_login is None:
@@ -2019,7 +2026,7 @@ class SetupWindow:
             card.columnconfigure(column, weight=1)
         self._taskbar_item_vars: dict[str, tk.BooleanVar] = {}
         self._taskbar_item_checks: dict[str, ttk.Checkbutton] = {}
-        for index, name in enumerate(DEFAULT_TASKBAR_ITEMS):
+        for index, name in enumerate(TASKBAR_ITEMS):
             variable = tk.BooleanVar(dialog, name in self._taskbar_committed_items)
             check = ttk.Checkbutton(
                 card, text=name.upper(), variable=variable,
@@ -2193,7 +2200,7 @@ class SetupWindow:
     def _apply_taskbar_options(self) -> None:
         require_main_thread()
         self._ensure_open()
-        items = tuple(name for name in DEFAULT_TASKBAR_ITEMS if self._taskbar_item_vars[name].get())
+        items = tuple(name for name in TASKBAR_ITEMS if self._taskbar_item_vars[name].get())
         style = _TASKBAR_LABEL_STYLES.get(self._taskbar_style_var.get())
         try:
             items = validate_taskbar_options(items, style)

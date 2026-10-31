@@ -35,6 +35,7 @@ class RuntimeValues:
     ai: AIData
     connection: ConnectionData
     sensor_revision: int
+    api: AIData | None = None
 
 
 class RuntimeStateStore:
@@ -44,6 +45,11 @@ class RuntimeStateStore:
         self._ai = not_configured_ai()
         self._connection = ConnectionData()
         self._sensor_revision = 0
+        self._api: AIData | None = None
+
+    def update_api(self, value: AIData | None) -> None:
+        with self._lock:
+            self._api = value
 
     def update_sensor(self, value: SensorSnapshot) -> None:
         with self._lock:
@@ -60,7 +66,7 @@ class RuntimeStateStore:
 
     def read(self) -> RuntimeValues:
         with self._lock:
-            return RuntimeValues(self._sensor, self._ai, self._connection, self._sensor_revision)
+            return RuntimeValues(self._sensor, self._ai, self._connection, self._sensor_revision, self._api)
 
 
 class DisplayComposer:
@@ -80,7 +86,7 @@ class DisplayComposer:
     def compose(self, values: RuntimeValues, *, monotonic_now: float) -> DisplaySnapshot:
         sensor = values.sensor
         if sensor is None:
-            return DisplaySnapshot(ai=values.ai, connection=values.connection)
+            return DisplaySnapshot(ai=values.ai, api=values.api, connection=values.connection)
         if values.sensor_revision != self._last_sensor_revision:
             self._last_sensor_revision = values.sensor_revision
             self.cpu_history.append(clamp_percent(sensor.cpu_percent.value))
@@ -105,6 +111,7 @@ class DisplayComposer:
             gpu_history=tuple(self.gpu_history),
             memory_history=tuple(self.memory_history),
             ai=values.ai,
+            api=values.api,
             connection=values.connection,
         )
 

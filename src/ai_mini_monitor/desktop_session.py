@@ -20,6 +20,7 @@ from .ai.codex_account import CodexAccountSnapshot
 from .config import AppConfig, validate_brightness
 from .controller import MonitorController, MonitorStartError
 from .state import RuntimeValues
+from .models import AIData
 
 
 class SessionState(str, Enum):
@@ -50,10 +51,12 @@ class DesktopSession:
         enable_serial: bool,
         controller_factory: ControllerFactory = MonitorController,
         codex_account_snapshot: Callable[[], CodexAccountSnapshot] | None = None,
+        api_snapshot: Callable[[], AIData | None] | None = None,
     ) -> None:
         self.enable_serial = bool(enable_serial)
         self._controller_factory = controller_factory
         self._codex_account_snapshot = codex_account_snapshot
+        self._api_snapshot = api_snapshot
         self._lock = threading.RLock()
         self._operation_lock = threading.Lock()
         self._shutdown_gate_lock = threading.Lock()
@@ -126,6 +129,8 @@ class DesktopSession:
                     {"codex_account_snapshot": self._codex_account_snapshot}
                     if self._codex_account_snapshot is not None else {}
                 )
+                if self._api_snapshot is not None:
+                    account_kwargs["api_snapshot"] = self._api_snapshot
                 controller = self._controller_factory(
                     draft,
                     enable_serial=self.enable_serial,
@@ -206,6 +211,8 @@ class DesktopSession:
                     {"codex_account_snapshot": self._codex_account_snapshot}
                     if self._codex_account_snapshot is not None else {}
                 )
+                if self._api_snapshot is not None:
+                    account_kwargs["api_snapshot"] = self._api_snapshot
                 controller = self._controller_factory(draft, enable_serial=False, **account_kwargs)
                 with self._lock:
                     self._controller = controller
