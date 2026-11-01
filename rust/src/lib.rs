@@ -2,6 +2,7 @@
 pub mod account_worker;
 pub mod budget;
 pub mod budget_cycle;
+pub mod budget_worker;
 pub mod codex;
 pub mod codex_client;
 pub mod codex_login;
@@ -16,6 +17,10 @@ pub mod dashboard_render;
 #[cfg(windows)]
 pub mod desktop_runtime;
 pub mod device;
+pub mod device_connect;
+pub mod device_discovery;
+pub mod device_session;
+pub mod device_worker;
 pub mod dirty;
 pub mod drag_state;
 pub mod gpu;
@@ -43,3 +48,5 @@ pub mod taskbar_shell;
 #[cfg(windows)]
 pub mod taskbar_window;
 pub mod telemetry;
+#[cfg(windows)]
+pub mod windows_serial;

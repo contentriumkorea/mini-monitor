@@ -173,6 +173,8 @@ pub fn rgb888_to_rgb565le(
 pub struct BitmapTransfer {
     command: [u8; 6],
     payload: Vec<u8>,
+    rect: (u32, u32, u32, u32),
+    display: (u32, u32),
 }
 
 pub fn bitmap_transfer(
@@ -195,19 +197,47 @@ pub fn bitmap_transfer(
     Ok(BitmapTransfer {
         command,
         payload: pixels.to_vec(),
+        rect: (x, y, width, height),
+        display: (display_width, display_height),
     })
 }
 
 impl BitmapTransfer {
+    pub fn matches_display(&self, width: u32, height: u32) -> bool {
+        self.display == (width, height)
+    }
+    pub fn is_full_for(&self, width: u32, height: u32) -> bool {
+        self.matches_display(width, height) && self.rect == (0, 0, width, height)
+    }
     pub fn write_to(&self, output: &mut impl std::io::Write, chunk: usize) -> std::io::Result<()> {
+        self.write_to_cancellable(output, chunk, || false)
+    }
+    pub fn write_to_cancellable(
+        &self,
+        output: &mut impl std::io::Write,
+        chunk: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> std::io::Result<()> {
         if chunk == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "zero chunk size",
             ));
         }
+        if cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "display transfer cancelled",
+            ));
+        }
         output.write_all(&self.command)?;
         for part in self.payload.chunks(chunk) {
+            if cancelled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "display transfer cancelled",
+                ));
+            }
             output.write_all(part)?;
         }
         Ok(())

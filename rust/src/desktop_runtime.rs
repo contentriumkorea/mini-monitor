@@ -2,6 +2,7 @@
 use crate::{
     account_worker::AccountWorker,
     budget_cycle::BudgetSnapshot,
+    budget_worker::BudgetWorker,
     live_readouts::LiveReadouts,
     sensor_worker::{SensorSnapshot, SensorWorker},
     taskbar_controller::{ShellState, TaskbarController},
@@ -13,6 +14,7 @@ use std::{collections::HashSet, io, path::PathBuf, time::Duration};
 pub struct DesktopRuntime {
     sensor: SensorWorker,
     account: Option<AccountWorker>,
+    budget: Option<BudgetWorker>,
     taskbar: Option<TaskbarController>,
     items: Vec<MetricKind>,
 }
@@ -21,12 +23,22 @@ impl DesktopRuntime {
         Ok(Self {
             sensor: SensorWorker::start_auto(interval)?,
             account,
+            budget: None,
             taskbar: None,
             items: Vec::new(),
         })
     }
     pub fn sensor_snapshot(&self) -> SensorSnapshot {
         self.sensor.snapshot()
+    }
+    pub fn attach_budget(&mut self, worker: BudgetWorker) {
+        self.budget = Some(worker);
+    }
+    pub fn disable_budget(&mut self) {
+        self.budget.take();
+    }
+    pub fn budget_snapshot(&self) -> Option<BudgetSnapshot> {
+        self.budget.as_ref().and_then(BudgetWorker::snapshot)
     }
     pub fn taskbar_bounds(&self) -> Option<Rect> {
         self.taskbar
@@ -68,6 +80,8 @@ impl DesktopRuntime {
     pub fn tick(&mut self, budget: Option<&BudgetSnapshot>) -> io::Result<()> {
         let sensor = self.sensor.snapshot();
         let account = self.account.as_ref().map(AccountWorker::snapshot);
+        let worker_budget = self.budget_snapshot();
+        let budget = budget.or(worker_budget.as_ref());
         let readouts = LiveReadouts::new(
             Some(&sensor),
             account.as_ref(),
@@ -88,6 +102,8 @@ impl DesktopRuntime {
     ) -> io::Result<()> {
         let sensor = self.sensor.snapshot();
         let account = self.account.as_ref().map(AccountWorker::snapshot);
+        let worker_budget = self.budget_snapshot();
+        let budget = budget.or(worker_budget.as_ref());
         let readouts = LiveReadouts::new(
             Some(&sensor),
             account.as_ref(),

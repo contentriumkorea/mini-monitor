@@ -10,6 +10,7 @@ pub struct PendingBudget {
 }
 
 // No Debug: spending data are private.
+#[derive(Clone)]
 pub struct BudgetSnapshot {
     pub period_start: Date,
     pub period_end: Date,
