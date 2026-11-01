@@ -1,5 +1,6 @@
 //! Native settings window foundation; application commands are queued for the UI owner.
 use crate::dashboard_render::DashboardFrame;
+use crate::settings_theme::{self as theme, MainLayout};
 use std::{
     cell::UnsafeCell,
     collections::VecDeque,
@@ -12,18 +13,16 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawFocusRect, DrawTextW,
-        EndPaint, FillRect, FrameRect, InvalidateRect, SelectObject, SetBkColor, SetBkMode,
-        SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        DT_CENTER, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT, PAINTSTRUCT, SRCCOPY,
-        TRANSPARENT,
+        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+        InvalidateRect, SetBkColor, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, DIB_RGB_COLORS, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT, PAINTSTRUCT,
+        SRCCOPY,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::{
             InitCommonControlsEx, BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, ICC_BAR_CLASSES,
-            INITCOMMONCONTROLSEX, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED, TBM_SETPOS, TBM_SETRANGE,
-            TRACKBAR_CLASSW,
+            INITCOMMONCONTROLSEX, TBM_SETPOS, TBM_SETRANGE, TRACKBAR_CLASSW,
         },
         HiDpi::{
             GetDpiForSystem, GetDpiForWindow, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
@@ -32,9 +31,9 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetDlgItem,
-            GetWindowLongPtrW, GetWindowTextW, IsWindowVisible, LoadCursorW, MoveWindow,
-            RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-            ShowWindow, UnregisterClassW, BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_OWNERDRAW,
+            GetWindowLongPtrW, IsWindowVisible, LoadCursorW, MoveWindow, RegisterClassW,
+            SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+            UnregisterClassW, BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_OWNERDRAW,
             CBN_SELCHANGE, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
             GWLP_USERDATA, IDC_ARROW, MINMAXINFO, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
             SW_SHOWNORMAL, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DPICHANGED,
@@ -107,6 +106,8 @@ struct State {
     actions: VecDeque<SettingsAction>,
     brush: HBRUSH,
     font: HFONT,
+    title_font: HFONT,
+    outputs: [bool; 3],
     dpi: u32,
     tray_available: bool,
     preview: Option<DashboardFrame>,
@@ -154,11 +155,41 @@ unsafe fn update_font(hwnd: HWND, state: *mut State, dpi: u32) -> io::Result<()>
     }
     let old = (*state).font;
     (*state).font = font;
-    for id in (1..=13).chain(101..=106).chain([109, 201, 202, 204]) {
+    let title = CreateFontW(
+        -((18 * dpi as i32 + 36) / 72),
+        0,
+        0,
+        0,
+        600,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        wide("맑은 고딕").as_ptr(),
+    );
+    if !title.is_null() {
+        let previous = std::mem::replace(&mut (*state).title_font, title);
+        if !previous.is_null() {
+            DeleteObject(previous as _);
+        }
+    }
+    for id in (1..=13).chain(101..=106).chain([109, 110, 201, 202, 204]) {
         let child = GetDlgItem(hwnd, id);
         if !child.is_null() {
             SendMessageW(child, WM_SETFONT, font as usize, 1);
         }
+    }
+    if !(*state).title_font.is_null() {
+        SendMessageW(
+            GetDlgItem(hwnd, 101),
+            WM_SETFONT,
+            (*state).title_font as usize,
+            1,
+        );
     }
     if !old.is_null() {
         DeleteObject(old as _);
@@ -189,7 +220,7 @@ unsafe fn layout(hwnd: HWND) {
     let dpi = current_dpi(hwnd);
     let width = ((rect.right - rect.left) * 96 / dpi as i32).max(360);
     let height = ((rect.bottom - rect.top) * 96 / dpi as i32).max(420);
-    let gap = 8;
+    let gap = 12;
     let margin = 20;
     let row_width = (width - 2 * margin - 2 * gap) / 3;
     for (id, col) in [(1, 0), (2, 1), (3, 2)] {
@@ -198,39 +229,56 @@ unsafe fn layout(hwnd: HWND) {
             MoveWindow(
                 child,
                 scaled(margin + col * (row_width + gap), dpi),
-                scaled(60, dpi),
+                scaled(76, dpi),
                 scaled(row_width, dpi),
-                scaled(38, dpi),
+                scaled(70, dpi),
                 1,
             );
         }
     }
-    let left = (width * 42 / 100).max(260);
-    let right_x = margin + left + gap;
-    let right_w = width - right_x - margin;
-    let half = (left - gap) / 2;
+    let groups = MainLayout::new(width, height);
+    let left = groups.device.right - groups.device.left;
+    let right_x = groups.preview.left;
+    let right_w = groups.preview.right - right_x;
+    let half = (left - 44) / 2;
+    let device_y = groups.device.top;
+    let account_y = groups.account.top;
+    let footer = groups.footer_top;
     for (id, x, y, w, h) in [
-        (101, margin, 18, width - 2 * margin, 24),
-        (102, margin, 125, left, 24),
-        (103, margin, 285, half, 24),
-        (106, margin + half + gap, 285, half, 24),
-        (104, right_x, 125, right_w, 24),
-        (105, margin, 405, left, 24),
-        (4, margin, 156, left, 36),
-        (201, margin, 201, half, 160),
-        (202, margin + half + gap, 201, half, 30),
-        (203, margin + 100, 240, left - 100, 30),
-        (109, margin, 245, 95, 24),
-        (5, margin, 315, half, 34),
-        (6, margin + half + gap, 315, half, 34),
-        (7, margin, 355, half, 34),
-        (8, margin + half + gap, 355, half, 34),
-        (9, margin, 435, left, 34),
-        (10, margin, 477, left, 34),
-        (11, margin, height - 48, left, 34),
-        (204, margin, height - 88, left, 28),
-        (12, right_x, height - 90, right_w, 34),
-        (13, right_x, height - 48, right_w, 34),
+        (101, margin, 13, width - 40, 34),
+        (110, margin + 1, 48, width - 40, 18),
+        (102, margin + 18, device_y + 44, left - 36, 22),
+        (103, margin + 18, account_y + 14, half + 20, 22),
+        (106, margin + left - 96, account_y + 15, 78, 22),
+        (104, right_x + 18, groups.preview.top + 16, right_w - 36, 22),
+        (105, margin + 18, groups.api.top + 14, 104, 22),
+        (4, margin + left - 104, device_y + 12, 86, 28),
+        (201, margin + 18, device_y + 76, half, 160),
+        (202, margin + 26 + half, device_y + 76, half, 28),
+        (203, margin + 110, device_y + 111, left - 128, 24),
+        (109, margin + 18, device_y + 114, 88, 22),
+        (5, margin + 18, account_y + 49, half, 30),
+        (6, margin + 26 + half, account_y + 49, half, 30),
+        (7, margin + 18, account_y + 88, half, 28),
+        (8, margin + 26 + half, account_y + 88, half, 28),
+        (9, margin + 128, groups.api.top + 12, left - 146, 30),
+        (10, width - 282, footer, 150, 28),
+        (11, width - 120, footer, 100, 28),
+        (204, margin, footer, 270, 28),
+        (
+            12,
+            right_x + 18,
+            groups.preview.bottom - 46,
+            (right_w - 44) / 2,
+            30,
+        ),
+        (
+            13,
+            right_x + 26 + (right_w - 44) / 2,
+            groups.preview.bottom - 46,
+            (right_w - 44) / 2,
+            30,
+        ),
     ] {
         let child = GetDlgItem(hwnd, id);
         if !child.is_null() {
@@ -257,17 +305,44 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
     let dpi = current_dpi(hwnd);
     let width = (client.right * 96 / dpi as i32).max(360);
     let height = (client.bottom * 96 / dpi as i32).max(420);
-    let left = (width * 42 / 100).max(260);
-    let x = 20 + left + 8;
-    let available_w = (width - x - 20).max(1);
-    let available_h = (height - 156 - 108).max(1);
+    let groups = MainLayout::new(width, height);
+    let full = RECT {
+        left: 0,
+        top: 0,
+        right: client.right,
+        bottom: client.bottom,
+    };
+    theme::gradient(dc, full, 26, 17);
+    for panel in [groups.device, groups.account, groups.api, groups.preview] {
+        theme::paint_panel(dc, theme::physical(panel, dpi), scaled(14, dpi));
+    }
+    theme::text(
+        dc,
+        (*state).font,
+        theme::physical(
+            RECT {
+                left: 38,
+                top: groups.device.top + 14,
+                right: groups.device.right - 112,
+                bottom: groups.device.top + 36,
+            },
+            dpi,
+        ),
+        "디스플레이 연결",
+        theme::TEXT,
+        windows_sys::Win32::Graphics::Gdi::DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    let x = groups.preview.left + 18;
+    let y = groups.preview.top + 52;
+    let available_w = (groups.preview.right - x - 18).max(1);
+    let available_h = (groups.preview.bottom - y - 62).max(1);
     let rect = RECT {
         left: scaled(x, dpi),
-        top: scaled(156, dpi),
+        top: scaled(y, dpi),
         right: scaled(x + available_w, dpi),
-        bottom: scaled(156 + available_h, dpi),
+        bottom: scaled(y + available_h, dpi),
     };
-    let background = CreateSolidBrush(0x101010);
+    let background = CreateSolidBrush(0x161616);
     if !background.is_null() {
         FillRect(dc, &rect, background);
         DeleteObject(background);
@@ -295,7 +370,7 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
             StretchDIBits(
                 dc,
                 scaled(x, dpi) + (scaled(available_w, dpi) - out_w) / 2,
-                scaled(156, dpi) + (scaled(available_h, dpi) - out_h) / 2,
+                scaled(y, dpi) + (scaled(available_h, dpi) - out_h) / 2,
                 out_w,
                 out_h,
                 0,
@@ -389,58 +464,25 @@ unsafe extern "system" fn proc(
         }
         WM_CTLCOLORBTN | WM_CTLCOLORSTATIC if !state.is_null() => {
             let dc = wparam as HDC;
-            SetTextColor(dc, 0xeeeeee);
-            SetBkColor(dc, 0x191919);
+            SetTextColor(dc, theme::TEXT);
+            SetBkColor(dc, theme::PANEL);
             (*state).brush as LRESULT
         }
         WM_DRAWITEM if !state.is_null() && lparam != 0 => {
             let item = &*(lparam as *const DRAWITEMSTRUCT);
-            let fill = CreateSolidBrush(if item.itemState & ODS_SELECTED != 0 {
-                0x454545
-            } else {
-                0x292929
-            });
-            let border = CreateSolidBrush(if item.itemState & ODS_FOCUS != 0 {
-                0xaaaaaa
-            } else {
-                0x555555
-            });
-            if !fill.is_null() && !border.is_null() {
-                FillRect(item.hDC, &item.rcItem, fill);
-                FrameRect(item.hDC, &item.rcItem, border);
-                let mut text = [0u16; 128];
-                let count = GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
-                let mut rect = item.rcItem;
-                SetBkMode(item.hDC, TRANSPARENT as i32);
-                SetTextColor(
-                    item.hDC,
-                    if item.itemState & ODS_DISABLED != 0 {
-                        0x888888
-                    } else {
-                        0xeeeeee
+            let output = if (1..=3).contains(&item.CtlID) {
+                Some((
+                    (*state).outputs[item.CtlID as usize - 1],
+                    match item.CtlID {
+                        1 => "USB 디스플레이",
+                        2 => "바탕화면 상태창",
+                        _ => "작업표시줄 위젯",
                     },
-                );
-                let previous_font = SelectObject(item.hDC, (*state).font as _);
-                DrawTextW(
-                    item.hDC,
-                    text.as_ptr(),
-                    count,
-                    &mut rect,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-                );
-                if !previous_font.is_null() {
-                    SelectObject(item.hDC, previous_font);
-                }
-                if item.itemState & ODS_FOCUS != 0 {
-                    DrawFocusRect(item.hDC, &rect);
-                }
-            }
-            if !fill.is_null() {
-                DeleteObject(fill);
-            }
-            if !border.is_null() {
-                DeleteObject(border);
-            }
+                ))
+            } else {
+                None
+            };
+            theme::button(item, (*state).font, (*state).dpi, output, item.CtlID == 5);
             1
         }
         WM_NCDESTROY if !state.is_null() => {
@@ -482,7 +524,7 @@ impl SettingsWindow {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let brush = unsafe { CreateSolidBrush(0x191919) };
+        let brush = unsafe { CreateSolidBrush(theme::PANEL) };
         if brush.is_null() {
             return Err(io::Error::last_os_error());
         }
@@ -513,7 +555,7 @@ impl SettingsWindow {
                 WS_OVERLAPPEDWINDOW,
                 scaled(100, initial_dpi),
                 scaled(100, initial_dpi),
-                scaled(920, initial_dpi),
+                scaled(960, initial_dpi),
                 scaled(680, initial_dpi),
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -533,6 +575,8 @@ impl SettingsWindow {
             actions: VecDeque::with_capacity(32),
             brush,
             font: ptr::null_mut(),
+            title_font: ptr::null_mut(),
+            outputs: [false; 3],
             dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
             tray_available: false,
             preview: None,
@@ -549,6 +593,9 @@ impl SettingsWindow {
             state,
             _thread: PhantomData,
         };
+        unsafe {
+            theme::apply_chrome(hwnd);
+        }
         if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } != state_ptr {
             return Err(io::Error::other("settings state unavailable"));
         }
@@ -573,7 +620,7 @@ impl SettingsWindow {
                     0,
                     wide("BUTTON").as_ptr(),
                     wide(label).as_ptr(),
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW as u32,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
                     0,
                     0,
                     1,
@@ -589,11 +636,12 @@ impl SettingsWindow {
             }
         }
         for (id, label) in [
-            (101, "Mini Monitor · 화면 표시"),
+            (101, "Mini Monitor"),
+            (110, "디스플레이와 사용량을 한곳에서 관리하세요"),
             (102, "미니 모니터 연결"),
             (103, "Codex 계정"),
             (104, "미니 모니터 화면"),
-            (105, "OpenAI API · 업데이트"),
+            (105, "OpenAI API"),
             (106, "확인 중"),
             (109, "밝기 25%"),
         ] {
@@ -852,6 +900,9 @@ impl SettingsWindow {
         Ok((orientation, brightness as u8))
     }
     pub fn set_output_state(&self, monitor: bool, overlay: bool, taskbar: bool) -> io::Result<()> {
+        unsafe {
+            (*self.state.get()).outputs = [monitor, overlay, taskbar];
+        }
         for (id, name, enabled) in [
             (1, "미니 모니터", monitor),
             (2, "PC 오버레이", overlay),
@@ -867,6 +918,9 @@ impl SettingsWindow {
             ));
             if unsafe { SetWindowTextW(child, label.as_ptr()) } == 0 {
                 return Err(io::Error::last_os_error());
+            }
+            unsafe {
+                InvalidateRect(child, ptr::null(), 0);
             }
         }
         Ok(())
@@ -1010,6 +1064,9 @@ impl Drop for SettingsWindow {
             }
             if !(*self.state.get()).font.is_null() {
                 DeleteObject((*self.state.get()).font as _);
+            }
+            if !(*self.state.get()).title_font.is_null() {
+                DeleteObject((*self.state.get()).title_font as _);
             }
         }
     }

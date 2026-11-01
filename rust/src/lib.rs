@@ -63,6 +63,8 @@ pub mod secrets;
 pub mod sensor_worker;
 pub mod sensors;
 #[cfg(windows)]
+pub mod settings_theme;
+#[cfg(windows)]
 pub mod settings_window;
 #[cfg(windows)]
 pub mod single_instance;

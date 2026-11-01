@@ -168,7 +168,7 @@ fn settings_use_consistent_nine_point_semibold_font_for_text_controls() {
     };
     let window = SettingsWindow::new_hidden().unwrap();
     let mut expected_font = 0isize;
-    for id in [1, 4, 101, 102, 201, 202] {
+    for id in [1, 4, 102, 201, 202] {
         let control = unsafe { GetDlgItem(window.handle(), id) };
         let font = unsafe { SendMessageW(control, WM_GETFONT, 0, 0) };
         assert_ne!(font, 0, "control {id} must use an explicit font");
@@ -194,6 +194,67 @@ fn settings_use_consistent_nine_point_semibold_font_for_text_controls() {
     let dpi = unsafe { GetDpiForWindow(window.handle()) } as i32;
     assert_eq!(font.lfHeight, -((9 * dpi + 36) / 72));
     assert_eq!(font.lfWeight, 600);
+    let title = unsafe { SendMessageW(GetDlgItem(window.handle(), 101), WM_GETFONT, 0, 0) };
+    let mut title_font: LOGFONTW = unsafe { std::mem::zeroed() };
+    unsafe {
+        GetObjectW(
+            title as _,
+            std::mem::size_of::<LOGFONTW>() as i32,
+            (&mut title_font as *mut LOGFONTW).cast(),
+        );
+    }
+    assert!(
+        title_font.lfHeight.abs() > font.lfHeight.abs(),
+        "window title must have a clear hierarchy above compact controls"
+    );
+}
+
+#[test]
+fn compact_output_cards_and_footer_never_overlap_settings() {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        UI::WindowsAndMessaging::{
+            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+        },
+    };
+    let window = SettingsWindow::new_hidden().unwrap();
+    let bounds = |id| {
+        let mut r: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetWindowRect(GetDlgItem(window.handle(), id), &mut r);
+        };
+        r
+    };
+    for (w, h) in [(960, 680), (700, 620)] {
+        unsafe {
+            SetWindowPos(
+                window.handle(),
+                std::ptr::null_mut(),
+                0,
+                0,
+                w,
+                h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        assert!(
+            bounds(1).bottom - bounds(1).top >= 60,
+            "output should be an integrated compact card, not a plain action row"
+        );
+        assert!(
+            bounds(9).bottom + 8 <= bounds(204).top,
+            "API settings must not collide with startup/footer"
+        );
+        assert_eq!(
+            bounds(10).top,
+            bounds(11).top,
+            "update and exit belong in one compact footer"
+        );
+        assert!(
+            bounds(12).right <= bounds(13).left,
+            "preview settings must fit side by side"
+        );
+    }
 }
 
 #[test]
