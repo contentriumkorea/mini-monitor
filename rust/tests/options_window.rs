@@ -2,6 +2,110 @@
 use mini_monitor_native::options_window::{Field, OptionsWindow};
 
 #[test]
+fn preference_actions_have_dark_rounded_corners_and_passwords_stay_masked() {
+    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
+    let form = OptionsWindow::new(
+        std::ptr::null_mut(),
+        "Smoke form",
+        vec![Field::Edit("API key", "synthetic secret".into(), true)],
+    )
+    .unwrap();
+    unsafe {
+        assert_ne!(
+            GetWindowLongPtrW(GetDlgItem(form.handle(), 100), GWL_STYLE) & ES_PASSWORD as isize,
+            0
+        );
+        let button = GetDlgItem(form.handle(), 1);
+        let mut r = std::mem::zeroed();
+        GetClientRect(button, &mut r);
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = r.right;
+        info.bmiHeader.biHeight = -r.bottom;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = std::ptr::null_mut();
+        let bmp = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let previous = SelectObject(dc, bmp as _);
+        SendMessageW(button, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+        let corner = GetPixel(dc, 0, 0);
+        assert!(
+            corner & 255 < 80,
+            "action corners must blend with the dark form rather than a native white button"
+        );
+        SelectObject(dc, previous);
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+    }
+}
+
+#[test]
+fn checked_fields_are_neutral_without_losing_native_toggle_behavior() {
+    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
+    let form = OptionsWindow::new(
+        std::ptr::null_mut(),
+        "Neutral checks",
+        vec![Field::Check("CPU", true)],
+    )
+    .unwrap();
+    unsafe {
+        let checkbox = GetDlgItem(form.handle(), 100);
+        let mut r = std::mem::zeroed();
+        GetClientRect(checkbox, &mut r);
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = r.right;
+        info.bmiHeader.biHeight = -r.bottom;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = std::ptr::null_mut();
+        let bmp = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let previous = SelectObject(dc, bmp as _);
+        SendMessageW(checkbox, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+        let mut blue = 0;
+        for y in 0..r.bottom {
+            for x in 0..r.right.min(16) {
+                let c = GetPixel(dc, x, y);
+                if ((c >> 16) & 255) > (c & 255) + 20 {
+                    blue += 1
+                }
+            }
+        }
+        let interior = GetPixel(dc, 5, (r.bottom - 15) / 2 + 4) & 255;
+        SelectObject(dc, previous);
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+        assert_eq!(
+            blue, 0,
+            "standard blue checkmark must use the neutral settings palette"
+        );
+        assert!(
+            interior < 120,
+            "checked glyph interior must remain charcoal instead of a light native square"
+        );
+        SendMessageW(checkbox, BM_CLICK, 0, 0);
+        SendMessageW(form.handle(), WM_COMMAND, 1, 0);
+    }
+    assert_eq!(form.take_apply().unwrap().unwrap(), vec!["false"]);
+}
+
+#[test]
 fn escape_closes_the_modeless_form_without_applying() {
     use windows_sys::Win32::UI::{
         Input::KeyboardAndMouse::VK_ESCAPE,
@@ -13,7 +117,12 @@ fn escape_closes_the_modeless_form_without_applying() {
         vec![Field::Check("CPU", true)],
     )
     .unwrap();
-    form.show();
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+            form.handle(),
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
+        );
+    }
     let mut message: MSG = unsafe { std::mem::zeroed() };
     message.hwnd = form.handle();
     message.message = WM_KEYDOWN;

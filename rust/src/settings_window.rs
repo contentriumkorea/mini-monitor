@@ -220,6 +220,7 @@ unsafe fn layout(hwnd: HWND) {
     let dpi = current_dpi(hwnd);
     let width = ((rect.right - rect.left) * 96 / dpi as i32).max(360);
     let height = ((rect.bottom - rect.top) * 96 / dpi as i32).max(420);
+    let compact = height < 570;
     let gap = 12;
     let margin = 20;
     let row_width = (width - 2 * margin - 2 * gap) / 3;
@@ -229,9 +230,9 @@ unsafe fn layout(hwnd: HWND) {
             MoveWindow(
                 child,
                 scaled(margin + col * (row_width + gap), dpi),
-                scaled(76, dpi),
+                scaled(if compact { 56 } else { 76 }, dpi),
                 scaled(row_width, dpi),
-                scaled(70, dpi),
+                scaled(if compact { 46 } else { 70 }, dpi),
                 1,
             );
         }
@@ -245,23 +246,113 @@ unsafe fn layout(hwnd: HWND) {
     let account_y = groups.account.top;
     let footer = groups.footer_top;
     for (id, x, y, w, h) in [
-        (101, margin, 13, width - 40, 34),
-        (110, margin + 1, 48, width - 40, 18),
-        (102, margin + 18, device_y + 44, left - 36, 22),
-        (103, margin + 18, account_y + 14, half + 20, 22),
-        (106, margin + left - 96, account_y + 15, 78, 22),
+        (101, margin, if compact { 2 } else { 13 }, width - 40, 34),
+        (
+            110,
+            margin + 1,
+            if compact { 34 } else { 48 },
+            width - 40,
+            18,
+        ),
+        (
+            102,
+            margin + 18,
+            device_y + if compact { 26 } else { 44 },
+            left - 36,
+            22,
+        ),
+        (
+            103,
+            margin + 18,
+            account_y + if compact { 5 } else { 14 },
+            half + 20,
+            22,
+        ),
+        (
+            106,
+            margin + left - 96,
+            account_y + if compact { 5 } else { 15 },
+            78,
+            22,
+        ),
         (104, right_x + 18, groups.preview.top + 16, right_w - 36, 22),
-        (105, margin + 18, groups.api.top + 14, 104, 22),
-        (4, margin + left - 104, device_y + 12, 86, 28),
-        (201, margin + 18, device_y + 76, half, 160),
-        (202, margin + 26 + half, device_y + 76, half, 28),
-        (203, margin + 110, device_y + 111, left - 128, 24),
-        (109, margin + 18, device_y + 114, 88, 22),
-        (5, margin + 18, account_y + 49, half, 30),
-        (6, margin + 26 + half, account_y + 49, half, 30),
-        (7, margin + 18, account_y + 88, half, 28),
-        (8, margin + 26 + half, account_y + 88, half, 28),
-        (9, margin + 128, groups.api.top + 12, left - 146, 30),
+        (
+            105,
+            margin + 18,
+            groups.api.top + if compact { 9 } else { 14 },
+            104,
+            22,
+        ),
+        (
+            4,
+            margin + left - 104,
+            device_y + if compact { 4 } else { 12 },
+            86,
+            26,
+        ),
+        (
+            201,
+            margin + 18,
+            device_y + if compact { 48 } else { 76 },
+            half,
+            160,
+        ),
+        (
+            202,
+            margin + 26 + half,
+            device_y + if compact { 48 } else { 76 },
+            half,
+            26,
+        ),
+        (
+            203,
+            margin + 110,
+            device_y + if compact { 74 } else { 111 },
+            left - 128,
+            if compact { 18 } else { 24 },
+        ),
+        (
+            109,
+            margin + 18,
+            device_y + if compact { 73 } else { 114 },
+            88,
+            22,
+        ),
+        (
+            5,
+            margin + 18,
+            account_y + if compact { 30 } else { 49 },
+            half,
+            26,
+        ),
+        (
+            6,
+            margin + 26 + half,
+            account_y + if compact { 30 } else { 49 },
+            half,
+            26,
+        ),
+        (
+            7,
+            margin + 18,
+            account_y + if compact { 62 } else { 88 },
+            half,
+            26,
+        ),
+        (
+            8,
+            margin + 26 + half,
+            account_y + if compact { 62 } else { 88 },
+            half,
+            26,
+        ),
+        (
+            9,
+            margin + 128,
+            groups.api.top + if compact { 6 } else { 12 },
+            left - 146,
+            28,
+        ),
         (10, width - 282, footer, 150, 28),
         (11, width - 120, footer, 100, 28),
         (204, margin, footer, 270, 28),
@@ -322,9 +413,9 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
         theme::physical(
             RECT {
                 left: 38,
-                top: groups.device.top + 14,
+                top: groups.device.top + if height < 570 { 5 } else { 14 },
                 right: groups.device.right - 112,
-                bottom: groups.device.top + 36,
+                bottom: groups.device.top + if height < 570 { 26 } else { 36 },
             },
             dpi,
         ),
@@ -394,6 +485,8 @@ unsafe extern "system" fn proc(
 ) -> LRESULT {
     let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     match message {
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_NOTIFY => theme::slider_notify(lparam)
+            .unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam)),
         WM_COMMAND
             if !state.is_null()
                 && ((wparam as u16 == 201
@@ -448,7 +541,7 @@ unsafe extern "system" fn proc(
             let info = &mut *(lparam as *mut MINMAXINFO);
             let dpi = current_dpi(hwnd);
             info.ptMinTrackSize.x = scaled(700, dpi);
-            info.ptMinTrackSize.y = scaled(620, dpi);
+            info.ptMinTrackSize.y = scaled(460, dpi);
             0
         }
         WM_CLOSE if !state.is_null() => {
@@ -464,12 +557,39 @@ unsafe extern "system" fn proc(
         }
         WM_CTLCOLORBTN | WM_CTLCOLORSTATIC if !state.is_null() => {
             let dc = wparam as HDC;
-            SetTextColor(dc, theme::TEXT);
+            SetTextColor(
+                dc,
+                if theme::high_contrast() {
+                    windows_sys::Win32::Graphics::Gdi::GetSysColor(
+                        windows_sys::Win32::Graphics::Gdi::COLOR_WINDOWTEXT,
+                    )
+                } else {
+                    theme::TEXT
+                },
+            );
             SetBkColor(dc, theme::PANEL);
-            (*state).brush as LRESULT
+            let mut rect: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut rect);
+            let dpi = (*state).dpi;
+            let groups =
+                MainLayout::new(rect.right * 96 / dpi as i32, rect.bottom * 96 / dpi as i32);
+            theme::label_background(
+                dc,
+                lparam as HWND,
+                hwnd,
+                &[groups.device, groups.account, groups.api, groups.preview],
+                dpi,
+            );
+            windows_sys::Win32::Graphics::Gdi::GetStockObject(
+                windows_sys::Win32::Graphics::Gdi::NULL_BRUSH,
+            ) as LRESULT
         }
         WM_DRAWITEM if !state.is_null() && lparam != 0 => {
             let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
+                theme::combo(item, (*state).font, (*state).dpi);
+                return 1;
+            }
             let output = if (1..=3).contains(&item.CtlID) {
                 Some((
                     (*state).outputs[item.CtlID as usize - 1],
@@ -547,16 +667,34 @@ impl SettingsWindow {
             };
             return Err(e);
         }
+        let mut work: RECT = unsafe { std::mem::zeroed() };
+        let got_work = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                windows_sys::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+                0,
+                (&mut work as *mut RECT).cast(),
+                0,
+            )
+        } != 0;
+        if !got_work {
+            work = RECT {
+                left: 0,
+                top: 0,
+                right: scaled(1200, initial_dpi),
+                bottom: scaled(900, initial_dpi),
+            };
+        }
+        let initial = theme::initial_bounds(work, initial_dpi);
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
                 class.as_ptr(),
                 wide("Mini Monitor 설정").as_ptr(),
                 WS_OVERLAPPEDWINDOW,
-                scaled(100, initial_dpi),
-                scaled(100, initial_dpi),
-                scaled(960, initial_dpi),
-                scaled(680, initial_dpi),
+                initial.left,
+                initial.top,
+                initial.right - initial.left,
+                initial.bottom - initial.top,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 instance,
@@ -670,7 +808,13 @@ impl SettingsWindow {
                 0,
                 wide("COMBOBOX").as_ptr(),
                 ptr::null(),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_TABSTOP
+                    | WS_VSCROLL
+                    | CBS_DROPDOWNLIST as u32
+                    | windows_sys::Win32::UI::WindowsAndMessaging::CBS_OWNERDRAWFIXED as u32
+                    | windows_sys::Win32::UI::WindowsAndMessaging::CBS_HASSTRINGS as u32,
                 0,
                 0,
                 1,
@@ -734,6 +878,11 @@ impl SettingsWindow {
         }
         if combo.is_null() || flip.is_null() || slider.is_null() {
             return Err(io::Error::other("device controls unavailable"));
+        }
+        unsafe {
+            theme::skin_check(flip, theme::PANEL);
+            theme::skin_check(autostart, theme::BASE);
+            theme::skin_combo(combo);
         }
         unsafe {
             update_font(hwnd, window.state.get(), (*window.state.get()).dpi)?;

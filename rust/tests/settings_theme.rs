@@ -4,8 +4,65 @@ use windows_sys::Win32::System::Threading::GetGuiResources;
 use windows_sys::Win32::{Foundation::RECT, Graphics::Gdi::*};
 
 #[test]
+fn combo_palette_keeps_system_pairs_and_selection_readable() {
+    use mini_monitor_native::settings_theme::combo_palette;
+    let light_hc = Some([0xffffff, 0x000000, 0x000080, 0xffffff, 0x555555]);
+    assert_eq!(combo_palette(light_hc, false, false), (0xffffff, 0));
+    assert_eq!(combo_palette(light_hc, false, true), (0x000080, 0xffffff));
+    assert_eq!(combo_palette(light_hc, true, false), (0xffffff, 0x555555));
+}
+
+#[test]
+fn initial_settings_bounds_fit_real_work_areas_without_dpi_double_scaling() {
+    use mini_monitor_native::settings_theme::initial_bounds;
+    for (work, dpi) in [
+        (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040,
+            },
+            96,
+        ),
+        (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1400,
+            },
+            144,
+        ),
+        (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2120,
+            },
+            240,
+        ),
+        (
+            RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1040,
+            },
+            96,
+        ),
+    ] {
+        let frame = initial_bounds(work, dpi);
+        assert!(frame.left >= work.left + 12 && frame.top >= work.top + 12);
+        assert!(frame.right <= work.right - 12 && frame.bottom <= work.bottom - 12);
+        assert!(frame.right - frame.left <= 960 * dpi as i32 / 96);
+    }
+}
+
+#[test]
 fn grouped_layout_preserves_space_for_inputs_preview_and_footer() {
-    for (w, h) in [(684, 581), (944, 641), (1280, 850)] {
+    for (w, h) in [(684, 480), (890, 454), (684, 581), (944, 641), (1280, 850)] {
         let layout = MainLayout::new(w, h);
         assert!(layout.device.bottom + 8 <= layout.account.top);
         assert!(layout.account.bottom + 8 <= layout.api.top);
@@ -13,6 +70,10 @@ fn grouped_layout_preserves_space_for_inputs_preview_and_footer() {
         assert!(layout.preview.left > layout.device.right);
         assert!(layout.preview.right <= w - 16);
         assert!(layout.preview.bottom <= layout.footer_top - 8);
+        assert!(
+            layout.api.bottom - layout.api.top >= 44,
+            "API controls must fit a short work area"
+        );
     }
 }
 

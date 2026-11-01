@@ -255,6 +255,99 @@ fn compact_output_cards_and_footer_never_overlap_settings() {
             "preview settings must fit side by side"
         );
     }
+    unsafe {
+        SetWindowPos(
+            window.handle(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            900,
+            460,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    assert!(
+        bounds(8).bottom + 8 <= bounds(9).top,
+        "short screens must keep account and API actions separate"
+    );
+    assert!(bounds(9).bottom + 8 <= bounds(204).top);
+}
+
+#[test]
+fn printing_transparent_labels_never_erases_the_preview_or_other_controls() {
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        Graphics::Gdi::*,
+        UI::WindowsAndMessaging::{GetClientRect, ShowWindow, SW_SHOWNOACTIVATE},
+    };
+    #[link(name = "user32")]
+    extern "system" {
+        fn PrintWindow(hwnd: HWND, dc: HDC, flags: u32) -> i32;
+    }
+    let window = SettingsWindow::new_hidden().unwrap();
+    window
+        .set_preview(mini_monitor_native::dashboard_render::DashboardFrame {
+            width: 480,
+            height: 320,
+            pixels: [0, 0, 255, 255].repeat(480 * 320),
+            detail_pages: vec![],
+        })
+        .unwrap();
+    unsafe {
+        ShowWindow(window.handle(), SW_SHOWNOACTIVATE);
+        UpdateWindow(window.handle());
+        let mut r = std::mem::zeroed();
+        GetClientRect(window.handle(), &mut r);
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = r.right;
+        info.bmiHeader.biHeight = -r.bottom;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = std::ptr::null_mut();
+        let bmp = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let old = SelectObject(dc, bmp as _);
+        // PW_CLIENTONLY requests a synchronous native paint; avoid DWM's optional
+        // full-content cache for this newly shown, non-activated test window.
+        assert_ne!(PrintWindow(window.handle(), dc, 1), 0);
+        GdiFlush();
+        let bytes =
+            std::slice::from_raw_parts(bits as *const u8, (r.right * r.bottom * 4) as usize);
+        let red = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[2] > 240 && p[1] < 10 && p[0] < 10)
+            .count();
+        let label = GetDlgItem(window.handle(), 105);
+        let mut label_rect = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(label, &mut label_rect);
+        let mut point = windows_sys::Win32::Foundation::POINT {
+            x: label_rect.right - 3,
+            y: label_rect.top + 2,
+        };
+        ScreenToClient(window.handle(), &mut point);
+        let label_shade = bytes[((point.y * r.right + point.x) * 4) as usize];
+        SelectObject(dc, old);
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+        assert!(
+            (30..50).contains(&label_shade),
+            "label background must match its panel, not a black stripe: {label_shade}"
+        );
+        assert!(
+            red > 1000,
+            "label drawing must preserve the complete preview region, found {red} colored pixels"
+        );
+    }
 }
 
 #[test]
@@ -280,7 +373,16 @@ fn settings_recalculate_font_and_controls_when_dpi_changes() {
     let mut before: RECT = unsafe { std::mem::zeroed() };
     unsafe {
         GetWindowRect(control, &mut before);
-        SendMessageW(window.handle(), WM_DPICHANGED, (144usize << 16) | 144, 0);
+        let mut suggested: RECT = std::mem::zeroed();
+        GetWindowRect(window.handle(), &mut suggested);
+        suggested.right = suggested.left + (suggested.right - suggested.left) * 3 / 2;
+        suggested.bottom = suggested.top + (suggested.bottom - suggested.top) * 3 / 2;
+        SendMessageW(
+            window.handle(),
+            WM_DPICHANGED,
+            (144usize << 16) | 144,
+            (&suggested as *const RECT) as isize,
+        );
     }
     let mut after: RECT = unsafe { std::mem::zeroed() };
     unsafe {

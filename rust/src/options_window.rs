@@ -1,4 +1,5 @@
 //! Modeless, thread-affine native preferences form; values never enter logs.
+use crate::settings_theme as theme;
 use std::{
     cell::UnsafeCell,
     io,
@@ -159,6 +160,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     match msg {
+        WM_NOTIFY => theme::slider_notify(lp).unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp)),
         WM_COMMAND if wp & 0xffff == 1 => {
             (*state).apply = true;
             0
@@ -173,7 +175,39 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         WM_SIZE => {
             layout(hwnd, &mut *state);
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, ptr::null(), 0);
             0
+        }
+        WM_PAINT => {
+            let mut paint: windows_sys::Win32::Graphics::Gdi::PAINTSTRUCT = std::mem::zeroed();
+            let dc = windows_sys::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut paint);
+            if !dc.is_null() {
+                let mut r: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut r);
+                theme::gradient(dc, r, 27, 18);
+                let inset = scale(10, (*state).dpi);
+                r.left += inset;
+                r.top += inset;
+                r.right -= inset;
+                r.bottom -= scale(96, (*state).dpi);
+                theme::paint_panel(dc, r, scale(12, (*state).dpi));
+                windows_sys::Win32::Graphics::Gdi::EndPaint(hwnd, &paint);
+            }
+            0
+        }
+        WM_DRAWITEM if lp != 0 => {
+            let item = &*(lp as *const windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT);
+            if item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
+                theme::combo(item, (*state).font, (*state).dpi);
+            } else {
+                theme::button(item, (*state).font, (*state).dpi, None, wp == 1);
+            }
+            1
+        }
+        WM_MEASUREITEM if lp != 0 => {
+            let item = &mut *(lp as *mut windows_sys::Win32::UI::Controls::MEASUREITEMSTRUCT);
+            item.itemHeight = scale(24, (*state).dpi) as u32;
+            1
         }
         WM_DPICHANGED => {
             (*state).dpi = (wp as u32 & 0xffff).max(96);
@@ -191,9 +225,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             layout(hwnd, &mut *state);
             0
         }
-        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-            SetTextColor(wp as _, 0xeeeeee);
-            SetBkColor(wp as _, 0x191919);
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            if theme::high_contrast() {
+                use windows_sys::Win32::Graphics::Gdi::*;
+                SetTextColor(wp as _, GetSysColor(COLOR_WINDOWTEXT));
+                SetBkColor(wp as _, GetSysColor(COLOR_WINDOW));
+                return GetSysColorBrush(COLOR_WINDOW) as LRESULT;
+            }
+            SetTextColor(wp as _, theme::TEXT);
+            SetBkColor(wp as _, theme::PANEL);
             (*state).brush as LRESULT
         }
         WM_NCDESTROY => {
@@ -245,7 +285,7 @@ impl OptionsWindow {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let brush = unsafe { CreateSolidBrush(0x191919) };
+        let brush = unsafe { CreateSolidBrush(theme::PANEL) };
         if brush.is_null() {
             return Err(io::Error::last_os_error());
         }
@@ -327,6 +367,9 @@ impl OptionsWindow {
             _thread: PhantomData,
         };
         unsafe {
+            theme::apply_chrome(hwnd);
+        }
+        unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, form.state.get() as isize);
         }
         for (i, field) in unsafe { &(*form.state.get()).fields }.iter().enumerate() {
@@ -345,6 +388,7 @@ impl OptionsWindow {
                         form.control("BUTTON", label, 100 + i as i32, BS_AUTOCHECKBOX as u32)?;
                     unsafe {
                         SendMessageW(child, BM_SETCHECK, usize::from(*checked), 0);
+                        theme::skin_check(child, theme::PANEL);
                     }
                 }
                 Field::Edit(_, value, password) => {
@@ -362,7 +406,10 @@ impl OptionsWindow {
                         "COMBOBOX",
                         "",
                         100 + i as i32,
-                        CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+                        CBS_DROPDOWNLIST as u32
+                            | CBS_OWNERDRAWFIXED as u32
+                            | CBS_HASSTRINGS as u32
+                            | WS_VSCROLL,
                     )?;
                     for choice in choices {
                         unsafe {
@@ -371,6 +418,7 @@ impl OptionsWindow {
                     }
                     unsafe {
                         SendMessageW(child, CB_SETCURSEL, *index, 0);
+                        theme::skin_combo(child);
                     }
                 }
                 Field::Slider(_, min, max, value) => {
@@ -405,8 +453,8 @@ impl OptionsWindow {
                 }
             }
         }
-        form.control("BUTTON", "적용", 1, 0)?;
-        form.control("BUTTON", "닫기", 2, 0)?;
+        form.control("BUTTON", "적용", 1, BS_OWNERDRAW as u32)?;
+        form.control("BUTTON", "닫기", 2, BS_OWNERDRAW as u32)?;
         form.control("STATIC", "", 3, 0)?;
         unsafe {
             font(hwnd, &mut *form.state.get());
