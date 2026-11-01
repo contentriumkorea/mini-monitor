@@ -5,7 +5,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 tempfile = "3.19.1"
 time = "=0.3.41"
 windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_System_SystemInformation"] }
