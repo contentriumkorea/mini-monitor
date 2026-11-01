@@ -14,6 +14,81 @@ pub fn identity_matches(vid: u16, pid: u16, serial: &str) -> bool {
     vid == 0x1a86 && pid == 0x5722 && serial == "USB35INCHIPSV2"
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub port: String,
+    pub vid: u16,
+    pub pid: u16,
+    pub serial: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceError {
+    InvalidPort,
+    NotFound,
+    IdentityMismatch,
+    Ambiguous,
+}
+
+/// Only this type can represent a selected, identity-checked display.
+pub struct SelectedDevice(DeviceInfo);
+
+fn valid_com_port(value: &str) -> bool {
+    let Some(prefix) = value.get(..3) else {
+        return false;
+    };
+    let Some(number) = value.get(3..) else {
+        return false;
+    };
+    prefix.eq_ignore_ascii_case("COM")
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit())
+        && number.parse::<u16>().is_ok_and(|n| n > 0)
+}
+
+pub fn select_device(
+    devices: &[DeviceInfo],
+    manual: Option<&str>,
+) -> Result<SelectedDevice, DeviceError> {
+    if manual.is_some_and(|port| !valid_com_port(port)) {
+        return Err(DeviceError::InvalidPort);
+    }
+    let mut matches = devices.iter().filter(|item| {
+        valid_com_port(&item.port)
+            && match manual {
+                Some(port) => item.port.eq_ignore_ascii_case(port),
+                None => identity_matches(item.vid, item.pid, &item.serial),
+            }
+    });
+    let selected = matches.next().ok_or(DeviceError::NotFound)?;
+    if matches.next().is_some() {
+        return Err(DeviceError::Ambiguous);
+    }
+    if !identity_matches(selected.vid, selected.pid, &selected.serial) {
+        return Err(DeviceError::IdentityMismatch);
+    }
+    Ok(SelectedDevice(selected.clone()))
+}
+
+impl SelectedDevice {
+    pub fn port(&self) -> &str {
+        &self.0.port
+    }
+
+    /// A real transport must rediscover and call this immediately before opening and writing.
+    pub fn revalidate(&self, devices: &[DeviceInfo]) -> Result<(), DeviceError> {
+        let found = select_device(devices, Some(&self.0.port))?;
+        if !found.0.port.eq_ignore_ascii_case(&self.0.port)
+            || found.0.vid != self.0.vid
+            || found.0.pid != self.0.pid
+            || found.0.serial != self.0.serial
+        {
+            return Err(DeviceError::IdentityMismatch);
+        }
+        Ok(())
+    }
+}
+
 pub fn screen_on() -> [u8; 6] {
     [0, 0, 0, 0, 0, 0x6d]
 }
