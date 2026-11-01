@@ -8,6 +8,7 @@ pub mod codex_runtime;
 pub mod config;
 pub mod costs_http;
 pub mod device;
+pub mod dirty;
 pub mod latest_queue;
 #[cfg(windows)]
 pub mod secrets;
@@ -16,3 +17,4 @@ pub mod sensor_worker;
 pub mod sensors;
 #[cfg(windows)]
 pub mod taskbar_window;
+pub mod telemetry;
