@@ -55,6 +55,7 @@ mod nvidia {
     type Initialize = unsafe extern "C" fn() -> i32;
     type Shutdown = unsafe extern "C" fn() -> i32;
     type Handle = unsafe extern "C" fn(u32, *mut Device) -> i32;
+    type Count = unsafe extern "C" fn(*mut u32) -> i32;
     type Name = unsafe extern "C" fn(Device, *mut c_char, u32) -> i32;
     type Utilization = unsafe extern "C" fn(Device, *mut RawUtilization) -> i32;
     type Memory = unsafe extern "C" fn(Device, *mut RawMemory) -> i32;
@@ -100,6 +101,15 @@ mod nvidia {
 
     impl NvmlGpu {
         pub fn open(index: u32) -> Result<Self, &'static str> {
+            Self::open_inner(Some(index))
+        }
+
+        /// Automatically choose only when exactly one NVIDIA adapter exists.
+        pub fn open_single() -> Result<Self, &'static str> {
+            Self::open_inner(None)
+        }
+
+        fn open_inner(requested: Option<u32>) -> Result<Self, &'static str> {
             let filename: Vec<u16> = "nvml.dll\0".encode_utf16().collect();
             let handle = unsafe {
                 LoadLibraryExW(
@@ -124,6 +134,7 @@ mod nvidia {
             let initialize = symbol!("nvmlInit_v2", Initialize);
             let shutdown = symbol!("nvmlShutdown", Shutdown);
             let by_index = symbol!("nvmlDeviceGetHandleByIndex_v2", Handle);
+            let count = symbol!("nvmlDeviceGetCount_v2", Count);
             let get_name = symbol!("nvmlDeviceGetName", Name);
             let utilization = symbol!("nvmlDeviceGetUtilizationRates", Utilization);
             let memory = symbol!("nvmlDeviceGetMemoryInfo", Memory);
@@ -142,6 +153,18 @@ mod nvidia {
             if unsafe { initialize() } != 0 {
                 return Err("NVIDIA initialization failed");
             }
+            let index = if let Some(index) = requested {
+                index
+            } else {
+                let mut devices = 0;
+                if unsafe { count(&mut devices) } != 0 || devices != 1 {
+                    unsafe {
+                        shutdown();
+                    }
+                    return Err("NVIDIA adapter ambiguous or unavailable");
+                }
+                0
+            };
             let mut device = ptr::null_mut();
             if unsafe { by_index(index, &mut device) } != 0 || device.is_null() {
                 unsafe {

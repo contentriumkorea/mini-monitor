@@ -56,3 +56,28 @@ fn explicitly_selected_nvidia_device_is_sampled_in_background() {
     }
     assert!(worker.snapshot().gpu.is_some_and(|gpu| gpu.vram.is_some()));
 }
+
+#[cfg(windows)]
+#[test]
+fn auto_gpu_detection_never_blocks_cpu_or_ram() {
+    use mini_monitor_native::sensor_worker::SensorWorker;
+    use std::time::Duration;
+    let worker = SensorWorker::start_auto(Duration::from_millis(250)).unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    let snapshot = worker.snapshot();
+    assert!(snapshot.cpu_percent.is_some() && snapshot.memory.is_some());
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires exactly one NVIDIA GPU"]
+fn a_single_nvidia_candidate_is_detected() {
+    use mini_monitor_native::sensor_worker::SensorWorker;
+    use std::time::{Duration, Instant};
+    let worker = SensorWorker::start_auto(Duration::from_millis(250)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while worker.snapshot().gpu.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(worker.snapshot().gpu.is_some_and(|gpu| gpu.vram.is_some()));
+}

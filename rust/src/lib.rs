@@ -10,6 +10,9 @@ pub mod codex_rpc;
 pub mod codex_runtime;
 pub mod config;
 pub mod costs_http;
+pub mod dashboard_layout;
+#[cfg(windows)]
+pub mod dashboard_render;
 pub mod device;
 pub mod dirty;
 pub mod gpu;

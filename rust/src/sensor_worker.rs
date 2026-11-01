@@ -21,17 +21,28 @@ pub struct SensorWorker {
     thread: Option<JoinHandle<()>>,
 }
 
+enum GpuSelection {
+    None,
+    Auto,
+    Nvidia(u32),
+}
+
 impl SensorWorker {
     pub fn start(interval: Duration) -> io::Result<Self> {
-        Self::start_inner(interval, None)
+        Self::start_inner(interval, GpuSelection::None)
+    }
+
+    /// Selects only a sole NVIDIA candidate; active display-adapter pairing is not established.
+    pub fn start_auto(interval: Duration) -> io::Result<Self> {
+        Self::start_inner(interval, GpuSelection::Auto)
     }
 
     /// Select the NVIDIA adapter explicitly; do not silently guess on multi-GPU PCs.
     pub fn start_with_nvidia(interval: Duration, index: u32) -> io::Result<Self> {
-        Self::start_inner(interval, Some(index))
+        Self::start_inner(interval, GpuSelection::Nvidia(index))
     }
 
-    fn start_inner(interval: Duration, gpu_index: Option<u32>) -> io::Result<Self> {
+    fn start_inner(interval: Duration, gpu_selection: GpuSelection) -> io::Result<Self> {
         if interval < Duration::from_millis(250) || interval > Duration::from_secs(2) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -46,7 +57,11 @@ impl SensorWorker {
             .name("mini-monitor-sensors".into())
             .spawn(move || {
                 let mut previous = None;
-                let gpu = gpu_index.and_then(|index| NvmlGpu::open(index).ok());
+                let gpu = match gpu_selection {
+                    GpuSelection::None => None,
+                    GpuSelection::Auto => NvmlGpu::open_single().ok(),
+                    GpuSelection::Nvidia(index) => NvmlGpu::open(index).ok(),
+                };
                 let mut gpu_snapshot = None;
                 let mut gpu_due = Instant::now();
                 loop {

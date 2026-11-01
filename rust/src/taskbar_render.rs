@@ -96,7 +96,12 @@ impl TaskbarRenderer {
     pub fn cached_glyph_bytes(&self) -> usize {
         self.glyph_bytes
     }
-    fn glyph(&mut self, text: &str, font: u32, color: [u8; 3]) -> io::Result<Arc<TextRaster>> {
+    pub(crate) fn glyph(
+        &mut self,
+        text: &str,
+        font: u32,
+        color: [u8; 3],
+    ) -> io::Result<Arc<TextRaster>> {
         let key = GlyphKey {
             text: text.to_owned(),
             font,
