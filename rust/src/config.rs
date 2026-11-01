@@ -30,6 +30,29 @@ impl Settings {
                 return Err(format!("{section} must be an object"));
             }
         }
+        let defaults = serde_json::json!({
+            "device": {"auto_detect": true, "manual_port": null, "usb_fps": 5.0,
+                       "rotation": "landscape", "brightness": 25},
+            "sensors": {"sample_interval_ms": 500, "cpu_temperature_sensor": null,
+                        "gpu_load_sensor": null, "gpu_temperature_sensor": null},
+            "ai": {"provider": "codex_account", "codex_local_consent": false,
+                   "codex_cli_path": null, "usage_refresh_seconds": 60, "cost_refresh_seconds": 600,
+                   "daily_budget_usd": null, "monthly_budget_usd": null,
+                   "activity_processes": ["ChatGPT.exe", "Codex.exe"]},
+            "overlay": {"enabled": false, "opacity": 0.85, "scale_percent": 100, "x": null,
+                        "y": null, "taskbar_enabled": false, "taskbar_x": null, "taskbar_y": null,
+                        "taskbar_items": ["cpu", "ram", "gpu", "vram", "codex"], "taskbar_style": "icon"},
+            "app": {"render_fps": 12.0, "start_with_windows": false, "log_level": "INFO"},
+            "openai": {"enabled": false, "total_usd": "", "start_date": ""}
+        });
+        let root = value.as_object_mut().expect("object verified above");
+        for (section, fields) in defaults.as_object().expect("static defaults") {
+            let target = root.entry(section).or_insert_with(|| serde_json::json!({}));
+            let target = target.as_object_mut().expect("sections verified above");
+            for (name, default) in fields.as_object().expect("static section") {
+                target.entry(name).or_insert_with(|| default.clone());
+            }
+        }
         if let Some(device) = value.get("device") {
             if !device.is_object() {
                 return Err("device must be an object".into());

@@ -106,3 +106,21 @@ fn taskbar_items_follow_existing_canonical_display_order() {
         serde_json::json!(["cpu", "gpu", "codex"])
     );
 }
+
+#[test]
+fn missing_settings_receive_legacy_defaults_without_erasing_unknown_fields() {
+    let settings =
+        Settings::parse(r#"{"device":{"brightness":20},"future":{"keep":true}}"#).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&settings.to_json().unwrap()).unwrap();
+    assert_eq!(value["device"]["brightness"], 20);
+    assert_eq!(value["device"]["auto_detect"], true);
+    assert_eq!(value["device"]["usb_fps"], 5.0);
+    assert_eq!(value["sensors"]["sample_interval_ms"], 500);
+    assert_eq!(
+        value["overlay"]["taskbar_items"],
+        serde_json::json!(["cpu", "ram", "gpu", "vram", "codex"])
+    );
+    assert_eq!(value["ai"]["usage_refresh_seconds"], 60);
+    assert_eq!(value["openai"]["enabled"], false);
+    assert_eq!(value["future"]["keep"], true);
+}
