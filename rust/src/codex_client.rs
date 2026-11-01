@@ -64,6 +64,10 @@ impl<T: RpcTransport> AccountClient<T> {
         self.transport
     }
 
+    pub fn poll_notification(&mut self) -> Result<Option<(String, Value)>, &'static str> {
+        self.transport.poll_notification()
+    }
+
     pub fn cancel_server_login<F>(
         &mut self,
         login_id: &str,

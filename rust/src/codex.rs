@@ -1,19 +1,19 @@
 //! Strict parsing of the app-server's Codex-specific rate limit response.
 use serde_json::Value;
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LimitWindow {
     pub duration_minutes: u64,
     pub remaining_percent: f64,
     pub resets_at: Option<u64>,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Credit {
     Unknown,
     Unlimited,
     Balance(String),
 }
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Limits {
     pub windows: Vec<LimitWindow>,
     pub credit: Credit,

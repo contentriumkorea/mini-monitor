@@ -1,4 +1,5 @@
 //! Native migration components. Not yet a complete application.
+pub mod account_worker;
 pub mod budget;
 pub mod codex;
 pub mod codex_client;

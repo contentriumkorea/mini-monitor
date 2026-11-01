@@ -35,6 +35,9 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl LoginFlow {
+    pub fn is_pending(&self) -> bool {
+        !matches!(self.state, State::Idle)
+    }
     pub fn begin(&mut self) -> Option<u64> {
         if !matches!(self.state, State::Idle) {
             return None;
