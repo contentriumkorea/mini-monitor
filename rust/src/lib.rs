@@ -16,6 +16,9 @@ pub mod secrets;
 #[cfg(windows)]
 pub mod sensor_worker;
 pub mod sensors;
+pub mod taskbar_geometry;
+#[cfg(windows)]
+pub mod taskbar_shell;
 #[cfg(windows)]
 pub mod taskbar_window;
 pub mod telemetry;
