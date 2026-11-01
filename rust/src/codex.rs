@@ -1,23 +1,34 @@
 //! Strict parsing of the app-server's Codex-specific rate limit response.
 use serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct LimitWindow {
     pub duration_minutes: u64,
     pub remaining_percent: f64,
     pub resets_at: Option<u64>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Credit {
     Unknown,
     Unlimited,
     Balance(String),
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Limits {
     pub windows: Vec<LimitWindow>,
     pub credit: Credit,
 }
+
+macro_rules! redact_debug {
+    ($($kind:ty),+ $(,)?) => { $(
+        impl std::fmt::Debug for $kind {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(concat!(stringify!($kind), "([redacted])"))
+            }
+        }
+    )+ };
+}
+redact_debug!(LimitWindow, Credit, Limits);
 
 pub fn parse_limits(input: &str) -> Result<Limits, &'static str> {
     if input.len() > 4_000_000 {

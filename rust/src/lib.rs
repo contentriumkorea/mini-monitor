@@ -15,6 +15,7 @@ pub mod dirty;
 pub mod gpu;
 pub mod latest_queue;
 pub mod layered_window;
+pub mod readouts;
 #[cfg(windows)]
 pub mod secrets;
 #[cfg(windows)]

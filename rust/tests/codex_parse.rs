@@ -17,3 +17,12 @@ fn no_valid_measurement_does_not_become_one_hundred_percent() {
     assert_eq!(limits.credit, Credit::Unknown);
     assert!(parse_limits(r#"{"rateLimits":{"limitId":"other","primary":{"usedPercent":0,"windowDurationMins":10080}}}"#).is_err());
 }
+
+#[test]
+fn debug_format_never_prints_account_credit_or_usage() {
+    let input = r#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":37,"windowDurationMins":10080},"credits":{"hasCredits":true,"unlimited":false,"balance":"60518.43"}}}"#;
+    let limits = parse_limits(input).unwrap();
+    let text = format!("{:?} {:?} {:?}", limits, limits.credit, limits.windows[0]);
+    assert!(!text.contains("60518"));
+    assert!(!text.contains("63.0"));
+}
