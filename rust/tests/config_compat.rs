@@ -12,6 +12,15 @@ fn existing_configuration_round_trips_with_unknown_fields_intact() {
 }
 
 #[test]
+fn legacy_names_are_migrated_without_losing_unrelated_settings() {
+    let settings = Settings::parse(r#"{"device":{"rotation":"reverse_portrait"},"ai":{"provider":"codex_local"},"future":{"keep":42}}"#).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&settings.to_json().unwrap()).unwrap();
+    assert_eq!(value["device"]["rotation"], "portrait_inverted");
+    assert_eq!(value["ai"]["provider"], "codex_account");
+    assert_eq!(value["future"]["keep"], 42);
+}
+
+#[test]
 fn unsafe_brightness_is_rejected_before_any_use() {
     for input in [
         r#"{"device":{"brightness":51}}"#,
@@ -20,4 +29,54 @@ fn unsafe_brightness_is_rejected_before_any_use() {
     ] {
         assert!(Settings::parse(input).is_err());
     }
+}
+
+#[test]
+fn invalid_settings_are_rejected_instead_of_silently_used() {
+    for input in [
+        r#"{"device":{"rotation":"sideways"}}"#,
+        r#"{"device":{"usb_fps":9}}"#,
+        r#"{"sensors":{"sample_interval_ms":249}}"#,
+        r#"{"overlay":{"opacity":1.1}}"#,
+        r#"{"overlay":{"taskbar_items":[]}}"#,
+        r#"{"overlay":{"x":5,"y":null}}"#,
+        r#"{"ai":{"provider":"some-other-provider"}}"#,
+        r#"{"openai":false}"#,
+        r#"{"openai":{"enabled":true,"total_usd":"0","start_date":"2026-10-05"}}"#,
+        r#"{"openai":{"enabled":true,"total_usd":"10","start_date":"not-a-date"}}"#,
+        r#"{"overlay":{"scale_percent":50.5}}"#,
+        r#"{"overlay":{"taskbar_style":"unknown"}}"#,
+        r#"{"overlay":{"taskbar_enabled":"true"}}"#,
+        r#"{"device":{"auto_detect":false,"manual_port":null}}"#,
+        r#"{"openai":{"enabled":true,"total_usd":"10","start_date":"2025-02-29"}}"#,
+        r#"{"openai":{"enabled":true,"total_usd":"10","start_date":"9999-01-01"}}"#,
+    ] {
+        assert!(Settings::parse(input).is_err(), "accepted {input}");
+    }
+}
+
+#[test]
+fn atomic_save_preserves_existing_file_on_invalid_data_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let first =
+        Settings::parse(r#"{"device":{"brightness":25},"future":{"retain":true}}"#).unwrap();
+    first.save(&path).unwrap();
+    let second = Settings::load(&path).unwrap();
+    assert!(second.to_json().unwrap().contains("retain"));
+    assert!(Settings::parse(r#"{"device":{"brightness":500}}"#).is_err());
+    assert!(Settings::load(&path)
+        .unwrap()
+        .to_json()
+        .unwrap()
+        .contains("25"));
+    Settings::parse(r#"{"device":{"brightness":30}}"#)
+        .unwrap()
+        .save(&path)
+        .unwrap();
+    assert!(Settings::load(&path)
+        .unwrap()
+        .to_json()
+        .unwrap()
+        .contains("30"));
 }

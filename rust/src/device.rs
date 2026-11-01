@@ -1,0 +1,95 @@
+//! USB35INCHIPSV2 audited rev-A command generation; this module does no I/O.
+//! Command format derived from turing-smart-screen-python, GPL-3.0-or-later.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Orientation {
+    Portrait = 0,
+    ReversePortrait = 1,
+    Landscape = 2,
+    ReverseLandscape = 3,
+}
+
+pub fn identity_matches(vid: u16, pid: u16, serial: &str) -> bool {
+    vid == 0x1a86 && pid == 0x5722 && serial == "USB35INCHIPSV2"
+}
+
+pub fn screen_on() -> [u8; 6] {
+    [0, 0, 0, 0, 0, 0x6d]
+}
+
+pub fn brightness_command(percent: u8) -> Result<[u8; 6], &'static str> {
+    if !(1..=50).contains(&percent) {
+        return Err("brightness must be 1..50");
+    }
+    // Match the reference's truncation of the inverted 8-bit percentage.
+    let raw = ((25500u32 - u32::from(percent) * 255) / 100) as u8;
+    Ok([raw >> 2, (raw & 3) << 6, 0, 0, 0, 0x6e])
+}
+
+pub fn orientation_command(orientation: Orientation) -> [u8; 16] {
+    let (width, height): (u16, u16) = match orientation {
+        Orientation::Portrait | Orientation::ReversePortrait => (320, 480),
+        _ => (480, 320),
+    };
+    let mut command = [0; 16];
+    command[5] = 0x79;
+    command[6] = 100 + orientation as u8;
+    command[7..9].copy_from_slice(&width.to_be_bytes());
+    command[9..11].copy_from_slice(&height.to_be_bytes());
+    command
+}
+
+pub fn bitmap_command(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    display_width: u32,
+    display_height: u32,
+) -> Result<[u8; 6], &'static str> {
+    if !(1..=1024).contains(&display_width)
+        || !(1..=1024).contains(&display_height)
+        || width == 0
+        || height == 0
+    {
+        return Err("invalid dimensions");
+    }
+    let right = x.checked_add(width).ok_or("invalid rectangle")?;
+    let bottom = y.checked_add(height).ok_or("invalid rectangle")?;
+    if right > display_width || bottom > display_height {
+        return Err("rectangle out of bounds");
+    }
+    let xe = right - 1;
+    let ye = bottom - 1;
+    Ok([
+        (x >> 2) as u8,
+        (((x & 3) << 6) | (y >> 4)) as u8,
+        (((y & 15) << 4) | (xe >> 6)) as u8,
+        (((xe & 63) << 2) | (ye >> 8)) as u8,
+        ye as u8,
+        0xc5,
+    ])
+}
+
+pub fn rgb888_to_rgb565le(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let count = width
+        .checked_mul(height)
+        .filter(|n| *n > 0)
+        .ok_or("invalid size")?;
+    if count.checked_mul(3) != Some(rgb.len()) {
+        return Err("invalid RGB length");
+    }
+    let mut result = Vec::with_capacity(count.checked_mul(2).ok_or("invalid size")?);
+    for pixel in rgb.as_chunks::<3>().0 {
+        let packed = (u16::from(pixel[0] >> 3) << 11)
+            | (u16::from(pixel[1] >> 2) << 5)
+            | u16::from(pixel[2] >> 3);
+        result.extend_from_slice(&packed.to_le_bytes());
+    }
+    Ok(result)
+}

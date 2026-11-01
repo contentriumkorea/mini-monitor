@@ -10,6 +10,33 @@ fn synthetic_secret_round_trips_with_existing_entropy_and_is_not_plaintext() {
 
 #[cfg(windows)]
 #[test]
+fn secret_file_is_encrypted_replaced_atomically_and_readable_by_python() {
+    use mini_monitor_native::secrets::SecretStore;
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("openai_admin_key.dpapi");
+    let store = SecretStore::at(file.clone());
+    assert_eq!(store.get().unwrap(), None);
+    store.set("fixture-one").unwrap();
+    store.set("fixture-two").unwrap();
+    assert_eq!(store.get().unwrap().as_deref(), Some("fixture-two"));
+    assert!(!std::fs::read(&file)
+        .unwrap()
+        .windows(11)
+        .any(|v| v == b"fixture-two"));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let status = Command::new(root.join(".venv/Scripts/python.exe")).current_dir(root).env("PYTHONPATH", root.join("src"))
+        .args(["-c", "import sys; from pathlib import Path; from ai_mini_monitor.security.dpapi import DPAPISecretStore; sys.exit(0 if DPAPISecretStore(Path(sys.argv[1])).get() == 'fixture-two' else 1)"])
+        .arg(&file).status().unwrap();
+    assert!(status.success());
+    assert!(store.set(" ").is_err());
+    assert_eq!(store.get().unwrap().as_deref(), Some("fixture-two"));
+}
+
+#[cfg(windows)]
+#[test]
 fn python_and_rust_dpapi_are_interoperable_for_synthetic_data() {
     use mini_monitor_native::secrets::{protect, unprotect};
     use std::{
