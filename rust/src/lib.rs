@@ -2,6 +2,7 @@
 pub mod budget;
 pub mod codex;
 pub mod codex_login;
+pub mod codex_process;
 pub mod codex_rpc;
 pub mod codex_runtime;
 pub mod config;

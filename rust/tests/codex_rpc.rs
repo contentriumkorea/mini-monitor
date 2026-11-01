@@ -1,4 +1,20 @@
+use mini_monitor_native::codex_rpc::read_frame;
 use mini_monitor_native::codex_rpc::{encode_request, parse_message, RpcMessage};
+use std::io::{BufReader, Cursor};
+
+#[test]
+fn frame_reader_bounds_input_and_rejects_unterminated_or_oversized_messages() {
+    let mut input = BufReader::new(Cursor::new(b"one\ntwo\n"));
+    assert_eq!(read_frame(&mut input).unwrap().unwrap(), b"one\n");
+    assert_eq!(read_frame(&mut input).unwrap().unwrap(), b"two\n");
+    assert!(read_frame(&mut input).unwrap().is_none());
+    assert!(read_frame(&mut BufReader::new(Cursor::new(b"partial"))).is_err());
+    assert!(read_frame(&mut BufReader::new(Cursor::new(vec![
+        b'x';
+        1024 * 1024 + 1
+    ])))
+    .is_err());
+}
 
 #[test]
 fn request_is_newline_delimited_and_keeps_ids() {

@@ -1,6 +1,23 @@
 //! Bounded JSON-RPC wire format; deliberately no Debug impl for sensitive payloads.
 use serde_json::{json, Value};
+use std::io::{BufRead, Read};
 const MAX_LINE: usize = 1024 * 1024;
+
+/// Read a single complete line without allowing an untrusted server to grow memory without bound.
+pub fn read_frame<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, &'static str> {
+    let mut frame = Vec::new();
+    let count = reader
+        .take((MAX_LINE + 1) as u64)
+        .read_until(b'\n', &mut frame)
+        .map_err(|_| "read failed")?;
+    if count == 0 {
+        return Ok(None);
+    }
+    if count > MAX_LINE || frame.last() != Some(&b'\n') {
+        return Err("invalid frame");
+    }
+    Ok(Some(frame))
+}
 
 pub enum RpcMessage {
     Response {
