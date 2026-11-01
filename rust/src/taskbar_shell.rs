@@ -1,15 +1,20 @@
 //! Read-only snapshot of Explorer's primary taskbar in a per-monitor DPI context.
-use crate::taskbar_geometry::{taskbar_visible, Rect};
+use crate::taskbar_geometry::{covers_monitor, taskbar_visible, Rect};
 use std::{io, ptr};
 use windows_sys::Win32::{
-    Foundation::{HWND, RECT},
-    Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+    Foundation::{HWND, POINT, RECT},
+    Graphics::Gdi::{
+        ClientToScreen, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    },
     UI::{
         HiDpi::{
             GetDpiForWindow, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         },
-        WindowsAndMessaging::{FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible},
+        WindowsAndMessaging::{
+            FindWindowExW, FindWindowW, GetClassNameW, GetClientRect, GetForegroundWindow,
+            GetWindowRect, IsWindowVisible,
+        },
     },
 };
 
@@ -19,6 +24,77 @@ pub struct TaskbarSnapshot {
     pub monitor: Rect,
     pub dpi: u32,
     pub visible: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FullscreenState {
+    Covered,
+    NotCovered,
+    Unknown,
+}
+
+/// Query without reading window titles or changing foreground/window state.
+/// Unknown means callers should hide the bar instead of covering a fullscreen app.
+pub fn fullscreen_on_monitor(monitor: Rect, own_window: Option<HWND>) -> FullscreenState {
+    if monitor.right <= monitor.left || monitor.bottom <= monitor.top {
+        return FullscreenState::Unknown;
+    }
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if previous.is_null() {
+        return FullscreenState::Unknown;
+    }
+    let _guard = DpiGuard(previous);
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() {
+        return FullscreenState::Unknown;
+    }
+    if own_window == Some(foreground) {
+        return FullscreenState::NotCovered;
+    }
+    let mut class_name = [0u16; 256];
+    let length =
+        unsafe { GetClassNameW(foreground, class_name.as_mut_ptr(), class_name.len() as i32) };
+    if length <= 0 {
+        return FullscreenState::Unknown;
+    }
+    let name = String::from_utf16_lossy(&class_name[..length as usize]);
+    if matches!(
+        name.as_str(),
+        "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+    ) {
+        return FullscreenState::NotCovered;
+    }
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetClientRect(foreground, &mut client) } == 0 {
+        return FullscreenState::Unknown;
+    }
+    let mut start = POINT {
+        x: client.left,
+        y: client.top,
+    };
+    let mut end = POINT {
+        x: client.right,
+        y: client.bottom,
+    };
+    if unsafe { ClientToScreen(foreground, &mut start) } == 0
+        || unsafe { ClientToScreen(foreground, &mut end) } == 0
+    {
+        return FullscreenState::Unknown;
+    }
+    if covers_monitor(
+        Rect {
+            left: start.x,
+            top: start.y,
+            right: end.x,
+            bottom: end.y,
+        },
+        monitor,
+    ) {
+        FullscreenState::Covered
+    } else {
+        FullscreenState::NotCovered
+    }
 }
 
 struct DpiGuard(DPI_AWARENESS_CONTEXT);
