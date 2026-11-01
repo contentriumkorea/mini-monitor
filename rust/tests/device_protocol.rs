@@ -1,6 +1,6 @@
 use mini_monitor_native::device::{
-    bitmap_command, brightness_command, identity_matches, orientation_command, rgb888_to_rgb565le,
-    screen_on, Orientation,
+    bitmap_command, bitmap_transfer, brightness_command, identity_matches, orientation_command,
+    rgb888_to_rgb565le, screen_on, Orientation,
 };
 
 #[test]
@@ -9,6 +9,18 @@ fn exact_usb_identity_is_required() {
     assert!(!identity_matches(0x1a86, 0x5721, "USB35INCHIPSV2"));
     assert!(!identity_matches(0x1a87, 0x5722, "USB35INCHIPSV2"));
     assert!(!identity_matches(0x1a86, 0x5722, "OTHER"));
+}
+
+#[test]
+fn transfer_is_constructed_only_after_bounds_and_payload_are_verified() {
+    assert!(bitmap_transfer(0, 0, 2, 2, &[0; 7], 480, 320).is_err());
+    assert!(bitmap_transfer(479, 319, 2, 2, &[0; 8], 480, 320).is_err());
+    let transfer = bitmap_transfer(0, 0, 2, 2, &[1; 8], 480, 320).unwrap();
+    let mut writes = Vec::new();
+    transfer.write_to(&mut writes, 3).unwrap();
+    assert_eq!(&writes[0..6], &[0, 0, 0, 4, 1, 0xc5]);
+    assert_eq!(&writes[6..], &[1; 8]);
+    assert!(transfer.write_to(&mut Vec::new(), 0).is_err());
 }
 
 #[test]

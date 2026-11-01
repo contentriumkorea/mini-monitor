@@ -93,3 +93,48 @@ pub fn rgb888_to_rgb565le(
     }
     Ok(result)
 }
+
+/// One validated command and exact pixel buffer, owned together to prevent mismatches.
+pub struct BitmapTransfer {
+    command: [u8; 6],
+    payload: Vec<u8>,
+}
+
+pub fn bitmap_transfer(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    display_width: u32,
+    display_height: u32,
+) -> Result<BitmapTransfer, &'static str> {
+    let command = bitmap_command(x, y, width, height, display_width, display_height)?;
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(2))
+        .ok_or("invalid size")?;
+    if pixels.len() != expected {
+        return Err("invalid RGB565 payload length");
+    }
+    Ok(BitmapTransfer {
+        command,
+        payload: pixels.to_vec(),
+    })
+}
+
+impl BitmapTransfer {
+    pub fn write_to(&self, output: &mut impl std::io::Write, chunk: usize) -> std::io::Result<()> {
+        if chunk == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "zero chunk size",
+            ));
+        }
+        output.write_all(&self.command)?;
+        for part in self.payload.chunks(chunk) {
+            output.write_all(part)?;
+        }
+        Ok(())
+    }
+}

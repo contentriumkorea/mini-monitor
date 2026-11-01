@@ -86,3 +86,28 @@ pub fn parse_limits(input: &str) -> Result<Limits, &'static str> {
     };
     Ok(Limits { windows, credit })
 }
+/// Only the existing trusted OpenAI authentication origins may be opened.
+/// The URL may contain short-lived secrets; callers must not log it.
+pub fn trusted_login_url(value: &str) -> bool {
+    if value.len() > 8192 || value.chars().any(char::is_control) || value.contains('#') {
+        return false;
+    }
+    let Some(authority) = value
+        .strip_prefix("https://")
+        .and_then(|v| v.split('/').next())
+    else {
+        return false;
+    };
+    if authority.contains('@') {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && matches!(url.host_str(), Some("chatgpt.com" | "auth.openai.com"))
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.fragment().is_none()
+}

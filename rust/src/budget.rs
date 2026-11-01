@@ -11,6 +11,47 @@ pub struct CostsPage {
     pub next_page: Option<String>,
 }
 
+/// Fetch all pages with bounded work; caller supplies transport and cancellation.
+pub fn collect_costs<F, C>(
+    start: i64,
+    end: i64,
+    mut fetch: F,
+    cancelled: C,
+) -> Result<u128, &'static str>
+where
+    F: FnMut(Option<&str>) -> Result<String, &'static str>,
+    C: Fn() -> bool,
+{
+    let mut total = 0u128;
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..100 {
+        if cancelled() {
+            return Err("cancelled");
+        }
+        let page = fetch(cursor.as_deref()).map_err(|error| match error {
+            "unauthorized" => "unauthorized",
+            "forbidden" => "forbidden",
+            "rate limited" => "rate limited",
+            _ => "fetch failed",
+        })?;
+        if cancelled() {
+            return Err("cancelled");
+        }
+        let page = parse_costs_page(&page, start, end)?;
+        total = total
+            .checked_add(page.amount_units)
+            .filter(|n| *n <= MAX_UNITS)
+            .ok_or("total exceeds limit")?;
+        match page.next_page {
+            None => return Ok(total),
+            Some(next) if seen.insert(next.clone()) => cursor = Some(next),
+            Some(_) => return Err("repeated cursor"),
+        }
+    }
+    Err("too many pages")
+}
+
 fn amount_units(text: &str) -> Result<u128, &'static str> {
     if text.is_empty() || text.len() > 40 {
         return Err("invalid amount");
