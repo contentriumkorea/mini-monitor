@@ -11,7 +11,8 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassW, SetCursor,
-        UnregisterClassW, IDC_ARROW, WM_MOUSEACTIVATE, WM_SETCURSOR, WNDCLASSW, WS_POPUP,
+        UnregisterClassW, IDC_ARROW, WM_MOUSEACTIVATE, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
     },
 };
 
@@ -79,7 +80,7 @@ impl TaskbarWindow {
         }
         let hwnd = unsafe {
             CreateWindowExW(
-                0,
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 class_name.as_ptr(),
                 ptr::null(),
                 WS_POPUP,
