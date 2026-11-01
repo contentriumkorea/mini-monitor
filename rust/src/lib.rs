@@ -9,6 +9,7 @@ pub mod config;
 pub mod costs_http;
 pub mod device;
 pub mod dirty;
+pub mod gpu;
 pub mod latest_queue;
 #[cfg(windows)]
 pub mod secrets;

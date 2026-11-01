@@ -7,15 +7,36 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND},
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassW,
-        UnregisterClassW, IDC_ARROW, WNDCLASSW, WS_POPUP,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassW, SetCursor,
+        UnregisterClassW, IDC_ARROW, WM_MOUSEACTIVATE, WM_SETCURSOR, WNDCLASSW, WS_POPUP,
     },
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_MOUSEACTIVATE => 3, // MA_NOACTIVATE: preserve click without taking focus
+        WM_SETCURSOR if (lparam & 0xffff) == 1 => {
+            // HTCLIENT
+            let arrow = LoadCursorW(ptr::null_mut(), IDC_ARROW);
+            if !arrow.is_null() {
+                SetCursor(arrow);
+                return 1;
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
 
 pub struct TaskbarWindow {
     hwnd: HWND,
@@ -43,7 +64,7 @@ impl TaskbarWindow {
         }
         let class = WNDCLASSW {
             style: 0,
-            lpfnWndProc: Some(DefWindowProcW),
+            lpfnWndProc: Some(window_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: instance,
