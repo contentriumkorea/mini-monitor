@@ -15,6 +15,10 @@ pub mod dirty;
 pub mod gpu;
 pub mod latest_queue;
 pub mod layered_window;
+#[cfg(windows)]
+pub mod native_icon;
+#[cfg(windows)]
+pub mod native_text;
 pub mod readouts;
 #[cfg(windows)]
 pub mod secrets;
@@ -22,6 +26,8 @@ pub mod secrets;
 pub mod sensor_worker;
 pub mod sensors;
 pub mod taskbar_geometry;
+#[cfg(windows)]
+pub mod taskbar_render;
 #[cfg(windows)]
 pub mod taskbar_shell;
 #[cfg(windows)]
