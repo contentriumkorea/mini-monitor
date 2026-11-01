@@ -172,6 +172,23 @@ impl RpcProcess {
         Ok(())
     }
 
+    /// Drain notifications while idle; stale responses cannot be mistaken for events.
+    pub fn poll_notification(&mut self) -> Result<Option<(String, Value)>, &'static str> {
+        let incoming = self.incoming.as_ref().ok_or("runtime closed")?;
+        for _ in 0..32 {
+            match incoming.try_recv() {
+                Ok(Ok(RpcMessage::Notification { method, params })) => {
+                    return Ok(Some((method, params)))
+                }
+                Ok(Ok(RpcMessage::Response { .. })) => (),
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => return Err("runtime closed"),
+            }
+        }
+        Ok(None)
+    }
+
     /// Perform the required app-server handshake. Request ID 1 is reserved here.
     pub fn initialize(&mut self, timeout: Duration) -> Result<(), &'static str> {
         if timeout.is_zero() || timeout > Duration::from_secs(30) {
@@ -333,5 +350,37 @@ print(json.dumps({'id':second['id'],'result':{'initialized':notification.get('me
             )
             .unwrap();
         assert_eq!(result, json!({"initialized":true}));
+    }
+
+    #[test]
+    fn notifications_after_response_are_available_without_another_request() {
+        let mut command = Command::new("python");
+        command.args(["-u", "-c", r#"import sys,json,time
+msg=json.loads(sys.stdin.readline())
+print(json.dumps({'id':msg['id'],'result':{}}),flush=True)
+time.sleep(0.05)
+print(json.dumps({'method':'account/login/completed','params':{'loginId':'fake','success':True}}),flush=True)
+time.sleep(1)
+"#]);
+        let mut process = RpcProcess::spawn_command(command).unwrap();
+        process
+            .request(
+                1,
+                "account/login/start",
+                json!({}),
+                Duration::from_secs(3),
+                |_, _| {},
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            if let Some((method, _)) = process.poll_notification().unwrap() {
+                seen = method == "account/login/completed";
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(seen);
     }
 }
