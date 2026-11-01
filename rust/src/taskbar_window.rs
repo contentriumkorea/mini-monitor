@@ -1,5 +1,7 @@
 //! Thread-affine hidden Win32 taskbar surface foundation. Not a complete taskbar UI.
+use crate::drag_state::DragState;
 use std::{
+    cell::UnsafeCell,
     io,
     marker::PhantomData,
     ptr,
@@ -7,12 +9,19 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use windows_sys::Win32::{
-    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Graphics::Gdi::ClientToScreen,
     System::LibraryLoader::GetModuleHandleW,
-    UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassW, SetCursor,
-        UnregisterClassW, IDC_ARROW, WM_MOUSEACTIVATE, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    UI::{
+        Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture},
+        WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW,
+            RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+            UnregisterClassW, GWLP_USERDATA, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCDESTROY, WM_SETCURSOR, WNDCLASSW,
+            WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+        },
     },
 };
 
@@ -24,6 +33,7 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DragState;
     match message {
         WM_MOUSEACTIVATE => 3, // MA_NOACTIVATE: preserve click without taking focus
         WM_SETCURSOR if (lparam & 0xffff) == 1 => {
@@ -35,14 +45,64 @@ unsafe extern "system" fn window_proc(
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
+        WM_LBUTTONDOWN if !state.is_null() => {
+            if let Some(x) = screen_x(hwnd, lparam) {
+                SetCapture(hwnd);
+                if GetCapture() == hwnd {
+                    (*state).begin(x);
+                }
+            }
+            0
+        }
+        WM_MOUSEMOVE if !state.is_null() => {
+            let captured = GetCapture() == hwnd;
+            if wparam & 1 == 0 || !captured {
+                (*state).end();
+                if captured {
+                    ReleaseCapture();
+                }
+            } else if let Some(x) = screen_x(hwnd, lparam) {
+                (*state).motion(x, true, true);
+            } else {
+                (*state).end();
+                ReleaseCapture();
+            }
+            0
+        }
+        WM_LBUTTONUP | WM_CANCELMODE if !state.is_null() => {
+            (*state).end();
+            if GetCapture() == hwnd {
+                ReleaseCapture();
+            }
+            0
+        }
+        WM_CAPTURECHANGED if !state.is_null() => {
+            (*state).end();
+            0
+        }
+        WM_NCDESTROY if !state.is_null() => {
+            (*state).end();
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
+}
+
+unsafe fn screen_x(hwnd: HWND, lparam: LPARAM) -> Option<i32> {
+    let bits = lparam as u32;
+    let mut point = POINT {
+        x: (bits as u16 as i16) as i32,
+        y: ((bits >> 16) as u16 as i16) as i32,
+    };
+    (ClientToScreen(hwnd, &mut point) != 0).then_some(point.x)
 }
 
 pub struct TaskbarWindow {
     hwnd: HWND,
     instance: HINSTANCE,
     class_name: Vec<u16>,
+    drag: Box<UnsafeCell<DragState>>,
     _thread_affinity: PhantomData<Rc<()>>,
 }
 
@@ -101,10 +161,24 @@ impl TaskbarWindow {
             }
             return Err(error);
         }
+        let drag = Box::new(UnsafeCell::new(DragState::default()));
+        let state = drag.get() as isize;
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, state);
+        }
+        if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } != state {
+            let error = io::Error::last_os_error();
+            unsafe {
+                DestroyWindow(hwnd);
+                UnregisterClassW(class_name.as_ptr(), instance);
+            }
+            return Err(error);
+        }
         Ok(Self {
             hwnd,
             instance,
             class_name,
+            drag,
             _thread_affinity: PhantomData,
         })
     }
@@ -112,11 +186,50 @@ impl TaskbarWindow {
     pub fn handle(&self) -> HWND {
         self.hwnd
     }
+
+    pub fn take_drag_delta(&self) -> i32 {
+        unsafe { (*self.drag.get()).take_delta() }
+    }
+    pub fn take_drag_finished(&self) -> bool {
+        unsafe { (*self.drag.get()).take_finished() }
+    }
+
+    pub fn show_topmost(&self) -> io::Result<()> {
+        if unsafe {
+            SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn hide(&self) {
+        unsafe {
+            (*self.drag.get()).end();
+            if GetCapture() == self.hwnd {
+                ReleaseCapture();
+            }
+            ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
 }
 
 impl Drop for TaskbarWindow {
     fn drop(&mut self) {
         unsafe {
+            (*self.drag.get()).end();
+            if GetCapture() == self.hwnd {
+                ReleaseCapture();
+            }
             DestroyWindow(self.hwnd);
             UnregisterClassW(self.class_name.as_ptr(), self.instance);
         }

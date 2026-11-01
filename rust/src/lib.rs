@@ -13,11 +13,16 @@ pub mod costs_http;
 pub mod dashboard_layout;
 #[cfg(windows)]
 pub mod dashboard_render;
+#[cfg(windows)]
+pub mod desktop_runtime;
 pub mod device;
 pub mod dirty;
+pub mod drag_state;
 pub mod gpu;
 pub mod latest_queue;
 pub mod layered_window;
+#[cfg(windows)]
+pub mod live_readouts;
 #[cfg(windows)]
 pub mod native_icon;
 #[cfg(windows)]
@@ -28,6 +33,8 @@ pub mod secrets;
 #[cfg(windows)]
 pub mod sensor_worker;
 pub mod sensors;
+#[cfg(windows)]
+pub mod taskbar_controller;
 pub mod taskbar_geometry;
 #[cfg(windows)]
 pub mod taskbar_render;

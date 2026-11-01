@@ -50,3 +50,29 @@ fn cursor_message_replaces_wait_cursor_with_arrow_for_client_area() {
     assert_eq!(handled, 1);
     assert_eq!(resulting, arrow);
 }
+
+#[cfg(windows)]
+#[test]
+fn native_drag_moves_safely_and_stops_after_cancel() {
+    use mini_monitor_native::{
+        layered_window::{present, rgba_to_bgra},
+        taskbar_window::TaskbarWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageW, WM_CANCELMODE, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    };
+    let window = TaskbarWindow::new_hidden().unwrap();
+    let pixels = rgba_to_bgra(80, 32, &[255; 80 * 32 * 4]).unwrap();
+    present(&window, -30000, -30000, 80, 32, &pixels).unwrap();
+    window.show_topmost().unwrap();
+    unsafe {
+        SendMessageW(window.handle(), WM_LBUTTONDOWN, 1, 10);
+        SendMessageW(window.handle(), WM_MOUSEMOVE, 1, 20);
+    }
+    assert_eq!(window.take_drag_delta(), 10);
+    unsafe {
+        SendMessageW(window.handle(), WM_CANCELMODE, 0, 0);
+        SendMessageW(window.handle(), WM_MOUSEMOVE, 1, 30);
+    }
+    assert_eq!(window.take_drag_delta(), 0);
+}

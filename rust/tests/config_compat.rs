@@ -124,3 +124,27 @@ fn missing_settings_receive_legacy_defaults_without_erasing_unknown_fields() {
     assert_eq!(value["openai"]["enabled"], false);
     assert_eq!(value["future"]["keep"], true);
 }
+
+#[test]
+fn taskbar_changes_are_validated_and_preserve_unrelated_settings() {
+    let settings = Settings::parse(r#"{"future":{"keep":7}}"#).unwrap();
+    let settings = settings
+        .with_taskbar_enabled(true)
+        .unwrap()
+        .with_taskbar_position(-200, 1000)
+        .unwrap()
+        .with_taskbar_options(&["gpu", "cpu"], "both")
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&settings.to_json().unwrap()).unwrap();
+    assert_eq!(json["future"]["keep"], 7);
+    assert_eq!(json["overlay"]["taskbar_enabled"], true);
+    assert_eq!(json["overlay"]["taskbar_x"], -200);
+    assert_eq!(
+        json["overlay"]["taskbar_items"],
+        serde_json::json!(["cpu", "gpu"])
+    );
+    assert!(settings
+        .with_taskbar_options(&["cpu", "cpu"], "icon")
+        .is_err());
+    assert!(settings.with_taskbar_options(&["api"], "unknown").is_err());
+}

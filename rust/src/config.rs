@@ -255,6 +255,40 @@ impl Settings {
         serde_json::to_string_pretty(&self.0)
     }
 
+    fn overlay_update(&self, fields: &[(&str, Value)]) -> Result<Self, String> {
+        let mut value = self.0.clone();
+        let overlay = value
+            .get_mut("overlay")
+            .and_then(Value::as_object_mut)
+            .ok_or("invalid overlay")?;
+        for (key, new_value) in fields {
+            overlay.insert((*key).into(), new_value.clone());
+        }
+        let encoded = serde_json::to_string(&value).map_err(|_| "settings encoding failed")?;
+        Self::parse(&encoded)
+    }
+
+    pub fn with_taskbar_enabled(&self, enabled: bool) -> Result<Self, String> {
+        self.overlay_update(&[("taskbar_enabled", Value::Bool(enabled))])
+    }
+
+    pub fn with_taskbar_position(&self, x: i32, y: i32) -> Result<Self, String> {
+        self.overlay_update(&[("taskbar_x", Value::from(x)), ("taskbar_y", Value::from(y))])
+    }
+
+    pub fn with_taskbar_options(&self, items: &[&str], style: &str) -> Result<Self, String> {
+        let items = Value::Array(
+            items
+                .iter()
+                .map(|item| Value::String((*item).to_owned()))
+                .collect(),
+        );
+        self.overlay_update(&[
+            ("taskbar_items", items),
+            ("taskbar_style", Value::String(style.to_owned())),
+        ])
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let input = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         Self::parse(&input)

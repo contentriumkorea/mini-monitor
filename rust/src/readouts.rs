@@ -1,5 +1,42 @@
 //! Formatting for small monitoring surfaces; absence stays visibly distinct from zero.
-use crate::codex::{Credit, Limits};
+use crate::{
+    budget::USD_SCALE,
+    budget_cycle::BudgetSnapshot,
+    codex::{Credit, Limits},
+};
+
+/// Exact tenths-of-percent, rounded half up, without clamping over-budget usage.
+pub fn api_readout(snapshot: Option<&BudgetSnapshot>) -> String {
+    let Some(snapshot) = snapshot else {
+        return "--".into();
+    };
+    let Some(denominator) = u128::from(snapshot.total_cents)
+        .checked_mul(USD_SCALE / 100)
+        .filter(|d| *d > 0)
+    else {
+        return "--".into();
+    };
+    let whole = snapshot.spent_units / denominator;
+    let remainder = snapshot.spent_units % denominator;
+    let Some(fraction) = remainder
+        .checked_mul(1000)
+        .and_then(|n| n.checked_add(denominator / 2))
+        .map(|n| n / denominator)
+    else {
+        return "--".into();
+    };
+    let Some(tenths) = whole
+        .checked_mul(1000)
+        .and_then(|n| n.checked_add(fraction))
+    else {
+        return "--".into();
+    };
+    if tenths % 10 == 0 {
+        format!("{}%", tenths / 10)
+    } else {
+        format!("{}.{:01}%", tenths / 10, tenths % 10)
+    }
+}
 
 pub fn percent_readout(value: Option<f64>) -> String {
     match value {
