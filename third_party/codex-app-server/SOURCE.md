@@ -10,10 +10,11 @@ executable hash before launch. The Mini Monitor build includes it at
 
 The complete corresponding upstream source is at
 https://github.com/openai/codex/tree/rust-v0.161.0 . This binary is Apache-2.0;
-the full Apache 2.0 terms are included in `LICENSES/python/cryptography/LICENSE.APACHE`,
+the full Apache 2.0 terms are included at `LICENSES/python/cryptography/LICENSE.APACHE`
+in legacy packages and `LICENSES/Codex-Apache-2.0.txt` in native packages,
 and the upstream NOTICE is reproduced in `NOTICE`. Mini Monitor itself remains
 GPL-3.0-or-later. The app-server is a separate subprocess, not linked into
-Mini Monitor's Python code.
+Mini Monitor's application code.
 
 The app supplies its own isolated `CODEX_HOME`. It does not import another
 Codex application's local authentication or session data. Login is initiated

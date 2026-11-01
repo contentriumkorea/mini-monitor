@@ -24,12 +24,13 @@ pub struct RpcProcess {
 }
 
 impl RpcProcess {
-    /// `home` must already exist and be the application-owned account directory.
+    /// Use only the application-owned account directory; first run creates it empty.
     pub fn spawn_verified(runtime: &Path, home: &Path) -> Result<Self, &'static str> {
         verify_runtime(runtime, BUNDLED_SHA256)?;
         if !runtime.is_absolute() || !home.is_absolute() {
             return Err("invalid runtime path");
         }
+        crate::codex_runtime::ensure_account_home(home)?;
         let metadata = std::fs::symlink_metadata(home).map_err(|_| "account home unavailable")?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err("unsafe account home");

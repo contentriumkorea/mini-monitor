@@ -5,7 +5,7 @@ use crate::{
     codex::{Credit, Limits},
 };
 
-/// Exact tenths-of-percent, rounded half up, without clamping over-budget usage.
+/// Remaining budget as a whole percentage, rounded half up and floored at zero.
 pub fn api_readout(snapshot: Option<&BudgetSnapshot>) -> String {
     let Some(snapshot) = snapshot else {
         return "--".into();
@@ -16,26 +16,15 @@ pub fn api_readout(snapshot: Option<&BudgetSnapshot>) -> String {
     else {
         return "--".into();
     };
-    let whole = snapshot.spent_units / denominator;
-    let remainder = snapshot.spent_units % denominator;
-    let Some(fraction) = remainder
-        .checked_mul(1000)
+    let remaining = denominator.saturating_sub(snapshot.spent_units);
+    let Some(percent) = remaining
+        .checked_mul(100)
         .and_then(|n| n.checked_add(denominator / 2))
         .map(|n| n / denominator)
     else {
         return "--".into();
     };
-    let Some(tenths) = whole
-        .checked_mul(1000)
-        .and_then(|n| n.checked_add(fraction))
-    else {
-        return "--".into();
-    };
-    if tenths % 10 == 0 {
-        format!("{}%", tenths / 10)
-    } else {
-        format!("{}.{:01}%", tenths / 10, tenths % 10)
-    }
+    format!("{percent}%")
 }
 
 pub fn percent_readout(value: Option<f64>) -> String {

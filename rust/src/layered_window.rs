@@ -30,7 +30,7 @@ mod native {
     use crate::taskbar_window::TaskbarWindow;
     use std::{ffi::c_void, ptr};
     use windows_sys::Win32::{
-        Foundation::{POINT, SIZE},
+        Foundation::{HWND, POINT, SIZE},
         Graphics::Gdi::{
             CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
             SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
@@ -67,6 +67,17 @@ mod native {
     /// `pixels` must be top-down premultiplied BGRA. The window remains hidden unless explicitly shown elsewhere.
     pub fn present(
         window: &TaskbarWindow,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> io::Result<()> {
+        present_handle(window.handle(), x, y, width, height, pixels)
+    }
+
+    pub(crate) fn present_handle(
+        hwnd: HWND,
         x: i32,
         y: i32,
         width: u32,
@@ -148,7 +159,7 @@ mod native {
         };
         if unsafe {
             UpdateLayeredWindow(
-                window.handle(),
+                hwnd,
                 gdi.screen,
                 &destination,
                 &size,
@@ -168,3 +179,5 @@ mod native {
 
 #[cfg(windows)]
 pub use native::present;
+#[cfg(windows)]
+pub(crate) use native::present_handle;

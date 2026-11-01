@@ -1,5 +1,42 @@
 #[cfg(windows)]
 #[test]
+fn one_and_two_digit_percentages_keep_neighbor_positions_and_three_digits_expand() {
+    use mini_monitor_native::taskbar_render::{MetricKind as K, TaskbarRenderer, TaskbarStyle};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("assets/icons");
+    let mut renderer = TaskbarRenderer::new();
+    for dpi in [96, 144, 192, 240] {
+        for style in [TaskbarStyle::Text, TaskbarStyle::Icon, TaskbarStyle::Both] {
+            let baseline = renderer
+                .render(&[(K::Cpu, "88%"), (K::Gpu, "50%")], dpi, style, Some(&root))
+                .unwrap();
+            for value in ["0%", "1%", "9%", "10%", "11%", "99%", "--"] {
+                let frame = renderer
+                    .render(&[(K::Cpu, value), (K::Gpu, "50%")], dpi, style, Some(&root))
+                    .unwrap();
+                assert_eq!(frame.width, baseline.width, "unexpected width at {value}");
+                assert_eq!(
+                    frame.segments[1].left, baseline.segments[1].left,
+                    "neighbor moved at {value}"
+                );
+            }
+            let larger = renderer
+                .render(
+                    &[(K::Cpu, "100%"), (K::Gpu, "50%")],
+                    dpi,
+                    style,
+                    Some(&root),
+                )
+                .unwrap();
+            assert!(larger.segments[1].left > baseline.segments[1].left);
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn selected_text_items_render_on_transparent_background_without_overlap() {
     use mini_monitor_native::taskbar_render::{MetricKind, TaskbarRenderer};
     let mut renderer = TaskbarRenderer::new();

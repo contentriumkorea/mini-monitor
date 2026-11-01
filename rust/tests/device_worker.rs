@@ -131,3 +131,45 @@ fn brightness_and_orientation_changes_are_serialized_by_worker() {
     worker.request_stop();
     worker.join();
 }
+
+#[test]
+fn worker_sends_small_delta_against_last_successfully_transmitted_frame() {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let output = bytes.clone();
+    let mut worker = DeviceWorker::start(
+        25,
+        Orientation::Landscape,
+        move |_| {
+            let target = target();
+            let selected = select_device(std::slice::from_ref(&target), None).unwrap();
+            DeviceSession::verified(selected, &[target], Writer(output))
+        },
+        || Ok(vec![target()]),
+    )
+    .unwrap();
+    wait_until(|| worker.status() == WorkerStatus::Ready);
+    let mut pixels = vec![0; 480 * 320 * 2];
+    worker
+        .submit_full(bitmap_transfer(0, 0, 480, 320, &pixels, 480, 320).unwrap())
+        .unwrap();
+    let initial = 34 + 6 + 480 * 320 * 2;
+    wait_until(|| bytes.lock().unwrap().len() >= initial);
+    pixels[(30 * 480 + 20) * 2] = 0x5a;
+    pixels[(30 * 480 + 20) * 2 + 1] = 0xa5;
+    worker
+        .submit_full(bitmap_transfer(0, 0, 480, 320, &pixels, 480, 320).unwrap())
+        .unwrap();
+    wait_until(|| bytes.lock().unwrap().len() >= initial + 8);
+    assert_eq!(bytes.lock().unwrap().len(), initial + 8);
+    assert_eq!(
+        &bytes.lock().unwrap()[initial + 6..initial + 8],
+        &[0x5a, 0xa5]
+    );
+    worker
+        .submit_full(bitmap_transfer(0, 0, 480, 320, &pixels, 480, 320).unwrap())
+        .unwrap();
+    thread::sleep(Duration::from_millis(600));
+    assert_eq!(bytes.lock().unwrap().len(), initial + 8);
+    worker.request_stop();
+    worker.join();
+}

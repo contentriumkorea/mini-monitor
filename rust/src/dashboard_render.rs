@@ -11,12 +11,14 @@ use std::{
 };
 
 // No Debug: values and account details are private.
+#[derive(Clone, PartialEq)]
 pub struct DashboardEntry {
     pub kind: CardKind,
     pub value: String,
     pub details: Vec<String>,
     pub gauge: Option<f64>,
 }
+#[derive(Clone, PartialEq)]
 pub struct DashboardInput {
     pub port: String,
     pub entries: Vec<DashboardEntry>,

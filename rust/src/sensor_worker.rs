@@ -1,5 +1,6 @@
 //! Bounded sensor worker shared by desktop and USB outputs.
 use crate::gpu::{GpuSnapshot, NvmlGpu};
+use crate::gpu_windows::WindowsGpu;
 use crate::sensors::{cpu_times, cpu_usage, memory_snapshot, MemorySnapshot};
 use std::{
     io,
@@ -27,12 +28,26 @@ enum GpuSelection {
     Nvidia(u32),
 }
 
+enum GpuProvider {
+    Nvidia(NvmlGpu),
+    Windows(WindowsGpu),
+}
+
+impl GpuProvider {
+    fn sample(&self) -> GpuSnapshot {
+        match self {
+            Self::Nvidia(gpu) => gpu.sample(),
+            Self::Windows(gpu) => gpu.sample(),
+        }
+    }
+}
+
 impl SensorWorker {
     pub fn start(interval: Duration) -> io::Result<Self> {
         Self::start_inner(interval, GpuSelection::None)
     }
 
-    /// Selects only a sole NVIDIA candidate; active display-adapter pairing is not established.
+    /// Prefer a sole NVIDIA NVML adapter; otherwise sample the primary Windows display adapter.
     pub fn start_auto(interval: Duration) -> io::Result<Self> {
         Self::start_inner(interval, GpuSelection::Auto)
     }
@@ -59,8 +74,13 @@ impl SensorWorker {
                 let mut previous = None;
                 let gpu = match gpu_selection {
                     GpuSelection::None => None,
-                    GpuSelection::Auto => NvmlGpu::open_single().ok(),
-                    GpuSelection::Nvidia(index) => NvmlGpu::open(index).ok(),
+                    GpuSelection::Auto => NvmlGpu::open_single()
+                        .map(GpuProvider::Nvidia)
+                        .or_else(|_| WindowsGpu::open_primary().map(GpuProvider::Windows))
+                        .ok(),
+                    GpuSelection::Nvidia(index) => {
+                        NvmlGpu::open(index).ok().map(GpuProvider::Nvidia)
+                    }
                 };
                 let mut gpu_snapshot = None;
                 let mut gpu_due = Instant::now();
@@ -72,7 +92,7 @@ impl SensorWorker {
                     previous = current;
                     let now = Instant::now();
                     if now >= gpu_due {
-                        gpu_snapshot = gpu.as_ref().map(NvmlGpu::sample);
+                        gpu_snapshot = gpu.as_ref().map(GpuProvider::sample);
                         gpu_due = now + Duration::from_secs(1);
                     }
                     let snapshot = SensorSnapshot {

@@ -36,3 +36,12 @@ fn windows_memory_data_is_sane_without_a_monitor_device() {
     assert!(memory.available_bytes <= memory.total_bytes);
     assert!((0.0..=100.0).contains(&memory.used_percent));
 }
+
+#[cfg(windows)]
+#[test]
+fn cpu_model_is_read_from_windows_hardware_information() {
+    let name = mini_monitor_native::sensors::cpu_model_name().unwrap();
+    assert!(!name.trim().is_empty());
+    assert!(name.len() <= 512);
+    assert!(!name.chars().any(char::is_control));
+}

@@ -180,6 +180,8 @@ impl TaskbarRenderer {
         let label_font = scale(10).clamp(8, 96);
         let value_font = scale(14).clamp(8, 96);
         let height = scale(32);
+        // Reserve a two-digit percentage cell, regardless of the live value.
+        let percentage_width = self.glyph("88%", value_font, [248, 248, 248])?.width;
         let mut rows = Vec::new();
         let mut width = scale(4);
         for (kind, value) in items {
@@ -202,12 +204,13 @@ impl TaskbarRenderer {
                 None
             };
             let value = self.glyph(value, value_font, [248, 248, 248])?;
+            let cell_width = value.width.max(percentage_width);
             let prefix = icon.as_ref().map_or(0, |image| image.width + scale(5))
                 + label.as_ref().map_or(0, |text| text.width + scale(5));
             width = width
-                .checked_add(prefix + value.width + scale(12))
+                .checked_add(prefix + cell_width + scale(12))
                 .ok_or_else(|| io::Error::other("frame too wide"))?;
-            rows.push((icon, label, value));
+            rows.push((icon, label, value, cell_width));
         }
         if width > 8192 || height > 512 {
             return Err(io::Error::other("frame too large"));
@@ -215,7 +218,7 @@ impl TaskbarRenderer {
         let mut pixels = vec![0; width as usize * height as usize * 4];
         let mut x = scale(4);
         let mut segments = Vec::with_capacity(rows.len());
-        for (icon, label, value) in rows {
+        for (icon, label, value, cell_width) in rows {
             let left = x;
             if let Some(icon) = icon {
                 blit(
@@ -245,16 +248,16 @@ impl TaskbarRenderer {
                 &mut pixels,
                 width,
                 height,
-                x,
+                x + cell_width - value.width,
                 value.width,
                 value.height,
                 &value.pixels,
             );
             segments.push(Segment {
                 left,
-                right: x + value.width,
+                right: x + cell_width,
             });
-            x += value.width + scale(12);
+            x += cell_width + scale(12);
         }
         Ok(TaskbarFrame {
             width,

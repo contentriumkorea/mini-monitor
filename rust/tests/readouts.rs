@@ -50,7 +50,7 @@ fn credits_replace_only_actually_exhausted_usage_with_positive_balance() {
 }
 
 #[test]
-fn api_spending_percent_is_exactly_rounded_and_not_clamped() {
+fn api_remaining_percent_is_integer_rounded_and_clamped_at_zero() {
     use mini_monitor_native::{
         budget::USD_SCALE, budget_cycle::BudgetSnapshot, readouts::api_readout,
     };
@@ -65,9 +65,11 @@ fn api_spending_percent_is_exactly_rounded_and_not_clamped() {
         used_percent: 0.0,
     };
     assert_eq!(api_readout(None), "--");
-    assert_eq!(api_readout(Some(&data)), "0%");
+    assert_eq!(api_readout(Some(&data)), "100%");
     data.spent_units = 3335 * (USD_SCALE / 10000);
-    assert_eq!(api_readout(Some(&data)), "33.4%");
+    assert_eq!(api_readout(Some(&data)), "67%");
+    data.spent_units = USD_SCALE;
+    assert_eq!(api_readout(Some(&data)), "0%");
     data.spent_units = 2 * USD_SCALE;
-    assert_eq!(api_readout(Some(&data)), "200%");
+    assert_eq!(api_readout(Some(&data)), "0%");
 }

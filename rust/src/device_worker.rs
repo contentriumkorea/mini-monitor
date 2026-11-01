@@ -1,6 +1,6 @@
 //! One owner for USB writes. Does not open a device unless explicitly started.
 use crate::{
-    device::{BitmapTransfer, DeviceInfo, Orientation},
+    device::{BitmapTransfer, DeviceInfo, FrameDelta, Orientation},
     device_connect::ConnectGate,
     device_session::DeviceSession,
     latest_queue::LatestQueue,
@@ -99,6 +99,7 @@ impl DeviceWorker {
                     })?;
                     *s.lock().unwrap_or_else(|e| e.into_inner()) = WorkerStatus::Ready;
                     let (mut brightness, mut orientation) = (brightness, orientation);
+                    let mut last_sent: Option<BitmapTransfer> = None;
                     while !g.is_cancelled() {
                         let frame = q.take_timeout(Duration::from_millis(500));
                         if g.is_cancelled() {
@@ -131,6 +132,7 @@ impl DeviceWorker {
                                         },
                                     )
                                 })?;
+                                last_sent = None;
                             } else if next_brightness != brightness {
                                 g.perform_if_active(|| session.set_brightness(next_brightness))?;
                             }
@@ -145,9 +147,22 @@ impl DeviceWorker {
                             if !frame.is_full_for(width, height) {
                                 continue;
                             }
-                            g.perform_if_active(|| {
-                                session.send_full_cancellable(&frame, || g.is_cancelled())
-                            })?;
+                            let delta = match last_sent.as_ref() {
+                                Some(previous) => {
+                                    frame.delta_from(previous).map_err(io::Error::other)?
+                                }
+                                None => FrameDelta::Full,
+                            };
+                            match delta {
+                                FrameDelta::Unchanged => continue,
+                                FrameDelta::Full => g.perform_if_active(|| {
+                                    session.send_full_cancellable(&frame, || g.is_cancelled())
+                                })?,
+                                FrameDelta::Region(region) => g.perform_if_active(|| {
+                                    session.send_partial_cancellable(&region, || g.is_cancelled())
+                                })?,
+                            }
+                            last_sent = Some(frame);
                         }
                     }
                     Ok(())

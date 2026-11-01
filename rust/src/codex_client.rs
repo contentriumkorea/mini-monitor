@@ -64,6 +64,22 @@ impl<T: RpcTransport> AccountClient<T> {
         self.transport
     }
 
+    /// Explicitly signs out only when requested by the user-facing controller.
+    pub fn logout<F>(&mut self, mut notify: F) -> Result<(), &'static str>
+    where
+        F: FnMut(&str, &Value),
+    {
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).ok_or("request ID exhausted")?;
+        let response = self
+            .transport
+            .request(id, "account/logout", json!({}), &mut notify)?;
+        if !response.is_object() {
+            return Err("invalid logout response");
+        }
+        Ok(())
+    }
+
     pub fn poll_notification(&mut self) -> Result<Option<(String, Value)>, &'static str> {
         self.transport.poll_notification()
     }

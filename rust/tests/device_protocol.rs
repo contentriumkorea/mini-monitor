@@ -24,6 +24,30 @@ fn transfer_is_constructed_only_after_bounds_and_payload_are_verified() {
 }
 
 #[test]
+fn rgb565_delta_sends_only_changed_pixels_and_rejects_wrong_display_size() {
+    use mini_monitor_native::device::{bitmap_transfer, FrameDelta};
+    let before = bitmap_transfer(0, 0, 4, 3, &[0; 24], 4, 3).unwrap();
+    let unchanged = bitmap_transfer(0, 0, 4, 3, &[0; 24], 4, 3).unwrap();
+    assert!(matches!(
+        unchanged.delta_from(&before).unwrap(),
+        FrameDelta::Unchanged
+    ));
+    let mut pixels = [0u8; 24];
+    pixels[12] = 0x5a; // x=2, y=1 in a 4-wide RGB565 frame
+    pixels[13] = 0xa5;
+    let after = bitmap_transfer(0, 0, 4, 3, &pixels, 4, 3).unwrap();
+    let FrameDelta::Region(region) = after.delta_from(&before).unwrap() else {
+        panic!("expected one small region")
+    };
+    let mut bytes = Vec::new();
+    region.write_to(&mut bytes, 16).unwrap();
+    assert_eq!(bytes.len(), 8);
+    assert_eq!(&bytes[6..], &[0x5a, 0xa5]);
+    let wrong = bitmap_transfer(0, 0, 3, 4, &[0; 24], 3, 4).unwrap();
+    assert!(after.delta_from(&wrong).is_err());
+}
+
+#[test]
 fn audited_command_bytes_match_existing_upstream_vectors() {
     assert_eq!(screen_on(), [0, 0, 0, 0, 0, 0x6d]);
     assert_eq!(brightness_command(25).unwrap(), [0x2f, 0xc0, 0, 0, 0, 0x6e]);

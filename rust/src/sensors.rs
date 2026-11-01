@@ -25,6 +25,43 @@ pub struct MemorySnapshot {
     pub used_percent: f64,
 }
 
+/// Reads the OS-reported processor model once; no process or account data is inspected.
+#[cfg(windows)]
+pub fn cpu_model_name() -> std::io::Result<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let key: Vec<u16> = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0"
+        .encode_utf16()
+        .collect();
+    let value: Vec<u16> = "ProcessorNameString\0".encode_utf16().collect();
+    let mut buffer = [0u16; 256];
+    let mut bytes = std::mem::size_of_val(&buffer) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    let length = buffer
+        .iter()
+        .position(|c| *c == 0)
+        .ok_or_else(|| std::io::Error::other("unterminated CPU name"))?;
+    let name = String::from_utf16(&buffer[..length])
+        .map_err(|_| std::io::Error::other("invalid CPU name"))?;
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return Err(std::io::Error::other("invalid CPU name"));
+    }
+    Ok(name.to_owned())
+}
+
 #[cfg(windows)]
 pub fn memory_snapshot() -> std::io::Result<MemorySnapshot> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};

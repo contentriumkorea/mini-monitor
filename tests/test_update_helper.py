@@ -100,6 +100,7 @@ def _run_helper(
     prepared, *, timeout_seconds: int = 60, culture: str | None = None,
     extra_env: dict[str, str] | None = None,
     process_timeout_seconds: int = 15,
+    capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     journal = json.loads(prepared.journal_path.read_text(encoding="utf-8"))
     journal["ack_timeout_seconds"] = timeout_seconds
@@ -125,7 +126,10 @@ def _run_helper(
          str(script), *prefix, "-JournalPath", str(prepared.journal_path),
          "-JournalSha256", _digest(prepared.journal_path.read_bytes()),
          "-HelperSha256", _digest(prepared.helper_path.read_bytes()), "-ParentPid", "99999999"],
-        cwd=prepared.helper_path.parent, capture_output=True, text=True, timeout=process_timeout_seconds,
+        cwd=prepared.helper_path.parent, capture_output=capture_output,
+        stdout=None if capture_output else subprocess.DEVNULL,
+        stderr=None if capture_output else subprocess.DEVNULL,
+        text=True, timeout=process_timeout_seconds,
         env={**os.environ, "MINI_MONITOR_UPDATE_TEST_NO_NOTICE": "1", **(extra_env or {})},
     )
 
@@ -339,7 +343,8 @@ class Program {
             var dll = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "_internal", "runtime.dll");
             using (File.Open(dll, FileMode.Open, FileAccess.Read, FileShare.Read)) {
                 File.WriteAllText(ready, "locked");
-                var deadline = DateTime.UtcNow.AddSeconds(8);
+                // Remain locked beyond both bounded rollback attempts.
+                var deadline = DateTime.UtcNow.AddSeconds(30);
                 while (!File.Exists(stop) && DateTime.UtcNow < deadline) Thread.Sleep(50);
             }
             File.WriteAllText(ack + ".child-done", "released");
@@ -348,6 +353,10 @@ class Program {
         var child = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, "--hold-file");
         child.UseShellExecute = false;
         child.CreateNoWindow = true;
+        // Keep the orphan fixture from extending the helper's captured pipe lifetime.
+        child.RedirectStandardOutput = true;
+        child.RedirectStandardError = true;
+        child.RedirectStandardInput = true;
         Process.Start(child);
         var readyDeadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(ready) && DateTime.UtcNow < readyDeadline) Thread.Sleep(20);
@@ -381,7 +390,7 @@ class Program {
     stop = Path(str(prepared.helper_path.parent / "startup-ack.json") + ".child-stop")
     done = Path(str(prepared.helper_path.parent / "startup-ack.json") + ".child-done")
     try:
-        result = _run_helper(prepared, timeout_seconds=1)
+        result = _run_helper(prepared, timeout_seconds=1, process_timeout_seconds=25, capture_output=False)
         assert result.returncode == 5, result.stderr
         assert ready.is_file(), "child did not hold the installed file before parent exit"
         journal = json.loads(prepared.journal_path.read_text(encoding="utf-8"))

@@ -116,13 +116,25 @@ function Show-UpdateNotice([string]$Detail, [string]$BackupPath) {
     } catch { }
 }
 
+function Move-DirectoryWithRetry([string]$Source, [string]$Destination) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($true) {
+        try { [IO.Directory]::Move($Source, $Destination); return }
+        catch {
+            $code = $_.Exception.GetBaseException().HResult -band 0xffff
+            if (($code -ne 32 -and $code -ne 33) -or [DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+
 function Restore-PreviousProgram([string]$InstallPath, [string]$BackupPath, [string]$ParentPath) {
     if (-not (Test-Path -LiteralPath $BackupPath -PathType Container)) { return $false }
     if (Test-Path -LiteralPath $InstallPath) {
         $failed = Join-Path $ParentPath ('.mini-monitor-failed-' + [guid]::NewGuid().ToString('N'))
-        [IO.Directory]::Move($InstallPath, $failed)
+        Move-DirectoryWithRetry $InstallPath $failed
     }
-    [IO.Directory]::Move($BackupPath, $InstallPath)
+    Move-DirectoryWithRetry $BackupPath $InstallPath
     return $true
 }
 
@@ -244,9 +256,9 @@ Assert-Tree $staged $newMap $false
 
 $newProcess = $null
 try {
-    [IO.Directory]::Move($install, $backup)
+    Move-DirectoryWithRetry $install $backup
     Save-Journal $record $journal 'old_backed_up'
-    [IO.Directory]::Move($staged, $install)
+    Move-DirectoryWithRetry $staged $install
     Save-Journal $record $journal 'new_installed'
     if ($env:PYTEST_CURRENT_TEST -and $env:MINI_MONITOR_UPDATE_TEST_FAIL_AFTER_SWAP -eq '1') {
         throw 'Controlled test fault after both renames.'
@@ -325,6 +337,9 @@ Save-Journal $record $journal 'rolled_back_no_ack'
 Show-UpdateNotice 'The replacement app exited without confirming a healthy start. The previous program was restored.' ''
 exit 5
 } catch {
+    # Classify recovery failures without persisting exception text or user paths.
+    $record | Add-Member -NotePropertyName recovery_failure_type -NotePropertyValue $_.Exception.GetBaseException().GetType().FullName -Force
+    $record | Add-Member -NotePropertyName recovery_failure_hresult -NotePropertyValue $_.Exception.GetBaseException().HResult -Force
     $alive = $true
     try { $newProcess.Refresh(); $alive = -not $newProcess.HasExited } catch { }
     if ($alive) {

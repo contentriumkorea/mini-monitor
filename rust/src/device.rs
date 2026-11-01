@@ -177,6 +177,12 @@ pub struct BitmapTransfer {
     display: (u32, u32),
 }
 
+pub enum FrameDelta {
+    Unchanged,
+    Full,
+    Region(BitmapTransfer),
+}
+
 pub fn bitmap_transfer(
     x: u32,
     y: u32,
@@ -203,6 +209,52 @@ pub fn bitmap_transfer(
 }
 
 impl BitmapTransfer {
+    /// Compare complete RGB565 frames against the last frame successfully transmitted.
+    pub fn delta_from(&self, previous: &BitmapTransfer) -> Result<FrameDelta, &'static str> {
+        let (width, height) = self.display;
+        if !self.is_full_for(width, height) || !previous.is_full_for(width, height) {
+            return Err("full matching frames required");
+        }
+        let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
+        let mut changed = false;
+        for y in 0..height {
+            for x in 0..width {
+                let index = ((y as usize) * (width as usize) + x as usize) * 2;
+                if self.payload[index..index + 2] != previous.payload[index..index + 2] {
+                    changed = true;
+                    left = left.min(x);
+                    top = top.min(y);
+                    right = right.max(x);
+                    bottom = bottom.max(y);
+                }
+            }
+        }
+        if !changed {
+            return Ok(FrameDelta::Unchanged);
+        }
+        let region_width = right - left + 1;
+        let region_height = bottom - top + 1;
+        if u64::from(region_width) * u64::from(region_height) * 4
+            >= u64::from(width) * u64::from(height) * 3
+        {
+            return Ok(FrameDelta::Full);
+        }
+        let mut pixels = Vec::with_capacity(region_width as usize * region_height as usize * 2);
+        for y in top..=bottom {
+            let start = ((y as usize) * (width as usize) + left as usize) * 2;
+            let end = start + region_width as usize * 2;
+            pixels.extend_from_slice(&self.payload[start..end]);
+        }
+        Ok(FrameDelta::Region(bitmap_transfer(
+            left,
+            top,
+            region_width,
+            region_height,
+            &pixels,
+            width,
+            height,
+        )?))
+    }
     pub fn matches_display(&self, width: u32, height: u32) -> bool {
         self.display == (width, height)
     }
