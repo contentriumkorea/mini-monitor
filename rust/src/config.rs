@@ -168,6 +168,23 @@ impl Settings {
                 return Err("unsupported provider".into());
             }
         }
+        if let Some(ai) = value.get("ai") {
+            if let Some(path) = ai.get("codex_cli_path").filter(|v| !v.is_null()) {
+                if !path
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty() && !s.contains('\0'))
+                {
+                    return Err("invalid codex CLI path".into());
+                }
+            }
+            for key in ["daily_budget_usd", "monthly_budget_usd"] {
+                if let Some(amount) = ai.get(key).filter(|v| !v.is_null()) {
+                    if !amount.as_f64().is_some_and(|n| n.is_finite() && n > 0.0) {
+                        return Err(format!("invalid ai.{key}"));
+                    }
+                }
+            }
+        }
         if let Some(overlay) = value.get("overlay") {
             if let Some(items) = overlay.get("taskbar_items") {
                 let items = items.as_array().ok_or("invalid taskbar items")?;
@@ -195,6 +212,18 @@ impl Settings {
                     return Err("invalid coordinate pair".into());
                 }
             }
+        }
+        if let Some(items) = value
+            .pointer_mut("/overlay/taskbar_items")
+            .and_then(Value::as_array_mut)
+        {
+            const ORDER: [&str; 6] = ["cpu", "ram", "gpu", "vram", "codex", "api"];
+            items.sort_by_key(|item| {
+                ORDER
+                    .iter()
+                    .position(|name| Some(*name) == item.as_str())
+                    .unwrap_or(ORDER.len())
+            });
         }
         Ok(Self(value))
     }

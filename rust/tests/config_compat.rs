@@ -80,3 +80,29 @@ fn atomic_save_preserves_existing_file_on_invalid_data_and_round_trips() {
         .unwrap()
         .contains("30"));
 }
+
+#[test]
+fn legacy_budget_and_cli_path_validation_is_preserved() {
+    for input in [
+        r#"{"ai":{"codex_cli_path":"   "}}"#,
+        r#"{"ai":{"codex_cli_path":"abc\u0000def"}}"#,
+        r#"{"ai":{"codex_cli_path":123}}"#,
+        r#"{"ai":{"daily_budget_usd":0}}"#,
+        r#"{"ai":{"monthly_budget_usd":true}}"#,
+        r#"{"ai":{"monthly_budget_usd":-1}}"#,
+    ] {
+        assert!(Settings::parse(input).is_err(), "accepted invalid setting");
+    }
+    assert!(Settings::parse(r#"{"ai":{"codex_cli_path":null,"daily_budget_usd":0.5}}"#).is_ok());
+}
+
+#[test]
+fn taskbar_items_follow_existing_canonical_display_order() {
+    let settings =
+        Settings::parse(r#"{"overlay":{"taskbar_items":["codex","gpu","cpu"]}}"#).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&settings.to_json().unwrap()).unwrap();
+    assert_eq!(
+        value["overlay"]["taskbar_items"],
+        serde_json::json!(["cpu", "gpu", "codex"])
+    );
+}
