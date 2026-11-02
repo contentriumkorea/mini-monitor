@@ -32,10 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("staged CLI version mismatch".into());
     }
-    for previous in ["0.3.0", "0.3.1", "0.3.2"] {
+    for previous in ["0.3.0", "0.3.1", "0.3.2", "0.3.3"] {
         assert!(is_newer_release(previous, &manifest.version)?);
     }
     assert!(!is_newer_release(&manifest.version, &manifest.version)?);
-    println!("version={} signature=valid archive=valid staging=valid cli=valid update_from_0.3.0_to_0.3.2=available same_version=current", manifest.version);
+    println!("version={} signature=valid archive=valid staging=valid cli=valid update_from_0.3.0_to_0.3.3=available same_version=current", manifest.version);
     Ok(())
 }

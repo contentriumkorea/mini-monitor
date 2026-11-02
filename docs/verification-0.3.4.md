@@ -1,6 +1,6 @@
 # 0.3.4 local flicker correction
 
-No public release is authorized by this bug report. This is a locally installed validation candidate.
+Initially a local validation candidate; after confirming the preview, physical screen, single-line model and API order, the user explicitly authorized GitHub publication.
 
 ## Cause and proof
 
@@ -63,3 +63,15 @@ Full serial native suite257 passed,24 opt-in cases ignored,0 failures (`build/lo
 Signed local bundle: `build/local-bundle-v0.3.4-single-line-model`, ZIP SHA256 `ec685adf1b0aecb0b22d1017bd38a2673d43db0d450b6577cad8c3b2f0869c98`. Existing configuration/account data is excluded from the package. No public release or push was performed.
 
 The installed app was gracefully exited through its observed agent-desktop Quit control; no forced termination or physical input was needed. The verified local updater reached healthy_backup_retained with startup acknowledgement. Installed application hash matches this candidate, configuration hash is unchanged, and the process remains running. The restarted settings window was then tray-hidden before the USB-enable action could be observed/invoked. After the user reopened settings, fresh agent-desktop observations confirmed the monitor was already enabled and physically connected, account status Ready and taskbar enabled. No duplicate toggle was sent, and no account data was printed. Physical optical confirmation of the model row/API order is still separate from this connection-status readback.
+
+## Publication authorization and gate
+
+The user confirmed the final model row/API order displayed normally and explicitly requested GitHub publication. Publish the exact signed/installed candidate above; no application rebuild is introduced by the README/release-note changes.
+
+- GitHub connector verified the existing public contentriumkorea/mini-monitor repository and write access; the plugin's hybrid connector/targeted-CLI workflow is used for tags/assets, which are not exposed by its connector tools.
+- Previous Latest: v0.3.3. Fixed installer-v2 is474,112 bytes with SHA256 `0e00e7fa935ac00dd8705c6b220a072426c2a7aa831d7b26dc451b12ef2da914`, last modified before this release. Do not rebuild/re-upload it or change the installer request workflow.
+- The bundle has exactly ZIP, v2 manifest and signature. Native signed verification, isolated staging and exact CLI0.3.4 passed;0.3.0 through0.3.3 detect a newer release and same0.3.4 stays current. Seven focused package/publication tests passed.
+- Pending history/current diff and82 packaged text files passed targeted credential/private-key/private-email scans. All64 packaged Rust source files match the checkout; the packaged executable matches the installed app. No actual credentials or user configuration were included.
+- Preserve older public releases: the tracked0.3.0 release document still uses its fixed package URL, and complete legacy-client/fixed-link dependencies remain unknown. Separate installer-v1/v2 channels are retained. This follows the compatibility exception to retiring old releases; no tag or release deletion is authorized.
+
+Public post-publication acquisition/update checks are recorded separately after publication; the preceding checks alone do not prove public download success.
