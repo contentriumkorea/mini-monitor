@@ -9,22 +9,49 @@ from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parents[1] / "assets" / "icons"
 WHITE = (255, 255, 255, 255)
+RENDER_SIDE = 2048
+PNG_SIDE = 512
 
 
-def canvas() -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    return image, ImageDraw.Draw(image)
+class ScaledDraw:
+    """Render the existing editable icon geometry before exporting antialiased PNGs."""
+    def __init__(self, image: Image.Image, units: int):
+        self.draw = ImageDraw.Draw(image)
+        self.scale = RENDER_SIDE / units
+
+    def _call(self, name, coordinates, **kwargs):
+        for key in ("width", "radius"):
+            if key in kwargs:
+                kwargs[key] = max(1, round(kwargs[key] * self.scale))
+        return getattr(self.draw, name)(tuple(round(v * self.scale) for v in coordinates), **kwargs)
+
+    def rounded_rectangle(self, coordinates, **kwargs):
+        return self._call("rounded_rectangle", coordinates, **kwargs)
+
+    def rectangle(self, coordinates, **kwargs):
+        return self._call("rectangle", coordinates, **kwargs)
+
+    def ellipse(self, coordinates, **kwargs):
+        return self._call("ellipse", coordinates, **kwargs)
+
+    def line(self, coordinates, **kwargs):
+        return self._call("line", coordinates, **kwargs)
+
+
+def canvas(units: int = 64) -> tuple[Image.Image, ScaledDraw]:
+    image = Image.new("RGBA", (RENDER_SIDE, RENDER_SIDE), (0, 0, 0, 0))
+    return image, ScaledDraw(image, units)
 
 
 def cpu() -> Image.Image:
-    image, draw = canvas()
-    draw.rounded_rectangle((16, 16, 48, 48), radius=3, outline=WHITE, width=5)
-    draw.rectangle((25, 25, 39, 39), outline=WHITE, width=4)
-    for at in (22, 32, 42):
-        draw.line((at, 7, at, 16), fill=WHITE, width=5)
-        draw.line((at, 48, at, 57), fill=WHITE, width=5)
-        draw.line((7, at, 16, at), fill=WHITE, width=5)
-        draw.line((48, at, 57, at), fill=WHITE, width=5)
+    image, draw = canvas(24)
+    draw.rounded_rectangle((6, 6, 18, 18), radius=1, outline=WHITE, width=1.6)
+    draw.rectangle((9, 9, 15, 15), outline=WHITE, width=1.6)
+    for at in (8, 12, 16):
+        draw.line((at, 3, at, 6), fill=WHITE, width=1.6)
+        draw.line((at, 18, at, 21), fill=WHITE, width=1.6)
+        draw.line((3, at, 6, at), fill=WHITE, width=1.6)
+        draw.line((18, at, 21, at), fill=WHITE, width=1.6)
     return image
 
 
@@ -42,12 +69,12 @@ def gpu() -> Image.Image:
 
 
 def ram() -> Image.Image:
-    image, draw = canvas()
-    draw.rounded_rectangle((5, 20, 59, 44), radius=3, outline=WHITE, width=5)
-    for left in (14, 26, 38):
-        draw.rectangle((left, 26, left + 7, 38), outline=WHITE, width=3)
-    for left in (13, 23, 33, 43, 53):
-        draw.line((left, 44, left, 52), fill=WHITE, width=4)
+    image, draw = canvas(24)
+    draw.rounded_rectangle((2, 6, 22, 17), radius=1, outline=WHITE, width=1.6)
+    for left in (6, 10, 14, 18):
+        draw.line((left, 9, left, 13), fill=WHITE, width=1.6)
+    for left in (4, 8, 12, 16, 20):
+        draw.line((left, 17, left, 20), fill=WHITE, width=1.6)
     return image
 
 
@@ -61,10 +88,17 @@ def vram() -> Image.Image:
     return image
 
 
+def api() -> Image.Image:
+    image, draw = canvas(24)
+    for points in ((7, 6, 2, 12, 7, 18), (17, 6, 22, 12, 17, 18), (14, 4, 10, 20)):
+        draw.line(points, fill=WHITE, width=1.6, joint="curve")
+    return image
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    for name, maker in (("cpu", cpu), ("ram", ram), ("gpu", gpu), ("vram", vram)):
-        maker().resize((32, 32), Image.Resampling.LANCZOS).save(OUT / f"{name}.png")
+    for name, maker in (("cpu", cpu), ("ram", ram), ("gpu", gpu), ("vram", vram), ("api", api)):
+        maker().resize((PNG_SIDE, PNG_SIDE), Image.Resampling.LANCZOS).save(OUT / f"{name}.png", optimize=True)
 
 
 if __name__ == "__main__":

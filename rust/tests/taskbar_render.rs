@@ -1,5 +1,82 @@
 #[cfg(windows)]
 #[test]
+fn taskbar_percent_is_smaller_than_digits_and_shares_their_visible_bottom() {
+    use mini_monitor_native::{
+        native_text::raster_text,
+        taskbar_render::{MetricKind, TaskbarRenderer},
+    };
+    for dpi in [96, 144, 192, 240] {
+        let font = (14 * dpi + 48) / 96;
+        let percent_font = ((font * 7 + 5) / 10).max(8);
+        let percent_width = raster_text("%", percent_font, [248, 248, 248])
+            .unwrap()
+            .width;
+        let number_width = raster_text("81", font, [248, 248, 248]).unwrap().width;
+        let frame = TaskbarRenderer::new()
+            .render_text(&[(MetricKind::Cpu, "81%")], dpi)
+            .unwrap();
+        let right = frame.segments[0].right;
+        let split = right - percent_width;
+        let vertical = |left, right| {
+            let rows = (0..frame.height)
+                .filter(|y| {
+                    (left..right)
+                        .any(|x| frame.pixels[((y * frame.width + x) * 4 + 3) as usize] >= 135)
+                })
+                .collect::<Vec<_>>();
+            (*rows.first().unwrap(), *rows.last().unwrap())
+        };
+        let number = vertical(split - number_width, split);
+        let percent = vertical(split, right);
+        assert!(
+            (percent.1 - percent.0 + 1) * 100 <= (number.1 - number.0 + 1) * 85,
+            "percent must be visibly smaller, dpi={dpi}"
+        );
+        assert!(
+            number.1.abs_diff(percent.1) <= 1,
+            "percent and digits must align at the visible bottom"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn gpu_and_vram_use_the_approved_png_shapes_at_each_dpi() {
+    use mini_monitor_native::{
+        native_icon::{load_icon, IconKind},
+        taskbar_render::{MetricKind, TaskbarRenderer, TaskbarStyle},
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("assets/icons");
+    for dpi in [96, 144, 192, 240] {
+        for (kind, asset) in [
+            (MetricKind::Gpu, IconKind::Gpu),
+            (MetricKind::Vram, IconKind::Vram),
+        ] {
+            let side = (18 * dpi + 48) / 96;
+            let expected = load_icon(&root, asset, side).unwrap();
+            let frame = TaskbarRenderer::new()
+                .render(&[(kind, "50%")], dpi, TaskbarStyle::Icon, Some(&root))
+                .unwrap();
+            let left = (4 * dpi + 48) / 96;
+            let top = (frame.height - side) / 2;
+            let mut actual = Vec::new();
+            for y in 0..side {
+                let start = (((top + y) * frame.width + left) * 4) as usize;
+                actual.extend_from_slice(&frame.pixels[start..start + (side * 4) as usize]);
+            }
+            assert!(
+                actual == expected.pixels,
+                "approved GPU/VRAM PNG must be used, not the replacement geometric symbol"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn one_and_two_digit_percentages_keep_neighbor_positions_and_three_digits_expand() {
     use mini_monitor_native::taskbar_render::{MetricKind as K, TaskbarRenderer, TaskbarStyle};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

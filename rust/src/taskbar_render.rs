@@ -136,17 +136,51 @@ impl TaskbarRenderer {
         {
             return Ok(Arc::clone(icon));
         }
-        let icon = Arc::new(if kind == IconKind::Codex {
-            load_icon(root, kind, side)?
-        } else {
-            metric_symbol(kind, side)?
-        });
+        let icon = Arc::new(load_icon(root, kind, side)?);
         if self.icons.len() >= 24 {
             self.icons.pop_front();
         }
         self.icons
             .push_back((root.to_path_buf(), kind, side, Arc::clone(&icon)));
         Ok(icon)
+    }
+
+    fn value_glyph(
+        &mut self,
+        value: &str,
+        font: u32,
+        color: [u8; 3],
+    ) -> io::Result<Arc<TextRaster>> {
+        let Some(digits) = value
+            .strip_suffix('%')
+            .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+        else {
+            return self.glyph(value, font, color);
+        };
+        let number = self.glyph(digits, font, color)?;
+        let percent = self.glyph("%", ((font * 7 + 5) / 10).max(8), color)?;
+        let baseline = number.ink_bottom().max(percent.ink_bottom());
+        let number_top = baseline - number.ink_bottom();
+        let percent_top = baseline - percent.ink_bottom();
+        let width = number.width + percent.width;
+        let height = (number_top + number.height).max(percent_top + percent.height);
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        for (glyph, left, top) in [
+            (&number, 0, number_top),
+            (&percent, number.width, percent_top),
+        ] {
+            for y in 0..glyph.height {
+                let source = (y * glyph.width * 4) as usize;
+                let target = (((top + y) * width + left) * 4) as usize;
+                pixels[target..target + (glyph.width * 4) as usize]
+                    .copy_from_slice(&glyph.pixels[source..source + (glyph.width * 4) as usize]);
+            }
+        }
+        Ok(Arc::new(TextRaster {
+            width,
+            height,
+            pixels,
+        }))
     }
 
     /// Caller chooses the exact items. Pixel dimensions are scaled from 96-DPI logical units.
@@ -185,7 +219,7 @@ impl TaskbarRenderer {
         let value_font = scale(14).clamp(8, 96);
         let height = scale(32);
         // Reserve a two-digit percentage cell, regardless of the live value.
-        let percentage_width = self.glyph("88%", value_font, [248, 248, 248])?.width;
+        let percentage_width = self.value_glyph("88%", value_font, [248, 248, 248])?.width;
         let mut rows = Vec::new();
         let mut width = scale(4);
         for (kind, value) in items {
@@ -207,7 +241,7 @@ impl TaskbarRenderer {
             } else {
                 None
             };
-            let value = self.glyph(value, value_font, [248, 248, 248])?;
+            let value = self.value_glyph(value, value_font, [248, 248, 248])?;
             let cell_width = value.width.max(percentage_width);
             let prefix = icon.as_ref().map_or(0, |image| image.width + scale(5))
                 + label.as_ref().map_or(0, |text| text.width + scale(5));
