@@ -37,6 +37,19 @@ fn preference_actions_have_dark_rounded_corners_and_passwords_stay_masked() {
         let previous = SelectObject(dc, bmp as _);
         SendMessageW(button, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
         let corner = GetPixel(dc, 0, 0);
+        let mut ink_top = r.bottom;
+        let mut ink_bottom = 0;
+        for y in 3..r.bottom - 3 {
+            for x in 10..r.right - 10 {
+                let c = GetPixel(dc, x, y);
+                if c & 255 < 80 && (c >> 8) & 255 < 80 && (c >> 16) & 255 < 80 {
+                    ink_top = ink_top.min(y);
+                    ink_bottom = ink_bottom.max(y);
+                }
+            }
+        }
+        let ink_center = (ink_top + ink_bottom) as f64 / 2.0;
+        let button_center = (r.bottom - 1) as f64 / 2.0;
         assert!(
             corner & 255 < 80,
             "action corners must blend with the dark form rather than a native white button"
@@ -44,6 +57,11 @@ fn preference_actions_have_dark_rounded_corners_and_passwords_stay_masked() {
         SelectObject(dc, previous);
         DeleteObject(bmp as _);
         DeleteDC(dc);
+        assert!(
+            (ink_center - button_center).abs() <= 1.0,
+            "visible caption ink must be centered, ink={ink_top}..{ink_bottom}, height={}",
+            r.bottom
+        );
     }
 }
 

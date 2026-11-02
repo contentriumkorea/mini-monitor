@@ -22,11 +22,35 @@ fn main() -> std::io::Result<()> {
             (K::Gpu, "1%"),
             (K::Vram, "18%"),
             (K::Codex, "85%"),
+            (K::Api, "90%"),
         ],
-        192,
+        std::env::args()
+            .nth(3)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(192),
         style,
         Some(&root),
     )?;
+    let output_path = std::path::PathBuf::from(&output);
+    if output_path.extension().is_some_and(|e| e == "png") {
+        let mut pixels = frame.pixels;
+        for p in pixels.as_chunks_mut::<4>().0 {
+            let alpha = u16::from(p[3]);
+            for c in &mut p[..3] {
+                *c = (u16::from(*c) + (22 * (255 - alpha) + 127) / 255).min(255) as u8;
+            }
+            p[3] = 255;
+        }
+        return mini_monitor_native::png_output::save(
+            &mini_monitor_native::dashboard_render::DashboardFrame {
+                width: frame.width,
+                height: frame.height,
+                pixels,
+                detail_pages: vec![],
+            },
+            &output_path,
+        );
+    }
     let bytes = frame.pixels.len() as u32;
     let mut file = std::fs::File::create(output)?;
     file.write_all(b"BM")?;

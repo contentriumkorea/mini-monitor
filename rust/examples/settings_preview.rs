@@ -23,6 +23,22 @@ fn main() -> std::io::Result<()> {
         "",
     );
     for entry in &mut input.entries {
+        entry.details = match entry.kind {
+            mini_monitor_native::dashboard_layout::CardKind::Cpu => {
+                vec!["Intel Core i7-14700K".into(), "45 °C".into()]
+            }
+            mini_monitor_native::dashboard_layout::CardKind::Gpu => {
+                vec!["NVIDIA GeForce RTX 5070 Ti".into(), "42 °C · 55 W".into()]
+            }
+            mini_monitor_native::dashboard_layout::CardKind::Ram => {
+                vec!["12.3 / 32.0 GiB".into(), "19.7 GiB FREE".into()]
+            }
+            mini_monitor_native::dashboard_layout::CardKind::Vram => vec!["2.8 / 16.0 GiB".into()],
+            mini_monitor_native::dashboard_layout::CardKind::Api => {
+                vec!["USED $10.00".into(), "TOTAL $100.00".into()]
+            }
+            _ => vec!["7D LEFT".into(), "CREDITS 10,000".into()],
+        };
         entry.value = match entry.kind {
             mini_monitor_native::dashboard_layout::CardKind::Cpu => "23%",
             mini_monitor_native::dashboard_layout::CardKind::Ram => "41%",
@@ -33,7 +49,7 @@ fn main() -> std::io::Result<()> {
         .into();
         entry.gauge = Some(40.0);
     }
-    let frame = DashboardRenderer::new().render(&input, Orientation::Landscape, false, None)?;
+    let frame = DashboardRenderer::new().render(&input, Orientation::Landscape, true, None)?;
     window.set_preview(frame)?;
     let (mut monitor, mut overlay, mut taskbar) = (false, false, false);
     window.set_output_state(monitor, overlay, taskbar)?;

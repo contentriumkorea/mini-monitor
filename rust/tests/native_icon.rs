@@ -28,3 +28,30 @@ fn invalid_icon_paths_and_sizes_do_not_crash_or_allocate_large_images() {
     assert!(load_icon(root.path(), IconKind::Cpu, 512).is_err());
     assert!(load_icon(root.path(), IconKind::Cpu, 32).is_err());
 }
+
+#[cfg(windows)]
+#[test]
+fn metric_symbols_are_distinct_smooth_and_transparent_at_small_sizes() {
+    use mini_monitor_native::native_icon::{metric_symbol, IconKind};
+    let mut images = std::collections::HashSet::new();
+    for kind in [
+        IconKind::Cpu,
+        IconKind::Ram,
+        IconKind::Gpu,
+        IconKind::Vram,
+        IconKind::Api,
+    ] {
+        let icon = metric_symbol(kind, 18).unwrap();
+        assert!(icon
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[3] > 0 && p[3] < 255));
+        assert!(icon.pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
+        assert!(
+            images.insert(icon.pixels),
+            "different metrics need distinguishable symbols"
+        );
+    }
+}

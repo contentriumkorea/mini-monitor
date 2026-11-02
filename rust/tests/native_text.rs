@@ -17,6 +17,25 @@ fn native_text_has_transparent_background_and_visible_glyphs() {
 
 #[cfg(windows)]
 #[test]
+fn small_readout_text_has_fine_grayscale_edges() {
+    let glyph =
+        mini_monitor_native::native_text::raster_text("CPU 87%", 14, [255, 255, 255]).unwrap();
+    let levels = glyph
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[3])
+        .collect::<std::collections::HashSet<_>>();
+    assert!(
+        levels.len() > 24,
+        "small glyph edges should have smooth fractional coverage, found {} levels",
+        levels.len()
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn native_text_does_not_leak_graphics_handles() {
     use mini_monitor_native::native_text::raster_text;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetGuiResources};

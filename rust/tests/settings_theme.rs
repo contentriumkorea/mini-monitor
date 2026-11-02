@@ -157,3 +157,76 @@ fn smoke_panel_is_neutral_rounded_and_releases_its_gdi_objects() {
         DeleteDC(dc);
     }
 }
+
+#[test]
+fn rounded_shapes_have_subpixel_coverage_instead_of_binary_stair_steps() {
+    unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = 48;
+        info.bmiHeader.biHeight = -32;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = std::ptr::null_mut();
+        let bmp = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let old = SelectObject(dc, bmp as _);
+        let black = CreateSolidBrush(0);
+        FillRect(
+            dc,
+            &RECT {
+                left: 0,
+                top: 0,
+                right: 48,
+                bottom: 32,
+            },
+            black,
+        );
+        DeleteObject(black as _);
+        mini_monitor_native::settings_theme::rounded_surface(
+            dc,
+            RECT {
+                left: 4,
+                top: 4,
+                right: 44,
+                bottom: 28,
+            },
+            12,
+            Some((255, 255)),
+            None,
+        );
+        GdiFlush();
+        let bytes = std::slice::from_raw_parts(bits as *const u8, 48 * 32 * 4);
+        let soft = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 8 && p[0] < 247)
+            .count();
+        let mut vertical_difference = 0u32;
+        for y in 0..16 {
+            for x in 0..48 {
+                vertical_difference +=
+                    u32::from(bytes[(y * 48 + x) * 4].abs_diff(bytes[((31 - y) * 48 + x) * 4]));
+            }
+        }
+        SelectObject(dc, old);
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+        assert!(
+            soft > 20,
+            "curved edges need fractional coverage, found {soft}"
+        );
+        assert!(
+            vertical_difference < 48 * 16 * 2,
+            "lower rounded edge must be as complete as upper edge: {vertical_difference}"
+        );
+    }
+}

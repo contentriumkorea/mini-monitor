@@ -254,6 +254,25 @@ fn compact_output_cards_and_footer_never_overlap_settings() {
             bounds(12).right <= bounds(13).left,
             "preview settings must fit side by side"
         );
+        let mut client = unsafe { std::mem::zeroed() };
+        let mut origin = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(
+                window.handle(),
+                &mut client,
+            );
+            windows_sys::Win32::Graphics::Gdi::ClientToScreen(window.handle(), &mut origin);
+        }
+        let group =
+            mini_monitor_native::settings_theme::MainLayout::new(client.right, client.bottom).api;
+        let expected = origin.y + (group.top + group.bottom) / 2;
+        for id in [9, 105] {
+            let b = bounds(id);
+            assert!(
+                ((b.top + b.bottom) / 2 - expected).abs() <= 1,
+                "API row must center within its card, control {id}"
+            );
+        }
     }
     unsafe {
         SetWindowPos(
@@ -271,6 +290,10 @@ fn compact_output_cards_and_footer_never_overlap_settings() {
         "short screens must keep account and API actions separate"
     );
     assert!(bounds(9).bottom + 8 <= bounds(204).top);
+    assert!(
+        bounds(203).bottom - bounds(203).top >= 24,
+        "brightness slider needs enough height for its native track and thumb"
+    );
 }
 
 #[test]
@@ -336,9 +359,96 @@ fn printing_transparent_labels_never_erases_the_preview_or_other_controls() {
         };
         ScreenToClient(window.handle(), &mut point);
         let label_shade = bytes[((point.y * r.right + point.x) * 4) as usize];
+        let button = GetDlgItem(window.handle(), 4);
+        let mut br = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(button, &mut br);
+        let mut bp = windows_sys::Win32::Foundation::POINT {
+            x: br.left,
+            y: br.top + 1,
+        };
+        ScreenToClient(window.handle(), &mut bp);
+        let corner = bytes[((bp.y * r.right + bp.x) * 4) as usize];
+        let surround = bytes[((bp.y * r.right + bp.x - 2) * 4) as usize];
+        let mut ar = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(
+            GetDlgItem(window.handle(), 204),
+            &mut ar,
+        );
+        let mut ap = windows_sys::Win32::Foundation::POINT {
+            x: ar.right - 2,
+            y: ar.top + 1,
+        };
+        ScreenToClient(window.handle(), &mut ap);
+        let startup_background = bytes[((ap.y * r.right + ap.x) * 4) as usize];
+        let startup_outside = bytes[((ap.y * r.right + ap.x + 4) * 4) as usize];
+        let mut lr = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(
+            GetDlgItem(window.handle(), 5),
+            &mut lr,
+        );
+        let mut lp = windows_sys::Win32::Foundation::POINT {
+            x: lr.left,
+            y: lr.top,
+        };
+        ScreenToClient(window.handle(), &mut lp);
+        let lh = lr.bottom - lr.top;
+        let lw = lr.right - lr.left;
+        let mut ink_top = lh;
+        let mut ink_bottom = 0;
+        for y in 3..lh - 3 {
+            for x in 10..lw - 10 {
+                let p = &bytes[((lp.y + y) * r.right + lp.x + x) as usize * 4..][..3];
+                if p.iter().all(|v| *v < 80) {
+                    ink_top = ink_top.min(y);
+                    ink_bottom = ink_bottom.max(y);
+                }
+            }
+        }
+        let mut checker = Vec::with_capacity(480 * 320 * 4);
+        for y in 0..320 {
+            for x in 0..480 {
+                checker.extend_from_slice(if (x + y) % 2 == 0 {
+                    &[255, 0, 0, 255]
+                } else {
+                    &[0, 0, 255, 255]
+                });
+            }
+        }
+        window
+            .set_preview(mini_monitor_native::dashboard_render::DashboardFrame {
+                width: 480,
+                height: 320,
+                pixels: checker,
+                detail_pages: vec![],
+            })
+            .unwrap();
+        UpdateWindow(window.handle());
+        assert_ne!(PrintWindow(window.handle(), dc, 1), 0);
+        GdiFlush();
+        let scaled_bytes =
+            std::slice::from_raw_parts(bits as *const u8, (r.right * r.bottom * 4) as usize);
+        let blended = scaled_bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 30 && p[2] > 30 && p[1] < 10)
+            .count();
         SelectObject(dc, old);
         DeleteObject(bmp as _);
         DeleteDC(dc);
+        assert!(
+            (lh - 1..=lh + 1).contains(&(ink_top + ink_bottom)),
+            "login visible glyphs must not bias upward: ink={ink_top}..{ink_bottom},height={lh}"
+        );
+        assert!(startup_background.abs_diff(startup_outside)<=1,"startup label must have no rectangular backdrop: {startup_background} vs {startup_outside}");
+        assert!(
+            blended > 1000,
+            "downsampled preview must blend detail instead of deleting pixels: {blended}"
+        );
+        assert!(
+            corner.abs_diff(surround) <= 3,
+            "rounded button corner must match parent, got {corner} vs {surround}"
+        );
         assert!(
             (30..50).contains(&label_shade),
             "label background must match its panel, not a black stripe: {label_shade}"

@@ -279,7 +279,7 @@ unsafe fn layout(hwnd: HWND) {
         (
             105,
             margin + 18,
-            groups.api.top + if compact { 9 } else { 14 },
+            (groups.api.top + groups.api.bottom - 22) / 2,
             104,
             22,
         ),
@@ -307,14 +307,14 @@ unsafe fn layout(hwnd: HWND) {
         (
             203,
             margin + 110,
-            device_y + if compact { 74 } else { 111 },
+            device_y + if compact { 80 } else { 111 },
             left - 128,
-            if compact { 18 } else { 24 },
+            24,
         ),
         (
             109,
             margin + 18,
-            device_y + if compact { 73 } else { 114 },
+            device_y + if compact { 79 } else { 114 },
             88,
             22,
         ),
@@ -349,7 +349,7 @@ unsafe fn layout(hwnd: HWND) {
         (
             9,
             margin + 128,
-            groups.api.top + if compact { 6 } else { 12 },
+            (groups.api.top + groups.api.bottom - 28) / 2,
             left - 146,
             28,
         ),
@@ -458,6 +458,14 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
                 .min(scaled(available_h, dpi) as f64 / frame.height as f64);
             let out_w = (frame.width as f64 * scale).round().max(1.0) as i32;
             let out_h = (frame.height as f64 * scale).round().max(1.0) as i32;
+            // The physical 480x320 frame is commonly reduced in this preview.
+            // Default COLORONCOLOR drops pixel rows/columns and breaks small glyphs.
+            let saved = windows_sys::Win32::Graphics::Gdi::SaveDC(dc);
+            windows_sys::Win32::Graphics::Gdi::SetStretchBltMode(
+                dc,
+                windows_sys::Win32::Graphics::Gdi::HALFTONE,
+            );
+            windows_sys::Win32::Graphics::Gdi::SetBrushOrgEx(dc, 0, 0, ptr::null_mut());
             StretchDIBits(
                 dc,
                 scaled(x, dpi) + (scaled(available_w, dpi) - out_w) / 2,
@@ -473,6 +481,9 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
                 DIB_RGB_COLORS,
                 SRCCOPY,
             );
+            if saved != 0 {
+                windows_sys::Win32::Graphics::Gdi::RestoreDC(dc, saved);
+            }
         }
     }
     EndPaint(hwnd, &paint);
@@ -602,6 +613,20 @@ unsafe extern "system" fn proc(
             } else {
                 None
             };
+            let mut client: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut client);
+            let dpi = (*state).dpi;
+            let groups = MainLayout::new(
+                client.right * 96 / dpi as i32,
+                client.bottom * 96 / dpi as i32,
+            );
+            theme::label_background(
+                item.hDC,
+                item.hwndItem,
+                hwnd,
+                &[groups.device, groups.account, groups.api, groups.preview],
+                dpi,
+            );
             theme::button(item, (*state).font, (*state).dpi, output, item.CtlID == 5);
             1
         }
@@ -788,7 +813,7 @@ impl SettingsWindow {
                     0,
                     wide("STATIC").as_ptr(),
                     wide(label).as_ptr(),
-                    WS_CHILD | WS_VISIBLE,
+                    WS_CHILD | WS_VISIBLE | 0x0200, // SS_CENTERIMAGE (Windows SDK static style)
                     0,
                     0,
                     1,

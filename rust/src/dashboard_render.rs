@@ -241,7 +241,7 @@ impl DashboardRenderer {
                 &mut frame,
                 card.rect,
                 value_x,
-                value_bottom.saturating_sub(number.height),
+                value_bottom.saturating_sub(number.ink_bottom()),
                 &number,
             );
             if let Some(percent) = percent {
@@ -249,7 +249,7 @@ impl DashboardRenderer {
                     &mut frame,
                     card.rect,
                     value_x + number.width,
-                    value_bottom.saturating_sub(percent.height),
+                    value_bottom.saturating_sub(percent.ink_bottom()),
                     &percent,
                 );
             }

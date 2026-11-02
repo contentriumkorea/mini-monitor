@@ -19,6 +19,7 @@ pub enum IconKind {
     Gpu,
     Vram,
     Codex,
+    Api,
 }
 impl IconKind {
     fn filename(self) -> &'static str {
@@ -28,6 +29,7 @@ impl IconKind {
             Self::Gpu => "gpu.png",
             Self::Vram => "vram.png",
             Self::Codex => "codex.png",
+            Self::Api => "api.png",
         }
     }
 }
@@ -36,6 +38,151 @@ pub struct IconRaster {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+}
+
+/// DPI-native geometric UI symbols. Codex keeps its existing supplied brand PNG.
+pub fn metric_symbol(kind: IconKind, side: u32) -> io::Result<IconRaster> {
+    use windows_sys::Win32::Graphics::GdiPlus::*;
+    if !(8..=256).contains(&side) || kind == IconKind::Codex {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid metric symbol",
+        ));
+    }
+    let mut token = 0;
+    let input = GdiplusStartupInput {
+        GdiplusVersion: 1,
+        DebugEventCallback: 0,
+        SuppressBackgroundThread: 0,
+        SuppressExternalCodecs: 1,
+    };
+    check(unsafe { GdiplusStartup(&mut token, &input, ptr::null_mut()) })?;
+    let _startup = Startup(token);
+    let mut bitmap = ptr::null_mut();
+    check(unsafe {
+        GdipCreateBitmapFromScan0(
+            side as i32,
+            side as i32,
+            0,
+            ARGB32,
+            ptr::null(),
+            &mut bitmap,
+        )
+    })?;
+    let image = Image(bitmap.cast());
+    let mut graphics = Graphics(ptr::null_mut());
+    check(unsafe { GdipGetImageGraphicsContext(image.0, &mut graphics.0) })?;
+    unsafe {
+        check(GdipGraphicsClear(graphics.0, 0))?;
+        check(GdipSetSmoothingMode(graphics.0, SmoothingModeAntiAlias8x8))?;
+        check(GdipSetPixelOffsetMode(graphics.0, PixelOffsetModeHalf))?;
+        check(GdipScaleWorldTransform(
+            graphics.0,
+            side as f32 / 24.0,
+            side as f32 / 24.0,
+            MatrixOrderAppend,
+        ))?;
+    }
+    struct Pen(*mut GpPen);
+    impl Drop for Pen {
+        fn drop(&mut self) {
+            unsafe {
+                GdipDeletePen(self.0);
+            }
+        }
+    }
+    let mut pen = Pen(ptr::null_mut());
+    check(unsafe { GdipCreatePen1(0xffeeeeee, 1.6, UnitPixel, &mut pen.0) })?;
+    unsafe {
+        check(GdipSetPenStartCap(pen.0, LineCapRound))?;
+        check(GdipSetPenEndCap(pen.0, LineCapRound))?;
+        check(GdipSetPenLineJoin(pen.0, LineJoinRound))?;
+    }
+    let line = |x1, y1, x2, y2| check(unsafe { GdipDrawLine(graphics.0, pen.0, x1, y1, x2, y2) });
+    let rect = |x, y, w, h| check(unsafe { GdipDrawRectangle(graphics.0, pen.0, x, y, w, h) });
+    match kind {
+        IconKind::Cpu => {
+            rect(6.0, 6.0, 12.0, 12.0)?;
+            rect(9.0, 9.0, 6.0, 6.0)?;
+            for v in [8.0, 12.0, 16.0] {
+                line(v, 3.0, v, 6.0)?;
+                line(v, 18.0, v, 21.0)?;
+                line(3.0, v, 6.0, v)?;
+                line(18.0, v, 21.0, v)?;
+            }
+        }
+        IconKind::Ram => {
+            rect(2.0, 6.0, 20.0, 11.0)?;
+            for x in [6.0, 10.0, 14.0, 18.0] {
+                line(x, 9.0, x, 13.0)?;
+            }
+            for x in [4.0, 8.0, 12.0, 16.0, 20.0] {
+                line(x, 17.0, x, 20.0)?;
+            }
+        }
+        IconKind::Gpu => {
+            rect(2.0, 6.0, 17.0, 12.0)?;
+            line(22.0, 4.0, 22.0, 20.0)?;
+            line(19.0, 9.0, 22.0, 9.0)?;
+            check(unsafe { GdipDrawEllipse(graphics.0, pen.0, 7.0, 8.0, 8.0, 8.0) })?;
+            for (x, y) in [(11.0, 8.0), (14.5, 14.0), (7.5, 14.0)] {
+                line(11.0, 12.0, x, y)?;
+            }
+        }
+        IconKind::Vram => {
+            rect(6.0, 3.0, 14.0, 15.0)?;
+            rect(10.0, 7.0, 6.0, 7.0)?;
+            line(3.0, 7.0, 3.0, 21.0)?;
+            line(3.0, 21.0, 16.0, 21.0)?;
+        }
+        IconKind::Api => {
+            line(7.0, 6.0, 2.0, 12.0)?;
+            line(2.0, 12.0, 7.0, 18.0)?;
+            line(17.0, 6.0, 22.0, 12.0)?;
+            line(22.0, 12.0, 17.0, 18.0)?;
+            line(14.0, 4.0, 10.0, 20.0)?;
+        }
+        IconKind::Codex => unreachable!(),
+    }
+    drop(pen);
+    drop(graphics);
+    let area = Rect {
+        X: 0,
+        Y: 0,
+        Width: side as i32,
+        Height: side as i32,
+    };
+    let mut data: BitmapData = unsafe { std::mem::zeroed() };
+    check(unsafe {
+        GdipBitmapLockBits(bitmap, &area, ImageLockModeRead as u32, ARGB32, &mut data)
+    })?;
+    let locked = Lock { bitmap, data };
+    if locked.data.Scan0.is_null() || locked.data.Stride.unsigned_abs() < side * 4 {
+        return Err(io::Error::other("invalid metric pixels"));
+    }
+    let mut pixels = Vec::with_capacity((side * side * 4) as usize);
+    for y in 0..side {
+        let row = unsafe {
+            std::slice::from_raw_parts(
+                (locked.data.Scan0 as *const u8).offset(y as isize * locked.data.Stride as isize),
+                (side * 4) as usize,
+            )
+        };
+        for p in row.as_chunks::<4>().0 {
+            let a = u16::from(p[3]);
+            pixels.extend_from_slice(&[
+                ((u16::from(p[0]) * a + 127) / 255) as u8,
+                ((u16::from(p[1]) * a + 127) / 255) as u8,
+                ((u16::from(p[2]) * a + 127) / 255) as u8,
+                p[3],
+            ]);
+        }
+    }
+    std::result::Result::Ok(IconRaster {
+        width: side,
+        height: side,
+        pixels,
+    })
 }
 struct Startup(usize);
 impl Drop for Startup {

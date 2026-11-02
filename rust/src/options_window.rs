@@ -200,6 +200,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             if item.CtlType == windows_sys::Win32::UI::Controls::ODT_COMBOBOX {
                 theme::combo(item, (*state).font, (*state).dpi);
             } else {
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut client);
+                let dpi = (*state).dpi;
+                let panel = RECT {
+                    left: 10,
+                    top: 10,
+                    right: client.right * 96 / dpi as i32 - 10,
+                    bottom: client.bottom * 96 / dpi as i32 - 96,
+                };
+                theme::label_background(item.hDC, item.hwndItem, hwnd, &[panel], dpi);
                 theme::button(item, (*state).font, (*state).dpi, None, wp == 1);
             }
             1
@@ -231,6 +241,22 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 SetTextColor(wp as _, GetSysColor(COLOR_WINDOWTEXT));
                 SetBkColor(wp as _, GetSysColor(COLOR_WINDOW));
                 return GetSysColorBrush(COLOR_WINDOW) as LRESULT;
+            }
+            if msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORBTN {
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut client);
+                let dpi = (*state).dpi;
+                let panel = RECT {
+                    left: 10,
+                    top: 10,
+                    right: client.right * 96 / dpi as i32 - 10,
+                    bottom: client.bottom * 96 / dpi as i32 - 96,
+                };
+                theme::label_background(wp as _, lp as HWND, hwnd, &[panel], dpi);
+                SetTextColor(wp as _, theme::TEXT);
+                return windows_sys::Win32::Graphics::Gdi::GetStockObject(
+                    windows_sys::Win32::Graphics::Gdi::NULL_BRUSH,
+                ) as LRESULT;
             }
             SetTextColor(wp as _, theme::TEXT);
             SetBkColor(wp as _, theme::PANEL);

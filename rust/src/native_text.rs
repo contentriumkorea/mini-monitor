@@ -15,6 +15,21 @@ pub struct TextRaster {
     pub height: u32,
     pub pixels: Vec<u8>,
 }
+impl TextRaster {
+    /// Exclusive bottom of the visible glyph, excluding the font cell's padding.
+    pub fn ink_bottom(&self) -> u32 {
+        (0..self.height)
+            .rev()
+            .find(|&y| {
+                self.pixels[(y * self.width * 4) as usize..((y + 1) * self.width * 4) as usize]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[3] >= 135)
+            })
+            .map_or(self.height, |y| y + 1)
+    }
+}
 
 struct Gdi {
     screen: HDC,
@@ -77,7 +92,7 @@ pub fn raster_text(text: &str, font_pixels: u32, color: [u8; 3]) -> io::Result<T
     let face: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
     gdi.font = unsafe {
         CreateFontW(
-            -(font_pixels as i32),
+            -(font_pixels as i32 * 2),
             0,
             0,
             0,
@@ -105,8 +120,8 @@ pub fn raster_text(text: &str, font_pixels: u32, color: [u8; 3]) -> io::Result<T
         == 0
         || size.cx <= 0
         || size.cy <= 0
-        || size.cx > 4096
-        || size.cy > 256
+        || size.cx > 8192
+        || size.cy > 512
     {
         return Err(io::Error::other("text dimensions unavailable"));
     }
@@ -156,20 +171,39 @@ pub fn raster_text(text: &str, font_pixels: u32, color: [u8; 3]) -> io::Result<T
         return Err(io::Error::other("text flush failed"));
     }
     let source = unsafe { std::slice::from_raw_parts(bits.cast::<u8>(), count) };
-    let mut pixels = Vec::with_capacity(count);
-    for px in source.as_chunks::<4>().0 {
-        let alpha = *px[..3].iter().max().unwrap_or(&0);
-        let multiply = |value: u8| ((u16::from(value) * u16::from(alpha) + 127) / 255) as u8;
-        pixels.extend_from_slice(&[
-            multiply(color[2]),
-            multiply(color[1]),
-            multiply(color[0]),
-            alpha,
-        ]);
+    // Supersample cached glyphs: GDI's native 16 coverage levels at small sizes
+    // are coarse on transparent readouts. Box-filter 2x coverage, not RGB subpixels.
+    let width = (size.cx as u32).div_ceil(2);
+    let height = (size.cy as u32).div_ceil(2);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let mut coverage = 0u32;
+            let mut samples = 0;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let sx = x * 2 + dx;
+                    let sy = y * 2 + dy;
+                    if sx < size.cx as u32 && sy < size.cy as u32 {
+                        let p = &source[((sy * size.cx as u32 + sx) * 4) as usize..][..3];
+                        coverage += u32::from(*p.iter().max().unwrap_or(&0));
+                        samples += 1;
+                    }
+                }
+            }
+            let alpha = ((coverage + samples / 2) / samples) as u8;
+            let multiply = |value: u8| ((u16::from(value) * u16::from(alpha) + 127) / 255) as u8;
+            pixels.extend_from_slice(&[
+                multiply(color[2]),
+                multiply(color[1]),
+                multiply(color[0]),
+                alpha,
+            ]);
+        }
     }
     Ok(TextRaster {
-        width: size.cx as u32,
-        height: size.cy as u32,
+        width,
+        height,
         pixels,
     })
 }

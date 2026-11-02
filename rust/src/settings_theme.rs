@@ -19,6 +19,142 @@ pub const PANEL: u32 = 0x242424;
 pub const TEXT: u32 = 0xeeeeee;
 pub const MUTED: u32 = 0xaaaaaa;
 
+/// # Safety
+/// `dc` must be a valid paint context on the calling thread.
+pub unsafe fn rounded_surface(
+    dc: HDC,
+    r: RECT,
+    radius: i32,
+    shades: Option<(u8, u8)>,
+    border: Option<u32>,
+) -> bool {
+    use windows_sys::Win32::Graphics::GdiPlus::*;
+    // One bounded process-wide GDI+ session; shapes themselves own no retained resources.
+    static SESSION: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    if SESSION
+        .get_or_init(|| {
+            let mut token = 0;
+            let input = GdiplusStartupInput {
+                GdiplusVersion: 1,
+                DebugEventCallback: 0,
+                SuppressBackgroundThread: 0,
+                SuppressExternalCodecs: 1,
+            };
+            (GdiplusStartup(&mut token, &input, std::ptr::null_mut()) == 0).then_some(token)
+        })
+        .is_none()
+    {
+        return false;
+    }
+    struct Shape {
+        graphics: *mut GpGraphics,
+        path: *mut GpPath,
+        brush: *mut GpBrush,
+        pen: *mut GpPen,
+    }
+    impl Drop for Shape {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.pen.is_null() {
+                    GdipDeletePen(self.pen);
+                }
+                if !self.brush.is_null() {
+                    GdipDeleteBrush(self.brush);
+                }
+                if !self.path.is_null() {
+                    GdipDeletePath(self.path);
+                }
+                if !self.graphics.is_null() {
+                    GdipDeleteGraphics(self.graphics);
+                }
+            }
+        }
+    }
+    let mut shape = Shape {
+        graphics: std::ptr::null_mut(),
+        path: std::ptr::null_mut(),
+        brush: std::ptr::null_mut(),
+        pen: std::ptr::null_mut(),
+    };
+    if GdipCreateFromHDC(dc, &mut shape.graphics) != 0
+        || GdipCreatePath(FillModeWinding, &mut shape.path) != 0
+    {
+        return false;
+    }
+    if GdipSetPageUnit(shape.graphics, UnitPixel) != 0
+        || GdipSetSmoothingMode(shape.graphics, SmoothingModeAntiAlias8x8) != 0
+        || GdipSetPixelOffsetMode(shape.graphics, PixelOffsetModeHalf) != 0
+    {
+        return false;
+    }
+    let mut clip: RECT = std::mem::zeroed();
+    GetClipBox(dc, &mut clip);
+    if GdipSetClipRectI(
+        shape.graphics,
+        clip.left,
+        clip.top,
+        clip.right - clip.left,
+        clip.bottom - clip.top,
+        CombineModeIntersect,
+    ) != 0
+    {
+        return false;
+    }
+    let x = r.left as f32 + 0.5;
+    let y = r.top as f32 + 0.5;
+    let w = (r.right - r.left - 1).max(1) as f32;
+    let h = (r.bottom - r.top - 1).max(1) as f32;
+    let d = (radius * 2).max(1) as f32;
+    let d = d.min(w).min(h);
+    for (ax, ay, start) in [
+        (x, y, 180.0),
+        (x + w - d, y, 270.0),
+        (x + w - d, y + h - d, 0.0),
+        (x, y + h - d, 90.0),
+    ] {
+        if GdipAddPathArc(shape.path, ax, ay, d, d, start, 90.0) != 0 {
+            return false;
+        }
+    }
+    if GdipClosePathFigure(shape.path) != 0 {
+        return false;
+    }
+    if let Some((top, bottom)) = shades {
+        let area = Rect {
+            X: r.left,
+            Y: r.top,
+            Width: r.right - r.left,
+            Height: r.bottom - r.top,
+        };
+        let mut brush = std::ptr::null_mut();
+        if GdipCreateLineBrushFromRectI(
+            &area,
+            0xff000000 | (u32::from(top) * 0x010101),
+            0xff000000 | (u32::from(bottom) * 0x010101),
+            LinearGradientModeVertical,
+            WrapModeTile,
+            &mut brush,
+        ) != 0
+        {
+            return false;
+        }
+        shape.brush = brush.cast();
+        if GdipFillPath(shape.graphics, shape.brush, shape.path) != 0 {
+            return false;
+        }
+    }
+    if let Some(color) = border {
+        // COLORREF is BGR; GDI+ expects ARGB.
+        let argb = 0xff000000 | ((color & 255) << 16) | (color & 0xff00) | ((color >> 16) & 255);
+        if GdipCreatePen1(argb, 1.0, UnitPixel, &mut shape.pen) != 0
+            || GdipDrawPath(shape.graphics, shape.pen, shape.path) != 0
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Optional system colors: window, text, highlight, highlight text, disabled text.
 pub fn combo_palette(system: Option<[u32; 5]>, disabled: bool, selected: bool) -> (u32, u32) {
     let [background, foreground, highlight, highlighted_text, gray] =
@@ -228,15 +364,21 @@ unsafe fn paint_check(hwnd: HWND, dc: HDC, background: u32) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let s = |n| scaled(n, dpi);
     let hc = high_contrast();
-    fill(
-        dc,
-        r,
-        if hc {
-            GetSysColor(COLOR_WINDOW)
+    if hc {
+        fill(dc, r, GetSysColor(COLOR_WINDOW));
+    } else {
+        let parent = GetParent(hwnd);
+        if parent.is_null() {
+            fill(dc, r, background);
         } else {
-            background
-        },
-    );
+            // Ask the same parent paint path as native labels, rather than
+            // stamping a flat rectangle over its gradient surface.
+            let brush = SendMessageW(parent, WM_CTLCOLORBTN, dc as usize, hwnd as isize) as HBRUSH;
+            if !brush.is_null() && !std::ptr::eq(brush, GetStockObject(NULL_BRUSH)) {
+                FillRect(dc, &r, brush);
+            }
+        }
+    }
     let checked = SendMessageW(hwnd, BM_GETCHECK, 0, 0) == 1;
     let side = s(15);
     let top = (r.bottom - side) / 2;
@@ -446,16 +588,16 @@ impl MainLayout {
     pub fn new(width: i32, height: i32) -> Self {
         let compact = height < 570;
         let left = ((width - 56) * 40 / 100).clamp(300, 400);
-        let footer_top = height - if compact { 40 } else { 48 };
+        let footer_top = height - if compact { 32 } else { 48 };
         let top = if compact { 112 } else { 166 };
         let space = footer_top - 16 - top;
         let device_h = if compact {
-            96
+            108
         } else {
             (space * 42 / 100).clamp(136, 164)
         };
         let account_h = if compact {
-            94
+            90
         } else {
             (space * 38 / 100).clamp(126, 148)
         };
@@ -582,6 +724,9 @@ pub(crate) unsafe fn gradient(dc: HDC, r: RECT, top: u8, bottom: u8) {
     );
 }
 pub(crate) unsafe fn stroke(dc: HDC, r: RECT, radius: i32, color: u32) {
+    if !high_contrast() && rounded_surface(dc, r, radius, None, Some(color)) {
+        return;
+    }
     let pen = CreatePen(
         PS_SOLID,
         1,
@@ -607,6 +752,9 @@ pub(crate) unsafe fn stroke(dc: HDC, r: RECT, radius: i32, color: u32) {
 pub unsafe fn paint_panel(dc: HDC, r: RECT, radius: i32) {
     if high_contrast() {
         fill(dc, r, GetSysColor(COLOR_WINDOW));
+        return;
+    }
+    if rounded_surface(dc, r, radius, Some((43, 31)), Some(0x464646)) {
         return;
     }
     let saved = SaveDC(dc);
@@ -656,8 +804,121 @@ unsafe fn raw_text(dc: HDC, font: HFONT, r: RECT, label: &str, color: u32, flags
     SetTextColor(dc, color);
     let mut r = r;
     let value: Vec<u16> = label.encode_utf16().collect();
+    if flags & DT_VCENTER != 0 {
+        let shift = caption_ink_offset(dc, font, &value, r.bottom - r.top);
+        r.top += shift;
+        r.bottom += shift;
+    }
     DrawTextW(dc, value.as_ptr(), value.len() as i32, &mut r, flags);
     SelectObject(dc, previous);
+}
+
+unsafe fn caption_ink_offset(dc: HDC, font: HFONT, value: &[u16], height: i32) -> i32 {
+    use std::{cell::RefCell, collections::VecDeque};
+    type Entry = ((usize, i32, i32, Vec<u16>), i32);
+    thread_local! {static CACHE: RefCell<VecDeque<Entry>>=const {RefCell::new(VecDeque::new())};}
+    let mut metrics: TEXTMETRICW = std::mem::zeroed();
+    if GetTextMetricsW(dc, &mut metrics) == 0 {
+        return 0;
+    }
+    let key = (font as usize, metrics.tmHeight, height, value.to_vec());
+    if let Some(offset) =
+        CACHE.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| *v))
+    {
+        return offset;
+    }
+    let mut extent: windows_sys::Win32::Foundation::SIZE = std::mem::zeroed();
+    if GetTextExtentPoint32W(dc, value.as_ptr(), value.len() as i32, &mut extent) == 0
+        || extent.cx <= 0
+        || extent.cx > 8192
+        || extent.cy <= 0
+        || extent.cy > 512
+    {
+        return 0;
+    }
+    let memory = CreateCompatibleDC(dc);
+    if memory.is_null() {
+        return 0;
+    }
+    let mut info: BITMAPINFO = std::mem::zeroed();
+    info.bmiHeader = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: extent.cx,
+        biHeight: -extent.cy,
+        biPlanes: 1,
+        biBitCount: 32,
+        ..std::mem::zeroed()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(
+        memory,
+        &info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        std::ptr::null_mut(),
+        0,
+    );
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
+        DeleteDC(memory);
+        return 0;
+    }
+    let old_bitmap = SelectObject(memory, bitmap as _);
+    let old_font = SelectObject(memory, font as _);
+    let count = (extent.cx * extent.cy * 4) as usize;
+    std::ptr::write_bytes(bits as *mut u8, 0, count);
+    SetTextColor(memory, 0xffffff);
+    SetBkMode(memory, TRANSPARENT as i32);
+    let mut line = RECT {
+        left: 0,
+        top: 0,
+        right: extent.cx,
+        bottom: extent.cy,
+    };
+    DrawTextW(
+        memory,
+        value.as_ptr(),
+        value.len() as i32,
+        &mut line,
+        DT_LEFT | DT_TOP | DT_SINGLELINE,
+    );
+    GdiFlush();
+    let bytes = std::slice::from_raw_parts(bits as *const u8, count);
+    let mut top = extent.cy;
+    let mut bottom = -1;
+    for y in 0..extent.cy {
+        let row = &bytes[(y * extent.cx * 4) as usize..((y + 1) * extent.cx * 4) as usize];
+        if row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3].iter().any(|v| *v > 160))
+        {
+            top = top.min(y);
+            bottom = y;
+        }
+    }
+    SelectObject(memory, old_font);
+    SelectObject(memory, old_bitmap);
+    DeleteObject(bitmap as _);
+    DeleteDC(memory);
+    // Center visible ink, not the font cell's asymmetric ascent/descent padding.
+    // At a half-pixel tie use the lower integer baseline rather than biasing up.
+    let offset = if bottom >= top {
+        (height - top - bottom) / 2 - (height - extent.cy) / 2
+    } else {
+        0
+    };
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 64 {
+            c.pop_front();
+        }
+        c.push_back((key, offset));
+    });
+    offset
 }
 pub(crate) unsafe fn button(
     item: &DRAWITEMSTRUCT,
@@ -674,7 +935,6 @@ pub(crate) unsafe fn button(
     if high_contrast() {
         fill(dc, r, GetSysColor(COLOR_BTNFACE));
     } else {
-        fill(dc, r, BASE);
         paint_panel(dc, r, s(if output.is_some() { 14 } else { 8 }));
         if pressed {
             let inset = RECT {
@@ -683,7 +943,7 @@ pub(crate) unsafe fn button(
                 right: r.right - 2,
                 bottom: r.bottom - 2,
             };
-            fill(dc, inset, 0x383838);
+            rounded_surface(dc, inset, s(7), Some((56, 56)), None);
         }
     }
     let mut label = [0u16; 160];
@@ -724,42 +984,68 @@ pub(crate) unsafe fn button(
             right: r.right - s(15),
             bottom: (r.bottom + s(22)) / 2,
         };
-        let brush = CreateSolidBrush(if enabled { 0xdcdcdc } else { 0x505050 });
-        let pen = CreatePen(PS_SOLID, 1, if enabled { 0xf0f0f0 } else { 0x646464 });
-        if !brush.is_null() && !pen.is_null() {
-            let b = SelectObject(dc, brush as _);
-            let p = SelectObject(dc, pen as _);
-            RoundRect(
-                dc,
-                switch.left,
-                switch.top,
-                switch.right,
-                switch.bottom,
-                s(22),
-                s(22),
-            );
-            SelectObject(dc, p);
-            SelectObject(dc, b);
+        if !rounded_surface(
+            dc,
+            switch,
+            s(11),
+            Some(if enabled { (220, 220) } else { (80, 80) }),
+            Some(if enabled { 0xf0f0f0 } else { 0x646464 }),
+        ) {
+            let brush = CreateSolidBrush(if enabled { 0xdcdcdc } else { 0x505050 });
+            let pen = CreatePen(PS_SOLID, 1, if enabled { 0xf0f0f0 } else { 0x646464 });
+            if !brush.is_null() && !pen.is_null() {
+                let b = SelectObject(dc, brush as _);
+                let p = SelectObject(dc, pen as _);
+                RoundRect(
+                    dc,
+                    switch.left,
+                    switch.top,
+                    switch.right,
+                    switch.bottom,
+                    s(22),
+                    s(22),
+                );
+                SelectObject(dc, p);
+                SelectObject(dc, b);
+            }
+            if !brush.is_null() {
+                DeleteObject(brush as _);
+            }
+            if !pen.is_null() {
+                DeleteObject(pen as _);
+            }
         }
-        if !brush.is_null() {
-            DeleteObject(brush as _);
-        }
-        if !pen.is_null() {
-            DeleteObject(pen as _);
-        }
-        let knob = CreateSolidBrush(if enabled { 0x202020 } else { 0xbababa });
-        if !knob.is_null() {
-            let old = SelectObject(dc, knob as _);
-            let pen = SelectObject(dc, GetStockObject(NULL_PEN));
-            let x = if enabled {
-                switch.right - s(19)
-            } else {
-                switch.left + s(3)
-            };
-            Ellipse(dc, x, switch.top + s(3), x + s(16), switch.bottom - s(3));
-            SelectObject(dc, pen);
-            SelectObject(dc, old);
-            DeleteObject(knob as _);
+        let knob_x = if enabled {
+            switch.right - s(19)
+        } else {
+            switch.left + s(3)
+        };
+        if !rounded_surface(
+            dc,
+            RECT {
+                left: knob_x,
+                top: switch.top + s(3),
+                right: knob_x + s(16),
+                bottom: switch.bottom - s(3),
+            },
+            s(8),
+            Some(if enabled { (32, 32) } else { (186, 186) }),
+            None,
+        ) {
+            let knob = CreateSolidBrush(if enabled { 0x202020 } else { 0xbababa });
+            if !knob.is_null() {
+                let old = SelectObject(dc, knob as _);
+                let pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                let x = if enabled {
+                    switch.right - s(19)
+                } else {
+                    switch.left + s(3)
+                };
+                Ellipse(dc, x, switch.top + s(3), x + s(16), switch.bottom - s(3));
+                SelectObject(dc, pen);
+                SelectObject(dc, old);
+                DeleteObject(knob as _);
+            }
         }
     } else {
         if primary && !disabled && !high_contrast() {
@@ -769,21 +1055,23 @@ pub(crate) unsafe fn button(
                 right: r.right - 1,
                 bottom: r.bottom - 1,
             };
-            let region = CreateRoundRectRgn(
-                inner.left,
-                inner.top,
-                inner.right,
-                inner.bottom,
-                s(16),
-                s(16),
-            );
-            let save = SaveDC(dc);
-            if !region.is_null() {
-                ExtSelectClipRgn(dc, region, RGN_AND);
-                gradient(dc, inner, 239, 210);
-                DeleteObject(region as _);
+            if !rounded_surface(dc, inner, s(8), Some((239, 210)), None) {
+                let region = CreateRoundRectRgn(
+                    inner.left,
+                    inner.top,
+                    inner.right,
+                    inner.bottom,
+                    s(16),
+                    s(16),
+                );
+                let save = SaveDC(dc);
+                if !region.is_null() {
+                    ExtSelectClipRgn(dc, region, RGN_AND);
+                    gradient(dc, inner, 239, 210);
+                    DeleteObject(region as _);
+                }
+                RestoreDC(dc, save);
             }
-            RestoreDC(dc, save);
         }
         raw_text(
             dc,

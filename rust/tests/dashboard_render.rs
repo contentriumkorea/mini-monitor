@@ -116,6 +116,58 @@ fn dashboard_rejects_duplicate_or_unbounded_input() {
 
 #[cfg(windows)]
 #[test]
+fn percent_ink_bottom_matches_large_digits_in_both_orientations() {
+    use mini_monitor_native::{
+        dashboard_layout::{layout, CardKind, Orientation},
+        dashboard_render::*,
+    };
+    let input = DashboardInput {
+        port: String::new(),
+        entries: vec![DashboardEntry {
+            kind: CardKind::Cpu,
+            value: "81%".into(),
+            details: vec![],
+            gauge: None,
+        }],
+    };
+    for orientation in [Orientation::Landscape, Orientation::Portrait] {
+        let frame = DashboardRenderer::new()
+            .render(&input, orientation, false, None)
+            .unwrap();
+        let card = layout(orientation, false)
+            .cards
+            .into_iter()
+            .find(|c| c.kind == CardKind::Cpu)
+            .unwrap()
+            .rect;
+        let end = card.x + card.width - 18;
+        let percent_width = mini_monitor_native::native_text::raster_text("%", 19, [244, 247, 252])
+            .unwrap()
+            .width;
+        let split = end - percent_width;
+        let bottom = |left, right| {
+            (card.y + 35..card.y + card.height)
+                .rev()
+                .find(|y| {
+                    (left..right).any(|x| {
+                        let i = ((y * frame.width + x) * 4) as usize;
+                        frame.pixels[i] > 140
+                            && frame.pixels[i + 1] > 140
+                            && frame.pixels[i + 2] > 140
+                    })
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            bottom(card.x + card.width / 2, split),
+            bottom(split, end),
+            "digits and percent need a common visible bottom"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn long_hardware_names_can_be_paged_instead_of_disappearing() {
     use mini_monitor_native::dashboard_layout::{CardKind, Orientation};
     use mini_monitor_native::dashboard_render::{

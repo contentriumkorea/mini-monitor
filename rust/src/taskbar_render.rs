@@ -1,6 +1,6 @@
 //! Transparent taskbar readouts with bounded glyph and icon caches.
 use crate::{
-    native_icon::{load_icon, IconKind, IconRaster},
+    native_icon::{load_icon, metric_symbol, IconKind, IconRaster},
     native_text::{raster_text, TextRaster},
 };
 use std::{
@@ -37,7 +37,7 @@ impl MetricKind {
             Self::Gpu => Some(IconKind::Gpu),
             Self::Vram => Some(IconKind::Vram),
             Self::Codex => Some(IconKind::Codex),
-            Self::Api => None,
+            Self::Api => Some(IconKind::Api),
         }
     }
 }
@@ -136,7 +136,11 @@ impl TaskbarRenderer {
         {
             return Ok(Arc::clone(icon));
         }
-        let icon = Arc::new(load_icon(root, kind, side)?);
+        let icon = Arc::new(if kind == IconKind::Codex {
+            load_icon(root, kind, side)?
+        } else {
+            metric_symbol(kind, side)?
+        });
         if self.icons.len() >= 24 {
             self.icons.pop_front();
         }
@@ -268,36 +272,7 @@ impl TaskbarRenderer {
     }
 
     fn api_icon(&mut self, side: u32) -> io::Result<IconRaster> {
-        let glyph = self.glyph("$", (side * 7 / 10).clamp(8, 96), [255, 255, 255])?;
-        let mut pixels = vec![0; side as usize * side as usize * 4];
-        let radius = side as i32 - 2;
-        let inner = (radius - (side as i32 / 8).max(2)).max(0);
-        for y in 0..side {
-            for x in 0..side {
-                let dx = 2 * x as i32 + 1 - side as i32;
-                let dy = 2 * y as i32 + 1 - side as i32;
-                let distance = dx * dx + dy * dy;
-                if distance <= radius * radius && distance >= inner * inner {
-                    let offset = ((y * side + x) * 4) as usize;
-                    pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-                }
-            }
-        }
-        let x = side.saturating_sub(glyph.width) / 2;
-        blit(
-            &mut pixels,
-            side,
-            side,
-            x,
-            glyph.width,
-            glyph.height,
-            &glyph.pixels,
-        );
-        Ok(IconRaster {
-            width: side,
-            height: side,
-            pixels,
-        })
+        metric_symbol(IconKind::Api, side)
     }
 }
 
