@@ -265,26 +265,55 @@ impl DashboardRenderer {
             }
             if let Some(entry) = entry {
                 let left = card.rect.x + 9;
+                let model = if matches!(card.kind, CardKind::Cpu | CardKind::Gpu) {
+                    entry.details.first().filter(|value| !value.is_empty())
+                } else {
+                    None
+                };
+                if let Some(model) = model {
+                    let glyph = self.text.glyph(model, 10, [166, 178, 192])?;
+                    let fitted = fit_model_width(&glyph, value_right.saturating_sub(left));
+                    text(
+                        &mut frame,
+                        card.rect,
+                        left,
+                        card.rect.y + 27,
+                        fitted.as_ref().unwrap_or(&glyph),
+                    );
+                }
+                let details = &entry.details[usize::from(model.is_some())..];
+                let lines_per_page = if model.is_some() { 2 } else { 3 };
                 let detail_right = value_right
                     .saturating_sub(detail_value_width)
                     .max(card.rect.x + 6);
                 let max_width = detail_right.saturating_sub(left + 5);
                 if max_width >= 20 {
                     let mut all_lines = Vec::new();
-                    for detail in &entry.details {
+                    for detail in details {
                         all_lines.extend(self.wrapped(detail, max_width)?);
                     }
-                    let pages = all_lines.len().div_ceil(3);
+                    let pages = all_lines
+                        .len()
+                        .div_ceil(lines_per_page)
+                        .max(usize::from(model.is_some()));
                     if pages > 0 {
                         frame.detail_pages.push((card.kind, pages));
-                        let start = (self.detail_page % pages) * 3;
-                        for (line, part) in all_lines.iter().skip(start).take(3).enumerate() {
+                        let start = (self.detail_page % pages) * lines_per_page;
+                        for (line, part) in all_lines
+                            .iter()
+                            .skip(start)
+                            .take(lines_per_page)
+                            .enumerate()
+                        {
                             let glyph = self.text.glyph(part, 10, [166, 178, 192])?;
                             text(
                                 &mut frame,
                                 card.rect,
                                 left,
-                                card.rect.y + 27 + line as u32 * 12,
+                                card.rect.y
+                                    + 27
+                                    + u32::from(model.is_some()) * 14
+                                    + line as u32 * 12,
                                 &glyph,
                             );
                         }
@@ -294,6 +323,46 @@ impl DashboardRenderer {
         }
         Ok(frame)
     }
+}
+
+/// Preserve the entire hardware name on one row. Most names use the original
+/// glyph; unusually long names are area-downsampled proportionally, never clipped.
+fn fit_model_width(glyph: &TextRaster, max_width: u32) -> Option<TextRaster> {
+    if glyph.width <= max_width || max_width == 0 {
+        return None;
+    }
+    let height = ((u64::from(glyph.height) * u64::from(max_width) + u64::from(glyph.width) / 2)
+        / u64::from(glyph.width))
+    .max(1) as u32;
+    let mut pixels = vec![0; (max_width * height * 4) as usize];
+    let sx = f64::from(glyph.width) / f64::from(max_width);
+    let sy = f64::from(glyph.height) / f64::from(height);
+    for y in 0..height {
+        for x in 0..max_width {
+            let (x0, x1) = (f64::from(x) * sx, f64::from(x + 1) * sx);
+            let (y0, y1) = (f64::from(y) * sy, f64::from(y + 1) * sy);
+            let mut sums = [0.0; 4];
+            for row in y0.floor() as u32..(y1.ceil() as u32).min(glyph.height) {
+                for col in x0.floor() as u32..(x1.ceil() as u32).min(glyph.width) {
+                    let weight = (x1.min(f64::from(col + 1)) - x0.max(f64::from(col)))
+                        * (y1.min(f64::from(row + 1)) - y0.max(f64::from(row)));
+                    let source = ((row * glyph.width + col) * 4) as usize;
+                    for (c, sum) in sums.iter_mut().enumerate() {
+                        *sum += f64::from(glyph.pixels[source + c]) * weight;
+                    }
+                }
+            }
+            let target = ((y * max_width + x) * 4) as usize;
+            for (c, sum) in sums.iter().enumerate() {
+                pixels[target + c] = (sum / (sx * sy)).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Some(TextRaster {
+        width: max_width,
+        height,
+        pixels,
+    })
 }
 
 fn wrap(cache: &mut TaskbarRenderer, text_value: &str, max_width: u32) -> io::Result<Vec<String>> {

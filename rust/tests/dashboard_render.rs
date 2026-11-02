@@ -168,26 +168,87 @@ fn percent_ink_bottom_matches_large_digits_in_both_orientations() {
 
 #[cfg(windows)]
 #[test]
-fn long_hardware_names_can_be_paged_instead_of_disappearing() {
+fn hardware_models_stay_on_one_line_without_paging_or_wrapping() {
     use mini_monitor_native::dashboard_layout::{CardKind, Orientation};
     use mini_monitor_native::dashboard_render::{
         DashboardEntry, DashboardInput, DashboardRenderer,
     };
-    let input=DashboardInput {port:"".into(),entries:vec![DashboardEntry {kind:CardKind::Gpu,value:"100%".into(),
-        details:vec!["Example NVIDIA GeForce RTX Ultra Long Laptop Workstation Graphics Adapter Name 12345".into()],gauge:Some(100.0)}]};
-    let mut renderer = DashboardRenderer::new();
-    let first = renderer
-        .render(&input, Orientation::Landscape, false, None)
-        .unwrap();
-    assert!(first
-        .detail_pages
-        .iter()
-        .any(|(kind, pages)| *kind == CardKind::Gpu && *pages > 1));
-    renderer.set_detail_page(1);
-    let second = renderer
-        .render(&input, Orientation::Landscape, false, None)
-        .unwrap();
-    assert_ne!(first.pixels, second.pixels);
+    for orientation in [Orientation::Landscape, Orientation::Portrait] {
+        for (kind, model) in [
+            (CardKind::Gpu, "NVIDIA GeForce RTX 5070 Ti"),
+            (CardKind::Gpu, "Example NVIDIA GeForce RTX Ultra Long Laptop Workstation Graphics Adapter Name 12345"),
+            (CardKind::Cpu, "Intel(R) Core(TM) i7-14700K"),
+        ] {
+            let input = DashboardInput {port:"".into(), entries:vec![DashboardEntry {
+                kind, value:"100%".into(), details:vec![model.into()], gauge:None,
+            }]};
+            let mut renderer = DashboardRenderer::new();
+            let first = renderer.render(&input, orientation, true, None).unwrap();
+            assert_eq!(first.detail_pages.iter().find(|(k, _)| *k == kind).unwrap().1, 1,
+                "the complete model must stay on the current frame");
+            let card = mini_monitor_native::dashboard_layout::layout(orientation, true)
+                .cards.into_iter().find(|c| c.kind == kind).unwrap().rect;
+            let has_detail_ink = |top, bottom| (top..bottom).any(|y| {
+                (card.x + 9..card.x + card.width - 18).any(|x| {
+                    let i = ((y * first.width + x) * 4) as usize;
+                    let p = &first.pixels[i..i+3];
+                    // Detail ink is distinctly blue-grey; antialiased near-white
+                    // percentage edges also carry a slight blue tint.
+                    p[0] > 90 && p[0] >= p[1].saturating_add(10) && p[1] >= p[2].saturating_add(8)
+                })
+            });
+            assert!(has_detail_ink(card.y + 27, card.y + 41), "model line must be visible");
+            assert!(!has_detail_ink(card.y + 41, card.y + 65), "model suffix must never wrap below its row: {model}");
+            renderer.set_detail_page(1);
+            let second = renderer.render(&input, orientation, true, None).unwrap();
+            assert_eq!(first.pixels, second.pixels, "model must never be paged");
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn complete_gpu_name_including_ti_matches_the_full_unabridged_glyph() {
+    use mini_monitor_native::{
+        dashboard_layout::{layout, CardKind, Orientation},
+        dashboard_render::*,
+    };
+    let model = "NVIDIA GeForce RTX 5070 Ti";
+    let glyph = mini_monitor_native::native_text::raster_text(model, 10, [166, 178, 192]).unwrap();
+    for orientation in [Orientation::Landscape, Orientation::Portrait] {
+        let input = DashboardInput {
+            port: String::new(),
+            entries: vec![DashboardEntry {
+                kind: CardKind::Gpu,
+                value: "99%".into(),
+                details: vec![model.into()],
+                gauge: None,
+            }],
+        };
+        let frame = DashboardRenderer::new()
+            .render(&input, orientation, true, None)
+            .unwrap();
+        let card = layout(orientation, true)
+            .cards
+            .into_iter()
+            .find(|c| c.kind == CardKind::Gpu)
+            .unwrap()
+            .rect;
+        assert!(glyph.width < card.width - 27 && glyph.height <= 14);
+        for y in 0..glyph.height {
+            for x in 0..glyph.width {
+                let src = ((y * glyph.width + x) * 4) as usize;
+                let dst = (((card.y + 27 + y) * frame.width + card.x + 9 + x) * 4) as usize;
+                let alpha = u16::from(glyph.pixels[src + 3]);
+                for (channel, background) in [32u16, 27, 24].into_iter().enumerate() {
+                    let expected = (u16::from(glyph.pixels[src + channel])
+                        + (background * (255 - alpha) + 127) / 255)
+                        .min(255) as u8;
+                    assert_eq!(frame.pixels[dst+channel],expected,"complete model glyph, including suffix Ti, must be drawn at one y: {x},{y}");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]

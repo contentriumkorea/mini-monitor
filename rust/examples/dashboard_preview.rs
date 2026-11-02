@@ -20,7 +20,8 @@ fn main() -> std::io::Result<()> {
         details: details.into_iter().map(str::to_owned).collect(),
         gauge,
     };
-    let input = DashboardInput {
+    let with_api = std::env::args().any(|arg| arg == "--api");
+    let mut input = DashboardInput {
         port: "COM3".into(),
         entries: vec![
             entry(
@@ -50,7 +51,15 @@ fn main() -> std::io::Result<()> {
             ),
         ],
     };
-    let frame = DashboardRenderer::new().render(&input, orientation, false, None)?;
+    if with_api {
+        input.entries.push(entry(
+            K::Api,
+            "90%",
+            vec!["TOTAL $25.00", "USED $2.50"],
+            Some(90.0),
+        ));
+    }
+    let frame = DashboardRenderer::new().render(&input, orientation, with_api, None)?;
     let bytes = frame.pixels.len() as u32;
     let mut file = std::fs::File::create(output)?;
     file.write_all(b"BM")?;

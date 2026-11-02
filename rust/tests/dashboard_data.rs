@@ -79,7 +79,7 @@ fn live_dashboard_uses_real_values_and_preserves_exact_codex_credit() {
         .contains(&"CREDITS 60,518".into()));
     assert_eq!(get(CardKind::Api).value, "90%");
     assert_eq!(get(CardKind::Api).gauge, Some(90.0));
-    assert!(get(CardKind::Api).details.contains(&"USED $10.00".into()));
+    assert_eq!(get(CardKind::Api).details, ["TOTAL $100.00", "USED $10.00"]);
 }
 
 #[test]

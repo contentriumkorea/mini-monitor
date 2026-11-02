@@ -173,8 +173,8 @@ pub fn dashboard_input(
     let api_details = budget
         .map(|v| {
             vec![
-                format!("USED {}", usd(usd_cents(v.spent_units))),
                 format!("TOTAL {}", usd(u128::from(v.total_cents))),
+                format!("USED {}", usd(usd_cents(v.spent_units))),
             ]
         })
         .unwrap_or_default();

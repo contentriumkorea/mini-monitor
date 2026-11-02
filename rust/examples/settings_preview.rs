@@ -35,7 +35,7 @@ fn main() -> std::io::Result<()> {
             }
             mini_monitor_native::dashboard_layout::CardKind::Vram => vec!["2.8 / 16.0 GiB".into()],
             mini_monitor_native::dashboard_layout::CardKind::Api => {
-                vec!["USED $10.00".into(), "TOTAL $100.00".into()]
+                vec!["TOTAL $100.00".into(), "USED $10.00".into()]
             }
             _ => vec!["7D LEFT".into(), "CREDITS 10,000".into()],
         };
