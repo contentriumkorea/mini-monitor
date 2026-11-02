@@ -75,3 +75,13 @@ The user confirmed the final model row/API order displayed normally and explicit
 - Preserve older public releases: the tracked0.3.0 release document still uses its fixed package URL, and complete legacy-client/fixed-link dependencies remain unknown. Separate installer-v1/v2 channels are retained. This follows the compatibility exception to retiring old releases; no tag or release deletion is authorized.
 
 Public post-publication acquisition/update checks are recorded separately after publication; the preceding checks alone do not prove public download success.
+
+## Public verification result
+
+- Published stable Latest v0.3.4: https://github.com/contentriumkorea/mini-monitor/releases/tag/v0.3.4 . Release tag points to publication commit f1f3505; no existing tag or release was overwritten.
+- Anonymous Latest resolves v0.3.4 with exactly three assets: Mini-Monitor.zip (89,293,783 bytes), update-v2-manifest.json and update-v2-manifest.sig. ZIP SHA256 matches the locally installed/confirmed candidate above.
+- The native application's public update client downloaded the public metadata/archive without account credentials, verified signature/inventory, extracted to an isolated temporary stage and ran CLI0.3.4 successfully. Versions0.3.0/0.3.1/0.3.2/0.3.3 detect it as newer;0.3.4 stays current.
+- The actual published installer-v2 executable was downloaded unchanged (474,112 bytes; same SHA256 and asset modification time). Its own ReleaseClient resolved public Latest0.3.4, verified signature, downloaded and extracted the real package and ran the staged CLI successfully. This acquisition probe made no app/registry/shortcut installation changes; the installed PC already had the identical package from the verified local update flow.
+- The executable acquired by the fixed installer matches the current installed app byte-for-byte. The user's app was not restarted or downgraded during these public checks.
+- Seven focused packaging/publication tests, native release-client build, Clippy and formatting/diff checks passed. The earlier257 native tests and physical visual confirmation apply to the unchanged application binary.
+- Existing fixed installer and older release links remain public per the documented compatibility exception. No release/tag/asset deletion, installer replacement or automatic-start/account change was performed.
