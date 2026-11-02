@@ -189,3 +189,71 @@ fn long_hardware_names_can_be_paged_instead_of_disappearing() {
         .unwrap();
     assert_ne!(first.pixels, second.pixels);
 }
+
+#[cfg(windows)]
+#[test]
+fn gpu_model_lines_do_not_move_when_usage_changes_between_one_and_two_digits() {
+    use mini_monitor_native::{
+        dashboard_layout::{layout, CardKind, Orientation},
+        dashboard_render::{DashboardEntry, DashboardInput, DashboardRenderer},
+    };
+    for orientation in [Orientation::Landscape, Orientation::Portrait] {
+        for with_api in [false, true] {
+            let card = layout(orientation, with_api)
+                .cards
+                .into_iter()
+                .find(|c| c.kind == CardKind::Gpu)
+                .unwrap()
+                .rect;
+            for model in [
+                "NVIDIA GeForce RTX 5070 Ti",
+                "NVIDIA GeForce RTX 4090 Laptop GPU",
+            ] {
+                let mut input = DashboardInput {
+                    port: String::new(),
+                    entries: vec![DashboardEntry {
+                        kind: CardKind::Gpu,
+                        value: "9%".into(),
+                        details: vec![model.into(), "42 C".into(), "44 W".into()],
+                        gauge: Some(9.0),
+                    }],
+                };
+                let mut renderer = DashboardRenderer::new();
+                // Only model/detail pixels: exclude the numeric and gauge area.
+                let details = |frame: &mini_monitor_native::dashboard_render::DashboardFrame| {
+                    let mut pixels = Vec::new();
+                    for y in card.y + 27..card.y + 63 {
+                        for x in card.x + 9..card.x + 100 {
+                            let i = ((y * frame.width + x) * 4) as usize;
+                            pixels.extend_from_slice(&frame.pixels[i..i + 4]);
+                        }
+                    }
+                    pixels
+                };
+                for page in [0, 1] {
+                    renderer.set_detail_page(page);
+                    input.entries[0].value = "9%".into();
+                    let reference = renderer
+                        .render(&input, orientation, with_api, None)
+                        .unwrap();
+                    let reference_pixels = details(&reference);
+                    for value in ["0%", "1%", "8%", "10%", "11%", "88%", "99%"] {
+                        input.entries[0].value = value.into();
+                        let frame = renderer
+                            .render(&input, orientation, with_api, None)
+                            .unwrap();
+                        assert!(
+                            details(&frame) == reference_pixels,
+                            "GPU detail lines moved for {model}, {value}, page {page}, portrait={}",
+                            orientation == Orientation::Portrait
+                        );
+                        assert_eq!(
+                            frame.detail_pages, reference.detail_pages,
+                            "percentage width must not change model pagination"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

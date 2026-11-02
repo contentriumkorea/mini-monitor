@@ -38,4 +38,14 @@ The physical device has a streaming bitmap command in the audited protocol; this
 - Verified updater journal reached healthy_backup_retained with startup acknowledgement. Installed CLI reports0.3.4, application SHA256 matches the final candidate, and configuration SHA256 is unchanged across replacement. Windows uninstall DisplayVersion is0.3.4.
 - Agent-desktop semantic invocation enabled the actual USB monitor. Fresh accessibility observations report physical device connected, account status Ready and taskbar enabled; no account values were printed or captured.
 - Main app20.5-second sample with settings preview and USB enabled: average machine CPU0.65%, working set75.5MiB (peak76.4), private memory31.7MiB (peak32.7). This short sample excludes Codex child-process resources and does not prove long-term absence of leaks.
-- No public release/tag/upload/push was performed. User visual confirmation remains pending for both preview flash and USB scan appearance.
+- No public release/tag/upload/push was performed. The user subsequently confirmed both preview flash and USB scan appearance were normal.
+
+## Follow-up: stable GPU model wrapping
+
+The user reported the GPU model gaining a line when its percentage changed from one digit to two. The details width was derived from the live number's actual width. A native raster regression failed at NVIDIA GeForce RTX5070 Ti,9% to10%, landscape/page0.
+
+The shared dashboard now reserves a two-digit percentage cell when wrapping details, while keeping the visible number right-aligned and retaining space for wider values. Regression comparisons cover0/1/8/9/10/11/88/99%, two GPU names, both orientations, API layout on/off, and both detail pages. Model/detail pixels and pagination stay identical across those values. Percent baseline and long-model paging tests still pass. Synthetic landscape/portrait BMP renders were visually inspected.
+
+The first parallel full run failed the existing `smoke_panel_is_neutral_rounded_and_releases_its_gdi_objects` process-wide GDI count comparison (11 before,9 after). That test passed alone; the unchanged test shares its process with other tests allocating/freeing GDI objects. The full serial suite passed256 tests,24 opt-in cases ignored,0 failures (`build/local034-stable-details-serial-tests.log`). No unrelated production/test changes were made for this concurrency-sensitive check. Clippy all-targets, release build, formatting and diff checks passed.
+
+Local candidate ZIP SHA256 `9d6c299a150902824ea3ed5ab90b8a21120fb7f52485a7ad45599d674e40e0a7`, in `build/local-bundle-v0.3.4-stable-details`. The signed updater reached healthy_backup_retained with startup acknowledgement; installed executable matches this candidate and configuration hash stayed unchanged. The actual USB monitor was re-enabled through an observed agent-desktop semantic control after restart. Public release remains unchanged; current physical optical confirmation of model stability is not yet available.

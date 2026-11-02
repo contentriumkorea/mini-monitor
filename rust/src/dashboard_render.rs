@@ -235,6 +235,16 @@ impl DashboardRenderer {
                 font -= 1;
             };
             let total = number.width + percent.as_ref().map_or(0, |p| p.width);
+            // Keep model/detail wrapping stable across 0..99%, independently of
+            // the right-aligned live digits. Wider values still claim their space.
+            let detail_value_width = if suffix.is_some() {
+                total.max(
+                    self.text.glyph("88", font, [244, 247, 252])?.width
+                        + percent.as_ref().map_or(0, |p| p.width),
+                )
+            } else {
+                total
+            };
             let value_x = value_right.saturating_sub(total).max(card.rect.x + 6);
             let value_bottom = card.rect.y + card.rect.height - 6;
             text(
@@ -255,7 +265,10 @@ impl DashboardRenderer {
             }
             if let Some(entry) = entry {
                 let left = card.rect.x + 9;
-                let max_width = value_x.saturating_sub(left + 5);
+                let detail_right = value_right
+                    .saturating_sub(detail_value_width)
+                    .max(card.rect.x + 6);
+                let max_width = detail_right.saturating_sub(left + 5);
                 if max_width >= 20 {
                     let mut all_lines = Vec::new();
                     for detail in &entry.details {
