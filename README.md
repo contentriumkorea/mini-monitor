@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/contentriumkorea/mini-monitor/releases/latest"><img src="assets/readme/version.svg" alt="앱 0.3.1"></a>
+  <a href="https://github.com/contentriumkorea/mini-monitor/releases/latest"><img src="assets/readme/version.svg" alt="앱 0.3.3"></a>
   <a href="README_KO.md"><img src="assets/readme/windows.svg" alt="Windows 10/11 x64"></a>
   <a href="LICENSE"><img src="assets/readme/license.svg" alt="GPL-3.0-or-later"></a>
 </p>
@@ -73,7 +73,7 @@ USB 모니터를 시작하지 않아도 PC 상태창·작업표시줄 바의 값
 | **포터블 ZIP** | 같은 정식 앱의 전체 실행 폴더입니다. 설치 없이 실행하며 EXE만 따로 옮기지 마세요. 설정·로그인은 ZIP 옆이 아닌 현재 Windows 사용자의 앱 데이터 폴더에 저장됩니다. |
 | **앱 업데이트** | 새 버전을 알리고 사용자가 선택하면 적용합니다. 이후 앱 업데이트마다 설치기를 다시 받을 필요는 없습니다. |
 
-현재 앱은 **0.3.1**, 설치기는 **1.1.0**입니다. 설치기는 특정 앱 버전에 고정되지 않습니다. 로그인·설정·자동 실행 선택은 보존합니다.
+현재 앱은 **0.3.3**, 설치기는 **1.1.0**입니다. 설치기는 특정 앱 버전에 고정되지 않습니다. 로그인·설정·자동 실행 선택은 보존합니다.
 
 OpenAI API 비용도 별도로 확인할 수 있습니다. 총액·시작일을 직접 설정하면 조직 관리자 API 키로 공식 사용금액을 조회하며, 남은 비율을 정수로 표시합니다. [설정 안내](README_KO.md#openai-api-사용률)
 
