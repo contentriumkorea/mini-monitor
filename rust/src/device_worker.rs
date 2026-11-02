@@ -161,6 +161,15 @@ impl DeviceWorker {
                                 FrameDelta::Region(region) => g.perform_if_active(|| {
                                     session.send_partial_cancellable(&region, || g.is_cancelled())
                                 })?,
+                                FrameDelta::Regions(regions) => {
+                                    for region in regions {
+                                        g.perform_if_active(|| {
+                                            session.send_partial_cancellable(&region, || {
+                                                g.is_cancelled()
+                                            })
+                                        })?;
+                                    }
+                                }
                             }
                             last_sent = Some(frame);
                         }

@@ -424,6 +424,63 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
     if dc.is_null() {
         return;
     }
+    paint_scene(hwnd, dc, state);
+    EndPaint(hwnd, &paint);
+}
+
+unsafe fn paint_scene(hwnd: HWND, dc: HDC, state: *mut State) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, GetClipBox,
+        IntersectClipRect, SelectObject, NULLREGION,
+    };
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    if client.right <= 0 || client.bottom <= 0 {
+        return;
+    }
+    let mut dirty: RECT = std::mem::zeroed();
+    if GetClipBox(dc, &mut dirty) <= NULLREGION {
+        return;
+    }
+    dirty.left = dirty.left.max(0);
+    dirty.top = dirty.top.max(0);
+    dirty.right = dirty.right.min(client.right);
+    dirty.bottom = dirty.bottom.min(client.bottom);
+    if dirty.right <= dirty.left || dirty.bottom <= dirty.top {
+        return;
+    }
+    let memory = CreateCompatibleDC(dc);
+    if memory.is_null() {
+        return;
+    }
+    let bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
+    if bitmap.is_null() {
+        DeleteDC(memory);
+        return;
+    }
+    let old = SelectObject(memory, bitmap as _);
+    IntersectClipRect(memory, dirty.left, dirty.top, dirty.right, dirty.bottom);
+    paint_scene_content(hwnd, memory, state);
+    // Never expose the gradient, panel fill or empty preview between live frames.
+    // The destination retains its child-window/update clipping; only a finished
+    // bitmap is copied to it. The temporary GDI buffer is released every paint.
+    BitBlt(
+        dc,
+        dirty.left,
+        dirty.top,
+        dirty.right - dirty.left,
+        dirty.bottom - dirty.top,
+        memory,
+        dirty.left,
+        dirty.top,
+        SRCCOPY,
+    );
+    SelectObject(memory, old);
+    DeleteObject(bitmap as _);
+    DeleteDC(memory);
+}
+
+unsafe fn paint_scene_content(hwnd: HWND, dc: HDC, state: *mut State) {
     let mut client: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut client);
     let dpi = current_dpi(hwnd);
@@ -519,7 +576,6 @@ unsafe fn draw_preview(hwnd: HWND, state: *mut State) {
             }
         }
     }
-    EndPaint(hwnd, &paint);
 }
 unsafe extern "system" fn proc(
     hwnd: HWND,
@@ -1278,6 +1334,65 @@ impl Drop for SettingsWindow {
             if !(*self.state.get()).title_font.is_null() {
                 DeleteObject((*self.state.get()).title_font as _);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use super::*;
+    use windows_sys::Win32::Graphics::Gdi::*;
+
+    #[test]
+    fn preview_paint_presents_a_completed_bitmap_without_intermediate_background_draws() {
+        unsafe extern "system" fn record(
+            _: HDC,
+            _: *const HANDLETABLE,
+            record: *const ENHMETARECORD,
+            _: i32,
+            data: isize,
+        ) -> i32 {
+            (*(data as *mut Vec<u32>)).push((*record).iType);
+            1
+        }
+        let window = SettingsWindow::new_hidden().unwrap();
+        window
+            .set_preview(DashboardFrame {
+                width: 480,
+                height: 320,
+                pixels: [20, 40, 180, 255].repeat(480 * 320),
+                detail_pages: vec![],
+            })
+            .unwrap();
+        unsafe {
+            let dc = CreateEnhMetaFileW(ptr::null_mut(), ptr::null(), ptr::null(), ptr::null());
+            assert!(!dc.is_null());
+            paint_scene(window.handle(), dc, window.state.get());
+            let metafile = CloseEnhMetaFile(dc);
+            let mut records = Vec::<u32>::new();
+            assert_ne!(
+                EnumEnhMetaFile(
+                    ptr::null_mut(),
+                    metafile,
+                    Some(record),
+                    (&mut records as *mut Vec<u32>).cast(),
+                    ptr::null()
+                ),
+                0
+            );
+            DeleteEnhMetaFile(metafile);
+            assert_eq!(
+                records.iter().filter(|r| **r == EMR_BITBLT).count(),
+                1,
+                "the visible DC must receive one completed frame, records={records:?}"
+            );
+            assert!(
+                !records.iter().any(|r| matches!(
+                    *r,
+                    EMR_RECTANGLE | EMR_ROUNDRECT | EMR_GRADIENTFILL | EMR_STRETCHDIBITS
+                )),
+                "background/preview construction must remain offscreen, records={records:?}"
+            );
         }
     }
 }

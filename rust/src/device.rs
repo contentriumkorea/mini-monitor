@@ -181,6 +181,7 @@ pub enum FrameDelta {
     Unchanged,
     Full,
     Region(BitmapTransfer),
+    Regions(Vec<BitmapTransfer>),
 }
 
 pub fn bitmap_transfer(
@@ -215,45 +216,37 @@ impl BitmapTransfer {
         if !self.is_full_for(width, height) || !previous.is_full_for(width, height) {
             return Err("full matching frames required");
         }
-        let (mut left, mut top, mut right, mut bottom) = (width, height, 0u32, 0u32);
-        let mut changed = false;
-        for y in 0..height {
-            for x in 0..width {
-                let index = ((y as usize) * (width as usize) + x as usize) * 2;
-                if self.payload[index..index + 2] != previous.payload[index..index + 2] {
-                    changed = true;
-                    left = left.min(x);
-                    top = top.min(y);
-                    right = right.max(x);
-                    bottom = bottom.max(y);
-                }
-            }
-        }
-        if !changed {
+        let crate::dirty::Dirty::Regions(rects) =
+            crate::dirty::calculate_rgb565(width, height, &previous.payload, &self.payload)?
+        else {
+            return Ok(FrameDelta::Full);
+        };
+        if rects.is_empty() {
             return Ok(FrameDelta::Unchanged);
         }
-        let region_width = right - left + 1;
-        let region_height = bottom - top + 1;
-        if u64::from(region_width) * u64::from(region_height) * 4
-            >= u64::from(width) * u64::from(height) * 3
-        {
+        let bytes: u64 = rects
+            .iter()
+            .map(|r| u64::from(r.width) * u64::from(r.height) * 2 + 6)
+            .sum();
+        if bytes >= u64::from(width) * u64::from(height) * 2 + 6 {
             return Ok(FrameDelta::Full);
         }
-        let mut pixels = Vec::with_capacity(region_width as usize * region_height as usize * 2);
-        for y in top..=bottom {
-            let start = ((y as usize) * (width as usize) + left as usize) * 2;
-            let end = start + region_width as usize * 2;
-            pixels.extend_from_slice(&self.payload[start..end]);
+        let mut regions = Vec::with_capacity(rects.len());
+        for r in rects {
+            let mut pixels = Vec::with_capacity(r.width as usize * r.height as usize * 2);
+            for y in r.y..r.y + r.height {
+                let start = (y as usize * width as usize + r.x as usize) * 2;
+                pixels.extend_from_slice(&self.payload[start..start + r.width as usize * 2]);
+            }
+            regions.push(bitmap_transfer(
+                r.x, r.y, r.width, r.height, &pixels, width, height,
+            )?);
         }
-        Ok(FrameDelta::Region(bitmap_transfer(
-            left,
-            top,
-            region_width,
-            region_height,
-            &pixels,
-            width,
-            height,
-        )?))
+        if regions.len() == 1 {
+            Ok(FrameDelta::Region(regions.pop().unwrap()))
+        } else {
+            Ok(FrameDelta::Regions(regions))
+        }
     }
     pub fn matches_display(&self, width: u32, height: u32) -> bool {
         self.display == (width, height)

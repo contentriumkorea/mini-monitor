@@ -47,6 +47,112 @@ fn rgb565_delta_sends_only_changed_pixels_and_rejects_wrong_display_size() {
     assert!(after.delta_from(&wrong).is_err());
 }
 
+#[cfg(windows)]
+#[test]
+fn simultaneous_dashboard_values_replay_exactly_without_a_screen_sized_transfer() {
+    use mini_monitor_native::{
+        dashboard_layout::{CardKind, Orientation as Layout},
+        dashboard_render::{DashboardEntry, DashboardInput, DashboardRenderer},
+        device::FrameDelta,
+    };
+    for orientation in [Layout::Landscape, Layout::Portrait] {
+        let mut data = DashboardInput {
+            port: "COM3".into(),
+            entries: [
+                CardKind::Cpu,
+                CardKind::Ram,
+                CardKind::Gpu,
+                CardKind::Vram,
+                CardKind::Codex,
+                CardKind::Api,
+            ]
+            .into_iter()
+            .map(|kind| DashboardEntry {
+                kind,
+                value: "19%".into(),
+                details: vec!["UNCHANGED DETAILS".into()],
+                gauge: Some(19.0),
+            })
+            .collect(),
+        };
+        let mut renderer = DashboardRenderer::new();
+        let before = renderer.render(&data, orientation, true, None).unwrap();
+        for entry in &mut data.entries {
+            entry.value = "20%".into();
+            entry.gauge = Some(20.0);
+        }
+        let after = renderer.render(&data, orientation, true, None).unwrap();
+        let mut replay = rgb888_to_rgb565le(
+            &before.to_opaque_rgb().unwrap(),
+            before.width as usize,
+            before.height as usize,
+        )
+        .unwrap();
+        let want = rgb888_to_rgb565le(
+            &after.to_opaque_rgb().unwrap(),
+            after.width as usize,
+            after.height as usize,
+        )
+        .unwrap();
+        let first = bitmap_transfer(
+            0,
+            0,
+            before.width,
+            before.height,
+            &replay,
+            before.width,
+            before.height,
+        )
+        .unwrap();
+        let next = bitmap_transfer(
+            0,
+            0,
+            after.width,
+            after.height,
+            &want,
+            after.width,
+            after.height,
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        let regions = match next.delta_from(&first).unwrap() {
+            FrameDelta::Region(r) => vec![r],
+            FrameDelta::Regions(r) => r,
+            _ => panic!("six changing values must remain small regional updates"),
+        };
+        let planning_us = start.elapsed().as_micros();
+        let mut total = 0;
+        for r in &regions {
+            let mut bytes = Vec::new();
+            r.write_to(&mut bytes, 3840).unwrap();
+            total += bytes.len();
+            let x = (u32::from(bytes[0]) << 2) | (u32::from(bytes[1]) >> 6);
+            let y = ((u32::from(bytes[1]) & 63) << 4) | (u32::from(bytes[2]) >> 4);
+            let right = ((u32::from(bytes[2]) & 15) << 6) | (u32::from(bytes[3]) >> 2);
+            let bottom = ((u32::from(bytes[3]) & 3) << 8) | u32::from(bytes[4]);
+            let row_bytes = ((right - x + 1) * 2) as usize;
+            assert!(bottom < after.height && right < after.width);
+            for row in 0..=bottom - y {
+                let dest = (((y + row) * after.width + x) * 2) as usize;
+                let src = 6 + row as usize * row_bytes;
+                replay[dest..dest + row_bytes].copy_from_slice(&bytes[src..src + row_bytes]);
+            }
+        }
+        assert_eq!(
+            replay, want,
+            "every changed pixel, including RGB565 high bytes, must arrive"
+        );
+        assert!(
+            total < want.len() / 3,
+            "small value changes must not sweep the screen: {total}"
+        );
+        println!(
+            "usb_delta_fixture regions={} bytes={total} planning_us={planning_us}",
+            regions.len()
+        );
+    }
+}
+
 #[test]
 fn audited_command_bytes_match_existing_upstream_vectors() {
     assert_eq!(screen_on(), [0, 0, 0, 0, 0, 0x6d]);

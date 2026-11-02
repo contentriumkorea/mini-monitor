@@ -170,6 +170,19 @@ fn worker_sends_small_delta_against_last_successfully_transmitted_frame() {
         .unwrap();
     thread::sleep(Duration::from_millis(600));
     assert_eq!(bytes.lock().unwrap().len(), initial + 8);
+    // Simultaneous values in distant cards must not create a screen-sized wipe.
+    let previous_len = bytes.lock().unwrap().len();
+    pixels[(50 * 480 + 30) * 2] = 0x11;
+    pixels[(290 * 480 + 440) * 2] = 0x22;
+    worker
+        .submit_full(bitmap_transfer(0, 0, 480, 320, &pixels, 480, 320).unwrap())
+        .unwrap();
+    wait_until(|| bytes.lock().unwrap().len() >= previous_len + 16);
     worker.request_stop();
     worker.join();
+    assert_eq!(
+        bytes.lock().unwrap().len() - previous_len,
+        16,
+        "two isolated pixel changes must send two 8-byte regions, not the area between cards"
+    );
 }

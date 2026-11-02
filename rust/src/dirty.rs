@@ -69,6 +69,46 @@ pub fn calculate(
     padding: u32,
     proximity: u32,
 ) -> Result<Dirty, &'static str> {
+    calculate_pixels(
+        width, height, previous, current, cards, padding, proximity, 3,
+    )
+}
+
+/// Connected changes in packed RGB565; no RGB888 expansion or screen-wide union.
+pub fn calculate_rgb565(
+    width: u32,
+    height: u32,
+    previous: &[u8],
+    current: &[u8],
+) -> Result<Dirty, &'static str> {
+    calculate_pixels(
+        width,
+        height,
+        Some(previous),
+        current,
+        &[Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }],
+        0,
+        3,
+        2,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn calculate_pixels(
+    width: u32,
+    height: u32,
+    previous: Option<&[u8]>,
+    current: &[u8],
+    cards: &[Rect],
+    padding: u32,
+    proximity: u32,
+    stride: usize,
+) -> Result<Dirty, &'static str> {
     if !(1..=1024).contains(&width)
         || !(1..=1024).contains(&height)
         || cards.is_empty()
@@ -78,7 +118,7 @@ pub fn calculate(
     {
         return Err("invalid dimensions");
     }
-    let expected = width as usize * height as usize * 3;
+    let expected = width as usize * height as usize * stride;
     if current.len() != expected || previous.is_some_and(|value| value.len() != expected) {
         return Err("invalid frame");
     }
@@ -115,8 +155,8 @@ pub fn calculate(
         let card_height = card.height as usize;
         let mut visited = vec![false; card_width * card_height];
         let changed = |x: usize, y: usize| {
-            let index = ((card.y as usize + y) * width as usize + card.x as usize + x) * 3;
-            previous[index..index + 3] != current[index..index + 3]
+            let index = ((card.y as usize + y) * width as usize + card.x as usize + x) * stride;
+            previous[index..index + stride] != current[index..index + stride]
         };
         let mut components: Vec<Rect> = Vec::new();
         for y in 0..card_height {
