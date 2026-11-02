@@ -204,6 +204,39 @@ unsafe fn enqueue(state: *mut State, value: SettingsAction) {
         (*state).actions.push_back(value);
     }
 }
+
+unsafe fn set_label_if_changed(child: HWND, value: &str) -> io::Result<bool> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
+    if child.is_null() {
+        return Err(io::Error::other("settings control unavailable"));
+    }
+    let expected = wide(value);
+    let length = GetWindowTextLengthW(child).max(0) as usize;
+    if length == expected.len() - 1 {
+        let mut previous = vec![0; length + 1];
+        if GetWindowTextW(child, previous.as_mut_ptr(), previous.len() as i32) as usize == length
+            && previous == expected
+        {
+            return Ok(false);
+        }
+    }
+    if SetWindowTextW(child, expected.as_ptr()) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(true)
+}
+
+fn preview_rect(groups: &MainLayout, dpi: u32) -> RECT {
+    theme::physical(
+        RECT {
+            left: groups.preview.left + 18,
+            top: groups.preview.top + 52,
+            right: (groups.preview.right - 18).max(groups.preview.left + 19),
+            bottom: (groups.preview.bottom - 62).max(groups.preview.top + 53),
+        },
+        dpi,
+    )
+}
 unsafe fn update_brightness_label(hwnd: HWND) {
     let slider = GetDlgItem(hwnd, 203);
     let label = GetDlgItem(hwnd, 109);
@@ -496,6 +529,7 @@ unsafe extern "system" fn proc(
 ) -> LRESULT {
     let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     match message {
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_ERASEBKGND if !state.is_null() => 1,
         windows_sys::Win32::UI::WindowsAndMessaging::WM_NOTIFY => theme::slider_notify(lparam)
             .unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam)),
         WM_COMMAND
@@ -715,7 +749,7 @@ impl SettingsWindow {
                 0,
                 class.as_ptr(),
                 wide("Mini Monitor 설정").as_ptr(),
-                WS_OVERLAPPEDWINDOW,
+                WS_OVERLAPPEDWINDOW | windows_sys::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN,
                 initial.left,
                 initial.top,
                 initial.right - initial.left,
@@ -1086,15 +1120,11 @@ impl SettingsWindow {
             if child.is_null() {
                 return Err(io::Error::other("settings control unavailable"));
             }
-            let label = wide(&format!(
-                "{name} · {}",
-                if enabled { "켜짐" } else { "꺼짐" }
-            ));
-            if unsafe { SetWindowTextW(child, label.as_ptr()) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            unsafe {
-                InvalidateRect(child, ptr::null(), 0);
+            let label = format!("{name} · {}", if enabled { "켜짐" } else { "꺼짐" });
+            if unsafe { set_label_if_changed(child, &label)? } {
+                unsafe {
+                    InvalidateRect(child, ptr::null(), 0);
+                }
             }
         }
         Ok(())
@@ -1115,8 +1145,8 @@ impl SettingsWindow {
         if child.is_null() {
             return Err(io::Error::other("account status unavailable"));
         }
-        if unsafe { SetWindowTextW(child, wide(message).as_ptr()) } == 0 {
-            return Err(io::Error::last_os_error());
+        unsafe {
+            set_label_if_changed(child, message)?;
         }
         Ok(())
     }
@@ -1140,8 +1170,8 @@ impl SettingsWindow {
         if child.is_null() {
             return Err(io::Error::other("update status unavailable"));
         }
-        if unsafe { SetWindowTextW(child, wide(&text).as_ptr()) } == 0 {
-            return Err(io::Error::last_os_error());
+        unsafe {
+            set_label_if_changed(child, &text)?;
         }
         Ok(())
     }
@@ -1151,8 +1181,8 @@ impl SettingsWindow {
             1 => "지원 장치 준비됨 · 미니 모니터를 켜세요.",
             _ => "여러 장치 발견 · 연결할 장치를 확인하세요.",
         };
-        if unsafe { SetWindowTextW(GetDlgItem(self.hwnd, 102), wide(message).as_ptr()) } == 0 {
-            return Err(io::Error::last_os_error());
+        unsafe {
+            set_label_if_changed(GetDlgItem(self.hwnd, 102), message)?;
         }
         Ok(())
     }
@@ -1176,14 +1206,8 @@ impl SettingsWindow {
         if child.is_null() {
             return Err(io::Error::other("device status unavailable"));
         }
-        if unsafe {
-            SetWindowTextW(
-                child,
-                wide(&format!("미니 모니터 연결 · {message}")).as_ptr(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+        unsafe {
+            set_label_if_changed(child, &format!("미니 모니터 연결 · {message}"))?;
         }
         Ok(())
     }
@@ -1206,8 +1230,20 @@ impl SettingsWindow {
             ));
         }
         unsafe {
+            if (*self.state.get()).preview.as_ref().is_some_and(|old| {
+                old.width == frame.width && old.height == frame.height && old.pixels == frame.pixels
+            }) {
+                return Ok(());
+            }
             (*self.state.get()).preview = Some(frame);
-            InvalidateRect(self.hwnd, ptr::null(), 0);
+            let dpi = current_dpi(self.hwnd);
+            let mut client: RECT = std::mem::zeroed();
+            GetClientRect(self.hwnd, &mut client);
+            let groups = MainLayout::new(
+                (client.right * 96 / dpi as i32).max(360),
+                (client.bottom * 96 / dpi as i32).max(420),
+            );
+            InvalidateRect(self.hwnd, &preview_rect(&groups, dpi), 0);
         }
         Ok(())
     }

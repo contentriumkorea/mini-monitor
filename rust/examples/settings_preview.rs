@@ -62,6 +62,9 @@ fn main() -> std::io::Result<()> {
         ShowWindow(window.handle(), SW_SHOWNOACTIVATE);
     }
     let mut form: Option<OptionsWindow> = None;
+    let live = std::env::args().any(|arg| arg == "--live");
+    let mut last_live_second = 0;
+    let mut live_renderer = DashboardRenderer::new();
     if let Some(id) = std::env::args().nth(1).and_then(|arg| match arg.as_str() {
         "--overlay" => Some(12),
         "--taskbar" => Some(13),
@@ -79,6 +82,25 @@ fn main() -> std::io::Result<()> {
     }
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(600) {
+        let second = start.elapsed().as_secs();
+        if live && second != last_live_second {
+            if let Some(cpu) = input
+                .entries
+                .iter_mut()
+                .find(|e| e.kind == mini_monitor_native::dashboard_layout::CardKind::Cpu)
+            {
+                cpu.value = format!("{}%", 23 + second % 4);
+            }
+            window.set_account_status(mini_monitor_native::account_worker::AccountStatus::Ready)?;
+            window.set_device_detection(1)?;
+            window.set_preview(live_renderer.render(
+                &input,
+                Orientation::Landscape,
+                true,
+                None,
+            )?)?;
+            last_live_second = second;
+        }
         let mut message: MSG = unsafe { std::mem::zeroed() };
         while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
             if form

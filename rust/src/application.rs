@@ -841,12 +841,11 @@ impl ApplicationCore {
             return Ok(());
         }
         let input = self.runtime.dashboard_input(None, "");
-        self.settings
-            .set_device_status(self.monitor, self.runtime.device_status())?;
-        if !self.monitor {
-            if let Some(count) = self.detected {
-                self.settings.set_device_detection(count)?;
-            }
+        if let (false, Some(count)) = (self.monitor, self.detected) {
+            self.settings.set_device_detection(count)?;
+        } else {
+            self.settings
+                .set_device_status(self.monitor, self.runtime.device_status())?;
         }
         let status = self
             .runtime
@@ -886,6 +885,66 @@ impl ApplicationCore {
 #[cfg(test)]
 mod position_tests {
     use super::*;
+
+    #[test]
+    fn preview_keeps_detected_device_caption_stable_when_monitor_is_off() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use windows_sys::Win32::{
+            Foundation::HWND,
+            UI::{
+                Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+                WindowsAndMessaging::*,
+            },
+        };
+        unsafe extern "system" fn count(
+            hwnd: HWND,
+            msg: u32,
+            wp: usize,
+            lp: isize,
+            _id: usize,
+            data: usize,
+        ) -> isize {
+            if msg == WM_SETTEXT {
+                (*(data as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed);
+            }
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
+        let runtime = DesktopRuntime::start(Duration::from_millis(250), None).unwrap();
+        let settings = SettingsWindow::new_hidden().unwrap();
+        let options = OutputOptions {
+            overlay_x: -30000,
+            overlay_y: -30000,
+            overlay_scale: 100,
+            overlay_opacity: 0,
+            orientation: Orientation::Landscape,
+            with_api: false,
+            taskbar_x: -30000,
+            taskbar_style: TaskbarStyle::Text,
+            taskbar_items: vec![MetricKind::Cpu],
+            icon_dir: None,
+        };
+        let mut app = ApplicationCore::new(runtime, settings, options).unwrap();
+        app.detected = Some(1);
+        unsafe {
+            ShowWindow(app.settings.handle(), SW_SHOWNOACTIVATE);
+        }
+        app.update_preview().unwrap();
+        let calls = AtomicUsize::new(0);
+        let label = unsafe { GetDlgItem(app.settings.handle(), 102) };
+        unsafe {
+            SetWindowSubclass(label, Some(count), 124, &calls as *const _ as usize);
+        }
+        app.next_preview = Instant::now();
+        app.update_preview().unwrap();
+        unsafe {
+            RemoveWindowSubclass(label, Some(count), 124);
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "discovery and stopped status must not alternate every second"
+        );
+    }
 
     #[test]
     fn failed_position_save_is_retried_without_losing_latest_drag() {

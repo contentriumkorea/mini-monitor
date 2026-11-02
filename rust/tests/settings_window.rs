@@ -5,6 +5,142 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 #[test]
+fn background_erase_does_not_flash_a_flat_brush_before_painting() {
+    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::WM_ERASEBKGND};
+    let window = SettingsWindow::new_hidden().unwrap();
+    unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: 8,
+            biHeight: -8,
+            biPlanes: 1,
+            biBitCount: 32,
+            ..std::mem::zeroed()
+        };
+        let mut bits = std::ptr::null_mut();
+        let bmp = CreateDIBSection(
+            dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let old = SelectObject(dc, bmp as _);
+        let brush = CreateSolidBrush(0x123456);
+        FillRect(
+            dc,
+            &windows_sys::Win32::Foundation::RECT {
+                left: 0,
+                top: 0,
+                right: 8,
+                bottom: 8,
+            },
+            brush,
+        );
+        DeleteObject(brush as _);
+        SendMessageW(window.handle(), WM_ERASEBKGND, dc as usize, 0);
+        let color = GetPixel(dc, 4, 4);
+        SelectObject(dc, old);
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+        assert_eq!(
+            color, 0x123456,
+            "erasing must not expose the window-class brush between frames"
+        );
+    }
+}
+
+#[test]
+fn live_preview_invalidates_only_the_bitmap_and_identical_frames_stay_clean() {
+    use windows_sys::Win32::Graphics::Gdi::{GetUpdateRect, ValidateRect};
+    let window = SettingsWindow::new_hidden().unwrap();
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+            window.handle(),
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
+        );
+    }
+    let frame = |v| mini_monitor_native::dashboard_render::DashboardFrame {
+        width: 480,
+        height: 320,
+        pixels: [v, v, v, 255].repeat(480 * 320),
+        detail_pages: vec![],
+    };
+    window.set_preview(frame(20)).unwrap();
+    unsafe {
+        ValidateRect(window.handle(), std::ptr::null());
+    }
+    window.set_preview(frame(21)).unwrap();
+    let mut dirty = unsafe { std::mem::zeroed() };
+    assert_ne!(unsafe { GetUpdateRect(window.handle(), &mut dirty, 0) }, 0);
+    assert!(
+        dirty.left > 300 && dirty.top > 160,
+        "live data must not invalidate the full settings window: left={}, top={}",
+        dirty.left,
+        dirty.top
+    );
+    unsafe {
+        ValidateRect(window.handle(), std::ptr::null());
+    }
+    window.set_preview(frame(21)).unwrap();
+    assert_eq!(
+        unsafe { GetUpdateRect(window.handle(), &mut dirty, 0) },
+        0,
+        "unchanged frame must not schedule another paint"
+    );
+}
+
+#[test]
+fn repeated_account_status_does_not_send_settext_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        UI::{
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::WM_SETTEXT,
+        },
+    };
+    unsafe extern "system" fn count(
+        hwnd: HWND,
+        msg: u32,
+        wp: usize,
+        lp: isize,
+        _id: usize,
+        data: usize,
+    ) -> isize {
+        if msg == WM_SETTEXT {
+            (*(data as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed);
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+    let window = SettingsWindow::new_hidden().unwrap();
+    window
+        .set_account_status(mini_monitor_native::account_worker::AccountStatus::Ready)
+        .unwrap();
+    let calls = AtomicUsize::new(0);
+    let child = unsafe { GetDlgItem(window.handle(), 106) };
+    unsafe {
+        SetWindowSubclass(child, Some(count), 123, &calls as *const _ as usize);
+    }
+    for _ in 0..10 {
+        window
+            .set_account_status(mini_monitor_native::account_worker::AccountStatus::Ready)
+            .unwrap();
+    }
+    unsafe {
+        RemoveWindowSubclass(child, Some(count), 123);
+    }
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "unchanged status must not erase/repaint its label every refresh"
+    );
+}
+
+#[test]
 fn startup_checkbox_changes_emit_an_explicit_intent() {
     let window = SettingsWindow::new_hidden().unwrap();
     window.set_autostart(false).unwrap();
